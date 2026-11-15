@@ -1,0 +1,19 @@
+[package]
+name = "one-ring"
+version = "0.1.0"
+description = "Unified cross-platform church production controller (FOH Slides, Multi-Broadcast, X32, Dante, NDI, PTZ)"
+authors = ["Evan Beechem"]
+edition = "2021"
+
+[lib]
+name = "one_ring_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["sync", "time"] }
