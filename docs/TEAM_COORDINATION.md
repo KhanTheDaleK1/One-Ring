@@ -25,3 +25,19 @@ The **Pixel 9 Pro Fold** (`comet`, Android 17 preview, 16 GB LPDDR5X RAM, Google
 
 3. **Multi-Modal Video/Audio Stream Sentinel (Phase 3 & 4 Testing)**:
    - Utilizing the Tensor G4 NPU (~45 TOPS), the Pixel can perform real-time video frame and audio buffer classification (detecting black screens, audio dropouts, and silent mic anomalies) for One Ring's automated preflight and stream health validation.
+
+---
+
+### Communication & Agent Addressing Directory
+- **Lead Orchestrator (`t10` / Mac mini)**:
+  - Conversation ID: `dffe27e4-f955-4c19-b114-6732db57f9ed`
+  - Link: [t10](conversation://dffe27e4-f955-4c19-b114-6732db57f9ed)
+- **Tooling, Infra & Pixel Co-Processor Lead (`Antigravity / Mac mini`)**:
+  - Conversation ID: `04d51326-2ede-412e-b43e-87e15180b1ff`
+  - Link: [Infra-Lead](conversation://04d51326-2ede-412e-b43e-87e15180b1ff)
+  - Host IP: `10.1.24.148` (Tailscale: `100.109.62.122`)
+  - Pixel ADB Forward: `127.0.0.1:8080`
+- **RE Specialist (`t1` / `rea-decompiler`)**:
+  - VM IP: `10.1.24.25`
+- **Implementation Engineer (`t2` / OpenCode @ `rea-decompiler`)**:
+  - Process PID: `48422` (`opencode serve --service`)

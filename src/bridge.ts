@@ -1,4 +1,10 @@
-import type { AppStateSnapshot } from "./types";
+import type {
+  AppStateSnapshot,
+  CueVerificationStep,
+  SlideCue,
+  SlideKind,
+} from "./types";
+import type { UnlistenFn } from "@tauri-apps/api/event";
 
 const isTauri = () =>
   typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -6,6 +12,234 @@ const isTauri = () =>
 async function invokeTauri<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
   const { invoke } = await import("@tauri-apps/api/core");
   return invoke<T>(cmd, args);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Event contract — mirrors src-tauri/src/runtime/events.rs
+// ---------------------------------------------------------------------------------------------
+
+export interface HealthEvent {
+  deviceId: string;
+  kind: string;
+  label: string;
+  status: "ok" | "warn" | "error" | "connecting" | "offline";
+  detail: string;
+  protocol: string;
+  latencyMs: number;
+}
+
+export interface MeterChannel {
+  key: string;
+  label: string;
+  db: number | null;
+  peak: boolean;
+  muted: boolean;
+}
+
+export interface MeterEvent {
+  deviceId: string;
+  domain: string;
+  sequence: number;
+  capturedAtMs: number;
+  channels: MeterChannel[];
+}
+
+export interface StatePatchEvent {
+  domain: string;
+  revision: number;
+  patch: Record<string, unknown>;
+}
+
+export interface CueProgressEvent {
+  cueIndex: number;
+  stepIndex: number;
+  totalSteps: number;
+  domain: string;
+  status: "pending" | "running" | "applied" | "rehearsal" | "drift" | "failed";
+  elapsedMs: number;
+  error?: string | null;
+}
+
+const STATE_DOMAINS = [
+  "x32",
+  "obs",
+  "slides",
+  "streamlabs",
+  "log",
+  "cue",
+  "dante",
+  "ndi",
+] as const;
+
+const METER_DOMAINS = ["x32", "dante"] as const;
+
+/** Apply a `device://health` transition, adding a row for a device we have not seen yet. */
+export function applyHealthEvent(state: AppStateSnapshot, event: HealthEvent): AppStateSnapshot {
+  const status: AppStateSnapshot["health"][number]["status"] =
+    event.status === "ok" ? "ok" : event.status === "error" ? "error" : "warn";
+
+  const existing = state.health.find((h) => h.id === event.deviceId);
+  if (!existing) {
+    return {
+      ...state,
+      health: [
+        ...state.health,
+        {
+          id: event.deviceId,
+          label: event.label,
+          status,
+          detail: event.detail,
+          protocol: event.protocol,
+          latencyMs: event.latencyMs,
+        },
+      ],
+    };
+  }
+
+  return {
+    ...state,
+    health: state.health.map((h) =>
+      h.id === event.deviceId
+        ? {
+            ...h,
+            label: event.label,
+            status,
+            detail: event.detail,
+            protocol: event.protocol,
+            latencyMs: event.latencyMs,
+          }
+        : h
+    ),
+  };
+}
+
+/**
+ * Apply a domain patch. Patches are partial (`{ dcas }`, `{ broadcasts }`, …) so they are merged
+ * onto the hydrated snapshot; `state://log` appends a single operator log line.
+ */
+export function applyStatePatch(state: AppStateSnapshot, event: StatePatchEvent): AppStateSnapshot {
+  if (event.domain === "log") {
+    const line = event.patch.eventLogEntry;
+    if (typeof line !== "string") return state;
+    return { ...state, eventLog: [line, ...state.eventLog].slice(0, 200) };
+  }
+  return { ...state, ...(event.patch as Partial<AppStateSnapshot>) };
+}
+
+/** Merge a `meter://` frame into DCA signal strength and derive the silent-pastor alert. */
+export function applyMeterEvent(state: AppStateSnapshot, event: MeterEvent): AppStateSnapshot {
+  if (!event.channels.length) return state;
+
+  const dcaMeters = new Map<number, MeterChannel>();
+  for (const channel of event.channels) {
+    const match = /^dca(\d+)$/.exec(channel.key);
+    if (match) dcaMeters.set(Number(match[1]), channel);
+  }
+  if (dcaMeters.size === 0) return state;
+
+  const dcas = state.dcas.map((dca) => {
+    const meter = dcaMeters.get(dca.number);
+    if (!meter) return dca;
+    return {
+      ...dca,
+      signalDb: meter.db ?? -90,
+      signalPresent: meter.db !== null && meter.db > -60,
+    };
+  });
+
+  // Simulator keeps its own fault model; live meters are authoritative.
+  let silentMicAlert = state.silentMicAlert;
+  if (!state.mockMode) {
+    const pastor = dcas.find((d) => d.id === "dca-1");
+    silentMicAlert =
+      pastor && !pastor.muted && !pastor.signalPresent
+        ? "SILENT PASTOR MIC: DCA 1 (Pastor) is LIVE/UNMUTED, but the live X32/Dante meter reports no signal. Check beltpack power/mute switch!"
+        : null;
+  }
+
+  return { ...state, dcas, silentMicAlert };
+}
+
+/** Fold `cue://progress` telemetry into the active verification report. */
+export function applyCueProgress(
+  state: AppStateSnapshot,
+  event: CueProgressEvent
+): AppStateSnapshot {
+  if (!state.lastVerification || event.cueIndex !== state.activeCueIndex) return state;
+  if (event.status === "running" || event.status === "pending") return state;
+
+  const status: CueVerificationStep["status"] =
+    event.status === "failed" || event.status === "drift"
+      ? "DRIFT"
+      : event.status === "rehearsal"
+        ? "REHEARSAL"
+        : "APPLIED";
+
+  return {
+    ...state,
+    lastVerification: {
+      ...state.lastVerification,
+      steps: state.lastVerification.steps.map((step, index) =>
+        index === event.stepIndex
+          ? { ...step, status, latencyMs: Math.round(event.elapsedMs) }
+          : step
+      ),
+    },
+  };
+}
+
+export interface BridgeSubscriptionHandlers {
+  onHealth?: (event: HealthEvent) => void;
+  onMeter?: (event: MeterEvent) => void;
+  onStatePatch?: (event: StatePatchEvent) => void;
+  onCueProgress?: (event: CueProgressEvent) => void;
+}
+
+/** Subscribe to backend pushes. No-op outside Tauri (browser simulator mode). */
+export async function subscribeEvents(
+  handlers: BridgeSubscriptionHandlers
+): Promise<UnlistenFn> {
+  if (!isTauri()) return () => {};
+
+  const { listen } = await import("@tauri-apps/api/event");
+  const unlisteners: UnlistenFn[] = [];
+
+  if (handlers.onHealth) {
+    unlisteners.push(
+      await listen<HealthEvent>("device://health", (event) =>
+        handlers.onHealth!(event.payload)
+      )
+    );
+  }
+  if (handlers.onMeter) {
+    for (const domain of METER_DOMAINS) {
+      unlisteners.push(
+        await listen<MeterEvent>(`meter://${domain}`, (event) =>
+          handlers.onMeter!(event.payload)
+        )
+      );
+    }
+  }
+  if (handlers.onStatePatch) {
+    for (const domain of STATE_DOMAINS) {
+      unlisteners.push(
+        await listen<StatePatchEvent>(`state://${domain}`, (event) =>
+          handlers.onStatePatch!(event.payload)
+        )
+      );
+    }
+  }
+  if (handlers.onCueProgress) {
+    unlisteners.push(
+      await listen<CueProgressEvent>("cue://progress", (event) =>
+        handlers.onCueProgress!(event.payload)
+      )
+    );
+  }
+
+  return () => {
+    for (const unlisten of unlisteners) unlisten();
+  };
 }
 
 function recomputeDerived(s: AppStateSnapshot) {
@@ -32,6 +266,99 @@ function recomputeDerived(s: AppStateSnapshot) {
     ...c,
     tally: c.id === s.activeCameraPresetId ? "program" : "idle",
   }));
+}
+
+type SlideSeed = [section: string, title: string, text: string, kind?: SlideKind];
+
+const makeSlideSet = (prefix: string, seeds: SlideSeed[]): SlideCue[] =>
+  seeds.map(([section, title, text, kind = "lyrics"], index) => ({
+    id: `${prefix}-${index + 1}`,
+    number: index + 1,
+    section,
+    title,
+    text,
+    kind,
+  }));
+
+/**
+ * Clean-room placeholder slide decks used by the built-in simulator. The
+ * visual grid mirrors the live presentation payload shape, so replacing this
+ * with ProPresenter / EasyWorship data later requires no Show Mode changes.
+ */
+const SLIDE_SETS: Record<string, SlideCue[]> = {
+  "Pre-Service Announcements": makeSlideSet("preservice", [
+    ["Welcome", "Welcome", "Welcome! Service begins in 5 minutes.", "title"],
+    ["Announcements", "Kids Check-In", "Kids check-in is open in the lobby.", "media"],
+    ["Announcements", "Tonight", "Youth group meets tonight at 6:00 PM.", "media"],
+    ["Next Steps", "New Here?", "Stop by the Welcome Desk for a gift.", "media"],
+    ["Giving", "Give Online", "Give online or at the giving boxes.", "media"],
+    ["Community", "Small Groups", "Join a small group this fall.", "media"],
+    ["Prayer", "Prayer Team", "Prayer team is available after service.", "media"],
+    ["Countdown", "2 Minutes", "Worship begins in 2 minutes.", "title"],
+  ]),
+  "5-Minute Countdown": makeSlideSet("countdown", [
+    ["Countdown", "5:00", "Worship begins in 5 minutes.", "title"],
+    ["Countdown", "4:00", "Worship begins in 4 minutes.", "title"],
+    ["Countdown", "3:00", "Worship begins in 3 minutes.", "title"],
+    ["Countdown", "2:00", "Worship begins in 2 minutes.", "title"],
+    ["Countdown", "1:00", "Worship begins in 1 minute.", "title"],
+  ]),
+  "Praise (Song 1)": makeSlideSet("worship", [
+    ["Verse 1", "Verse 1", "We lift our eyes to the morning light", "lyrics"],
+    ["Verse 1", "Verse 1 (cont.)", "Your faithfulness carries us through the night", "lyrics"],
+    ["Chorus", "Chorus", "Holy, holy, You are worthy", "lyrics"],
+    ["Chorus", "Chorus (cont.)", "All the earth will sing Your praise", "lyrics"],
+    ["Verse 2", "Verse 2", "We fix our hearts on the hope You bring", "lyrics"],
+    ["Verse 2", "Verse 2 (cont.)", "Every fear is quieted when we sing", "lyrics"],
+    ["Bridge", "Bridge", "You are the King of glory", "lyrics"],
+    ["Bridge", "Bridge (repeat)", "You are the King of glory", "lyrics"],
+    ["Chorus", "Final Chorus", "Holy, holy, You are worthy", "lyrics"],
+    ["Tag", "Tag", "Jesus, You are worthy", "lyrics"],
+  ]),
+  "Welcome & Next Steps": makeSlideSet("welcome", [
+    ["Welcome", "Welcome Home", "We are glad you are here today.", "title"],
+    ["Announcements", "Announcements", "Take a moment to review this week's news.", "media"],
+    ["Next Steps", "Next Steps", "Find community, serve, and grow with us.", "media"],
+    ["Giving", "Generosity", "Thank you for supporting the mission.", "media"],
+    ["Prayer", "Prayer", "Prayer team is available at the front.", "media"],
+    ["Closing", "See You Soon", "Join us again next Sunday.", "title"],
+  ]),
+  "Sermon: Hope Anchored": makeSlideSet("sermon", [
+    ["Sermon", "Hope Anchored", "A living hope for every season.", "title"],
+    ["Scripture", "Hebrews 6:19", "We have this hope as an anchor for the soul.", "scripture"],
+    ["Point 1", "Hope Holds", "Hope holds us steady when the storm comes.", "lyrics"],
+    ["Point 2", "Hope Looks Up", "Hope looks beyond today's circumstance.", "lyrics"],
+    ["Point 3", "Hope Is Anchored", "Hope is anchored in the person of Christ.", "lyrics"],
+    ["Application", "Respond", "Where is God inviting you to trust Him?", "media"],
+    ["Prayer", "Prayer", "Pray for hope in the waiting.", "media"],
+    ["Closing", "Hope Anchored", "Go from here anchored in hope.", "title"],
+  ]),
+  "Benediction & Dismissal": makeSlideSet("benediction", [
+    ["Benediction", "Benediction", "May the God of hope fill you with all joy.", "scripture"],
+    ["Blessing", "Blessing", "Go in peace, rooted and grounded in love.", "scripture"],
+    ["Sending", "Sending", "You are sent to carry hope to the world.", "media"],
+    ["Dismissal", "Dismissal", "Thank you for worshiping with us today.", "title"],
+  ]),
+};
+
+const slideSetFor = (label: string): SlideCue[] =>
+  SLIDE_SETS[label] ??
+  makeSlideSet(`adhoc-${label.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`, [
+    [label, label, label, "title"],
+    ["Ready", "Ready", "Slide content is waiting for the live presentation feed.", "media"],
+  ]);
+
+const INITIAL_SLIDES = slideSetFor("Pre-Service Announcements");
+
+function applySlidePosition(s: AppStateSnapshot, slideNumber: number) {
+  const slides = s.slides.slides ?? [];
+  const total = Math.max(1, slides.length || s.slides.totalSlides);
+  const target = Math.max(1, Math.min(total, slideNumber));
+  s.slides.currentSlide = target;
+  s.slides.totalSlides = total;
+  s.slides.cleared = false;
+  s.slides.currentText = slides[target - 1]?.text ?? s.slides.currentText;
+  s.slides.nextText = slides[target]?.text ?? "";
 }
 
 const initialSimState = (): AppStateSnapshot => ({
@@ -173,12 +500,13 @@ const initialSimState = (): AppStateSnapshot => ({
     playlistName: "Sunday 10:30 AM",
     presentationName: "Pre-Service Announcements",
     currentSlide: 1,
-    totalSlides: 8,
-    currentText: "Welcome! Service begins in 5 minutes.",
-    nextText: "5-Minute Countdown Video",
+    totalSlides: INITIAL_SLIDES.length,
+    currentText: INITIAL_SLIDES[0]?.text ?? "",
+    nextText: INITIAL_SLIDES[1]?.text ?? "",
     cleared: false,
     stageMessage: "Doors Open • Mic Check Complete",
     transportLayer: "presentation (Auto-Advance Active)",
+    slides: INITIAL_SLIDES,
   },
   cues: [
     {
@@ -259,8 +587,13 @@ export const bridge = {
       if (simState.canvases[0]) simState.canvases[0].activeScene = cue.obsScene;
       if (simState.canvases[1]) simState.canvases[1].activeScene = cue.verticalScene;
       simState.activeCameraPresetId = cue.cameraPresetId;
+      const nextSlides = slideSetFor(cue.slideLabel);
       simState.slides.presentationName = cue.slideLabel;
+      simState.slides.slides = nextSlides;
       simState.slides.currentSlide = 1;
+      simState.slides.totalSlides = nextSlides.length;
+      simState.slides.currentText = nextSlides[0]?.text ?? "";
+      simState.slides.nextText = nextSlides[1]?.text ?? "";
       simState.slides.cleared = false;
       simState.dcas = simState.dcas.map((d) => ({
         ...d,
@@ -356,14 +689,38 @@ export const bridge = {
   async triggerSlideAction(action: "prev" | "next" | "clear"): Promise<AppStateSnapshot> {
     if (isTauri()) return invokeTauri("trigger_slide_action", { action });
     if (action === "next") {
-      simState.slides.cleared = false;
-      simState.slides.currentSlide = Math.min(simState.slides.totalSlides, simState.slides.currentSlide + 1);
+      applySlidePosition(simState, simState.slides.currentSlide + 1);
     } else if (action === "prev") {
-      simState.slides.cleared = false;
-      simState.slides.currentSlide = Math.max(1, simState.slides.currentSlide - 1);
+      applySlidePosition(simState, simState.slides.currentSlide - 1);
     } else {
       simState.slides.cleared = !simState.slides.cleared;
+      simState.eventLog.unshift(
+        `[propresenter] ${simState.slides.cleared ? "CLEAR" : "RESTORE"} layer requested for '${simState.slides.presentationName}'`
+      );
     }
+    return structuredClone(simState);
+  },
+
+  async goToSlide(slideNumber: number): Promise<AppStateSnapshot> {
+    if (isTauri()) {
+      // The native command surface only exposes relative slide actions today.
+      // Drive it to the requested index so Show Mode remains functional.
+      const current = await invokeTauri<AppStateSnapshot>("get_app_state");
+      const delta = slideNumber - current.slides.currentSlide;
+      if (delta === 0 && current.slides.cleared) {
+        return invokeTauri<AppStateSnapshot>("trigger_slide_action", { action: "clear" });
+      }
+      const action = delta >= 0 ? "next" : "prev";
+      let result = current;
+      for (let i = 0; i < Math.abs(delta); i += 1) {
+        result = await invokeTauri<AppStateSnapshot>("trigger_slide_action", { action });
+      }
+      return result;
+    }
+    applySlidePosition(simState, slideNumber);
+    simState.eventLog.unshift(
+      `[propresenter] Direct slide select -> ${simState.slides.currentSlide}/${simState.slides.totalSlides} '${simState.slides.presentationName}'`
+    );
     return structuredClone(simState);
   },
 

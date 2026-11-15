@@ -1,11 +1,77 @@
 pub mod protocols;
+mod runtime;
 mod state;
 
+use runtime::events::{CueProgressEvent, EventSink, HealthEvent, MeterEvent, StatePatch};
+use runtime::obs_adapter::ObsCommand;
+use runtime::propresenter_adapter::ProPresenterCommand;
+use runtime::x32_adapter::X32Command;
+use runtime::{AdapterCommand, AdapterRegistry, RuntimeConfig};
 use state::{
-    recompute_derived_alerts, AppStateSnapshot, CueVerificationReport, CueVerificationStep,
-    ManagedState, UndoEntry,
+    recompute_derived_alerts, with_state, AppStateSnapshot, CueVerificationReport,
+    CueVerificationStep, ManagedState, ServiceCue, SharedState, UndoEntry,
 };
-use tauri::State;
+use std::sync::Arc;
+use tauri::{Emitter, Manager, State};
+
+/// Tauri implementation of the adapter event surface.
+struct TauriEventSink {
+    app: tauri::AppHandle,
+    state: SharedState,
+}
+
+impl TauriEventSink {
+    fn new(app: tauri::AppHandle, state: SharedState) -> Self {
+        Self { app, state }
+    }
+}
+
+impl EventSink for TauriEventSink {
+    fn health(&self, event: HealthEvent) {
+        let _ = self.app.emit("device://health", event);
+    }
+
+    fn meter(&self, event: MeterEvent) {
+        let channel = format!("meter://{}", event.domain);
+        let _ = self.app.emit(&channel, event);
+    }
+
+    fn state(&self, patch: StatePatch) {
+        let channel = format!("state://{}", patch.domain);
+        let _ = self.app.emit(&channel, patch);
+    }
+
+    fn cue_progress(&self, event: CueProgressEvent) {
+        let _ = self.app.emit("cue://progress", event);
+    }
+
+    fn log(&self, line: String) {
+        let snapshot = with_state(&self.state, |snapshot| {
+            snapshot.push_event_log(line.clone());
+            snapshot.event_log.first().cloned().unwrap_or(line)
+        });
+        let _ = self.app.emit(
+            "state://log",
+            StatePatch::new("log", serde_json::json!({ "eventLogEntry": snapshot })),
+        );
+    }
+}
+
+fn dispatch(state: &State<ManagedState>, command: AdapterCommand) -> bool {
+    let runtime = state.runtime.lock().unwrap().clone();
+    runtime
+        .map(|registry| registry.dispatch(command))
+        .unwrap_or(false)
+}
+
+fn live_registry(state: &State<ManagedState>) -> Option<Arc<AdapterRegistry>> {
+    state.runtime.lock().unwrap().clone()
+}
+
+fn dca_number(id: &str) -> Option<u8> {
+    id.strip_prefix("dca-")?.parse().ok()
+}
+
 
 fn push_undo(state: &State<ManagedState>, current: &AppStateSnapshot, label: String) {
     let mut stack = state.undo_stack.lock().unwrap();
@@ -31,7 +97,11 @@ fn get_app_state(state: State<ManagedState>) -> AppStateSnapshot {
 }
 
 #[tauri::command]
-fn trigger_cue(cue_index: usize, state: State<ManagedState>) -> AppStateSnapshot {
+fn trigger_cue(
+    cue_index: usize,
+    app: tauri::AppHandle,
+    state: State<ManagedState>,
+) -> AppStateSnapshot {
     let mut inner = state.inner.lock().unwrap();
     if cue_index >= inner.cues.len() {
         return inner.clone();
@@ -82,64 +152,164 @@ fn trigger_cue(cue_index: usize, state: State<ManagedState>) -> AppStateSnapshot
         if !inner.record_chapters.contains(&chapter_entry) {
             inner.record_chapters.push(chapter_entry);
         }
+
+        // Fan the same plan out to live adapters (no-op in simulator mode).
+        dispatch_cue_actions(&state, &cue);
     }
+
+    let mut steps = verification_steps(&cue, mode_tag);
+    apply_live_status(&state, &mut steps);
 
     inner.last_verification = Some(CueVerificationReport {
         cue_title: format!("{}. {}", cue.index, cue.title),
         rehearsal: inner.rehearsal_mode,
         timestamp: "Just now".into(),
-        steps: vec![
-            CueVerificationStep {
-                domain: "ProPresenter v1".into(),
-                expected: format!("Presentation == '{}'", cue.slide_label),
-                observed: format!("POST /v1/status/updates confirmed '{}'", cue.slide_label),
-                status: mode_tag.into(),
-                latency_ms: 4,
-            },
-            CueVerificationStep {
-                domain: "Behringer X32 OSC".into(),
-                expected: format!(
-                    "Unmute {:?}, Mute {:?}",
-                    cue.unmute_dcas, cue.mute_dcas
-                ),
-                observed: "UDP :10023 /dca/1..4/on verified".into(),
-                status: mode_tag.into(),
-                latency_ms: 2,
-            },
-            CueVerificationStep {
-                domain: "OBS 33 + Streamlabs Dual-Canvas".into(),
-                expected: format!("16:9='{}', 9:16='{}'", cue.obs_scene, cue.vertical_scene),
-                observed: format!(
-                    "SerialFrame + CreateRecordChapter('{}') acked",
-                    cue.record_chapter
-                ),
-                status: mode_tag.into(),
-                latency_ms: 5,
-            },
-            CueVerificationStep {
-                domain: "NDI 6 / VISCA PTZ".into(),
-                expected: format!("Preset == '{}'", cue.camera_preset_id),
-                observed: "Tally + PTZ preset settled".into(),
-                status: mode_tag.into(),
-                latency_ms: 3,
-            },
-        ],
+        steps: steps.clone(),
     });
 
     let mode_label = if inner.rehearsal_mode { "DRY-RUN" } else { "EXECUTED" };
     inner.event_log.insert(
         0,
         format!(
-            "[cue-engine] {} Cue {}. '{}' (4/4 post-conditions verified)",
+            "[cue-engine] {} Cue {}. '{}' ({} post-condition steps)",
             mode_label,
             cue.index,
-            cue.title
+            cue.title,
+            steps.len()
         ),
     );
     recompute_derived_alerts(&mut inner);
     sync_undo_metadata(&state, &mut inner);
-    inner.clone()
+    let snapshot = inner.clone();
+    drop(inner);
+
+    let sink = TauriEventSink::new(app, state.inner.clone());
+    let total = steps.len();
+    sink.cue_progress(CueProgressEvent::new(
+        cue_index,
+        0,
+        total,
+        "cue-engine",
+        "running",
+        0,
+    ));
+    for (index, step) in steps.iter().enumerate() {
+        let status = step.status.to_ascii_lowercase();
+        let mut event = CueProgressEvent::new(
+            cue_index,
+            index,
+            total,
+            step.domain.clone(),
+            status.clone(),
+            step.latency_ms as u64,
+        );
+        if status == "drift" {
+            event = event.with_error("live adapter unavailable or post-condition not verified");
+        }
+        sink.cue_progress(event);
+    }
+
+    snapshot
 }
+
+fn verification_steps(cue: &ServiceCue, mode_tag: &str) -> Vec<CueVerificationStep> {
+    vec![
+        CueVerificationStep {
+            domain: "ProPresenter v1".into(),
+            expected: format!("Presentation == '{}'", cue.slide_label),
+            observed: format!("POST /v1/status/updates confirmed '{}'", cue.slide_label),
+            status: mode_tag.into(),
+            latency_ms: 4,
+        },
+        CueVerificationStep {
+            domain: "Behringer X32 OSC".into(),
+            expected: format!("Unmute {:?}, Mute {:?}", cue.unmute_dcas, cue.mute_dcas),
+            observed: "UDP :10023 /dca/1..4/on verified".into(),
+            status: mode_tag.into(),
+            latency_ms: 2,
+        },
+        CueVerificationStep {
+            domain: "OBS 33 + Streamlabs Dual-Canvas".into(),
+            expected: format!("16:9='{}', 9:16='{}'", cue.obs_scene, cue.vertical_scene),
+            observed: format!(
+                "SerialFrame + CreateRecordChapter('{}') acked",
+                cue.record_chapter
+            ),
+            status: mode_tag.into(),
+            latency_ms: 5,
+        },
+        CueVerificationStep {
+            domain: "NDI 6 / VISCA PTZ".into(),
+            expected: format!("Preset == '{}'", cue.camera_preset_id),
+            observed: "Tally + PTZ preset settled".into(),
+            status: mode_tag.into(),
+            latency_ms: 3,
+        },
+    ]
+}
+
+fn dispatch_cue_actions(state: &State<ManagedState>, cue: &ServiceCue) {
+    for id in &cue.unmute_dcas {
+        if let Some(number) = dca_number(id) {
+            dispatch(
+                state,
+                AdapterCommand::X32(X32Command::SetDcaMute {
+                    number,
+                    muted: false,
+                }),
+            );
+        }
+    }
+    for id in &cue.mute_dcas {
+        if let Some(number) = dca_number(id) {
+            dispatch(
+                state,
+                AdapterCommand::X32(X32Command::SetDcaMute {
+                    number,
+                    muted: true,
+                }),
+            );
+        }
+    }
+
+    dispatch(
+        state,
+        AdapterCommand::Obs(ObsCommand::SetProgramScene(cue.obs_scene.clone())),
+    );
+    dispatch(
+        state,
+        AdapterCommand::Obs(ObsCommand::CreateRecordChapter(cue.record_chapter.clone())),
+    );
+
+    if cue.index == 2 {
+        dispatch(state, AdapterCommand::Obs(ObsCommand::StartStream));
+        dispatch(state, AdapterCommand::Obs(ObsCommand::StartRecord));
+    }
+}
+
+fn apply_live_status(state: &State<ManagedState>, steps: &mut [CueVerificationStep]) {
+    let Some(registry) = live_registry(state) else {
+        return;
+    };
+    for step in steps {
+        let kind = if step.domain.contains("ProPresenter") {
+            protocols::DeviceKind::ProPresenter
+        } else if step.domain.contains("X32") {
+            protocols::DeviceKind::X32
+        } else if step.domain.contains("OBS") {
+            protocols::DeviceKind::Obs
+        } else if step.domain.contains("NDI") {
+            protocols::DeviceKind::Ndi
+        } else {
+            continue;
+        };
+        if !registry.has(kind) {
+            step.status = "DRIFT".into();
+            step.observed = format!("{} (live adapter not connected)", step.observed);
+        }
+    }
+}
+
 
 #[tauri::command]
 fn undo_last_cue(state: State<ManagedState>) -> AppStateSnapshot {
@@ -194,18 +364,34 @@ fn toggle_beltpack_fault(state: State<ManagedState>) -> AppStateSnapshot {
 #[tauri::command]
 fn toggle_dca_mute(dca_id: String, state: State<ManagedState>) -> AppStateSnapshot {
     let mut inner = state.inner.lock().unwrap();
+    let mut command = None;
     if let Some(dca) = inner.dcas.iter_mut().find(|d| d.id == dca_id) {
         dca.muted = !dca.muted;
+        command = Some((dca.number, dca.muted));
     }
     recompute_derived_alerts(&mut inner);
+    if let Some((number, muted)) = command {
+        dispatch(
+            &state,
+            AdapterCommand::X32(X32Command::SetDcaMute { number, muted }),
+        );
+    }
     inner.clone()
 }
 
 #[tauri::command]
 fn nudge_dca_level(dca_id: String, delta_db: f32, state: State<ManagedState>) -> AppStateSnapshot {
     let mut inner = state.inner.lock().unwrap();
+    let mut command = None;
     if let Some(dca) = inner.dcas.iter_mut().find(|d| d.id == dca_id) {
         dca.level_db = (dca.level_db + delta_db).clamp(dca.min_db, dca.max_db);
+        command = Some((dca.number, dca.level_db));
+    }
+    if let Some((number, db)) = command {
+        dispatch(
+            &state,
+            AdapterCommand::X32(X32Command::SetDcaLevel { number, db }),
+        );
     }
     inner.clone()
 }
@@ -227,15 +413,31 @@ fn trigger_slide_action(action: String, state: State<ManagedState>) -> AppStateS
             if inner.slides.current_slide < inner.slides.total_slides {
                 inner.slides.current_slide += 1;
             }
+            dispatch(
+                &state,
+                AdapterCommand::ProPresenter(ProPresenterCommand::Next),
+            );
         }
         "prev" => {
             inner.slides.cleared = false;
             if inner.slides.current_slide > 1 {
                 inner.slides.current_slide -= 1;
             }
+            dispatch(
+                &state,
+                AdapterCommand::ProPresenter(ProPresenterCommand::Previous),
+            );
         }
         "clear" => {
             inner.slides.cleared = !inner.slides.cleared;
+            if inner.slides.cleared {
+                dispatch(
+                    &state,
+                    AdapterCommand::ProPresenter(ProPresenterCommand::ClearLayer(
+                        "slide".into(),
+                    )),
+                );
+            }
         }
         _ => {}
     }
@@ -262,6 +464,34 @@ fn set_broadcast_state(
                 0
             };
         }
+    }
+    let commands: Vec<ObsCommand> = match target_id.as_str() {
+        "all" => {
+            let mut commands = vec![if live {
+                ObsCommand::StartStream
+            } else {
+                ObsCommand::StopStream
+            }];
+            commands.push(if live {
+                ObsCommand::StartRecord
+            } else {
+                ObsCommand::StopRecord
+            });
+            commands
+        }
+        "record" => vec![if live {
+            ObsCommand::StartRecord
+        } else {
+            ObsCommand::StopRecord
+        }],
+        other => vec![if live {
+            ObsCommand::StartOutput(other.to_string())
+        } else {
+            ObsCommand::StopOutput(other.to_string())
+        }],
+    };
+    for command in commands {
+        dispatch(&state, AdapterCommand::Obs(command));
     }
     inner.clone()
 }
@@ -340,6 +570,19 @@ fn run_preflight_probes(state: State<ManagedState>) -> AppStateSnapshot {
 pub fn run() {
     tauri::Builder::default()
         .manage(ManagedState::default())
+        .setup(|app| {
+            let managed = app.state::<ManagedState>();
+            let shared = managed.inner.clone();
+            let config = RuntimeConfig::from_env();
+            if config.live {
+                with_state(&shared, |snapshot| snapshot.mock_mode = false);
+                let sink: Arc<dyn EventSink> =
+                    Arc::new(TauriEventSink::new(app.handle().clone(), shared.clone()));
+                let registry = AdapterRegistry::start(&config, shared, sink);
+                *managed.runtime.lock().unwrap() = Some(Arc::new(registry));
+            }
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             get_app_state,
             trigger_cue,

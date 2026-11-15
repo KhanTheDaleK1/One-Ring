@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
+
+pub type SharedState = Arc<Mutex<AppStateSnapshot>>;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -202,32 +204,215 @@ pub struct UndoEntry {
 }
 
 pub struct ManagedState {
-    pub inner: Mutex<AppStateSnapshot>,
-    pub undo_stack: Mutex<Vec<UndoEntry>>,
+    pub inner: Arc<Mutex<AppStateSnapshot>>,
+    pub undo_stack: Arc<Mutex<Vec<UndoEntry>>>,
+    /// Live adapter registry, absent in simulator mode.
+    pub runtime: Mutex<Option<Arc<crate::runtime::AdapterRegistry>>>,
 }
 
 impl Default for ManagedState {
     fn default() -> Self {
         Self {
-            inner: Mutex::new(default_simulator_state()),
-            undo_stack: Mutex::new(Vec::new()),
+            inner: Arc::new(Mutex::new(default_simulator_state())),
+            undo_stack: Arc::new(Mutex::new(Vec::new())),
+            runtime: Mutex::new(None),
         }
     }
 }
+
+impl ManagedState {
+    #[allow(dead_code)]
+    pub fn snapshot(&self) -> AppStateSnapshot {
+        self.inner.lock().unwrap().clone()
+    }
+}
+
+/// Run `f` against the shared snapshot and return its result. Never held across an `.await`.
+pub fn with_state<R>(state: &SharedState, f: impl FnOnce(&mut AppStateSnapshot) -> R) -> R {
+    let mut guard = state.lock().unwrap();
+    f(&mut guard)
+}
+
+impl AppStateSnapshot {
+    /// Create or update the health strip entry for `id`. Returns true if it changed.
+    pub fn set_health(
+        &mut self,
+        id: &str,
+        label: &str,
+        status: &str,
+        detail: &str,
+        protocol: &str,
+        latency_ms: u32,
+    ) -> bool {
+        if let Some(entry) = self.health.iter_mut().find(|h| h.id == id) {
+            let changed = entry.status != status
+                || entry.detail != detail
+                || entry.latency_ms != latency_ms;
+            entry.label = label.to_string();
+            entry.status = status.to_string();
+            entry.detail = detail.to_string();
+            entry.protocol = protocol.to_string();
+            entry.latency_ms = latency_ms;
+            changed
+        } else {
+            self.health.push(DomainHealth {
+                id: id.to_string(),
+                label: label.to_string(),
+                status: status.to_string(),
+                detail: detail.to_string(),
+                protocol: protocol.to_string(),
+                latency_ms,
+            });
+            true
+        }
+    }
+
+    pub fn push_event_log(&mut self, line: String) {
+        self.event_log.insert(0, line);
+        if self.event_log.len() > 200 {
+            self.event_log.truncate(200);
+        }
+    }
+
+    /// Apply a DCA mute/level update. Returns the refreshed DCA array.
+    pub fn apply_dca(
+        &mut self,
+        number: u8,
+        muted: Option<bool>,
+        level_db: Option<f32>,
+    ) -> Vec<DcaChannel> {
+        if let Some(dca) = self.dcas.iter_mut().find(|d| d.number == number) {
+            if let Some(muted) = muted {
+                dca.muted = muted;
+            }
+            if let Some(level_db) = level_db {
+                dca.level_db = level_db.clamp(dca.min_db, dca.max_db);
+            }
+        }
+        self.dcas.clone()
+    }
+
+    /// Apply a metered dBFS value to a DCA by number. `None` means silence.
+    pub fn apply_dca_meter(&mut self, number: u8, db: Option<f32>) -> Vec<DcaChannel> {
+        if let Some(dca) = self.dcas.iter_mut().find(|d| d.number == number) {
+            match db {
+                Some(db) => {
+                    dca.signal_db = db;
+                    dca.signal_present = db > -60.0;
+                }
+                None => {
+                    dca.signal_db = -90.0;
+                    dca.signal_present = false;
+                }
+            }
+        }
+        self.dcas.clone()
+    }
+
+    /// Merge partial slide fields and return the refreshed slides state.
+    pub fn apply_slides(&mut self, patch: SlidesPatch) -> SlideState {
+        if let Some(v) = patch.playlist_name {
+            self.slides.playlist_name = v;
+        }
+        if let Some(v) = patch.presentation_name {
+            self.slides.presentation_name = v;
+        }
+        if let Some(v) = patch.current_slide {
+            self.slides.current_slide = v;
+        }
+        if let Some(v) = patch.total_slides {
+            self.slides.total_slides = v;
+        }
+        if let Some(v) = patch.current_text {
+            self.slides.current_text = v;
+        }
+        if let Some(v) = patch.next_text {
+            self.slides.next_text = v;
+        }
+        if let Some(v) = patch.cleared {
+            self.slides.cleared = v;
+        }
+        if let Some(v) = patch.stage_message {
+            self.slides.stage_message = v;
+        }
+        self.slides.clone()
+    }
+
+    /// Update the live/bitrate state of every broadcast target and return the array.
+    pub fn apply_broadcast_live(&mut self, live: Option<bool>, record_live: Option<bool>) -> Vec<BroadcastTarget> {
+        for b in &mut self.broadcasts {
+            let target = if b.id == "record" { record_live } else { live };
+            if let Some(live) = target {
+                b.live = live;
+                b.bitrate_kbps = if live {
+                    if b.id == "record" { 12_000 } else { 5_800 }
+                } else {
+                    0
+                };
+                if !live {
+                    b.elapsed_sec = 0;
+                }
+            }
+        }
+        self.broadcasts.clone()
+    }
+
+    /// Set the active OBS program scene (and matching horizontal canvas).
+    pub fn apply_obs_scene(&mut self, program: Option<String>, vertical: Option<String>) -> Vec<BroadcastCanvas> {
+        if let Some(scene) = program {
+            self.obs_scene = scene;
+            if let Some(c) = self.canvases.get_mut(0) {
+                c.active_scene = self.obs_scene.clone();
+            }
+        }
+        if let Some(scene) = vertical {
+            self.vertical_scene = scene;
+            if let Some(c) = self.canvases.get_mut(1) {
+                c.active_scene = self.vertical_scene.clone();
+            }
+        }
+        self.canvases.clone()
+    }
+
+    pub fn apply_canvases(&mut self, canvases: Vec<BroadcastCanvas>) -> Vec<BroadcastCanvas> {
+        if !canvases.is_empty() {
+            self.canvases = canvases;
+        }
+        self.canvases.clone()
+    }
+}
+
+/// Partial slide update produced by the ProPresenter status stream.
+#[derive(Debug, Clone, Default)]
+pub struct SlidesPatch {
+    pub playlist_name: Option<String>,
+    pub presentation_name: Option<String>,
+    pub current_slide: Option<u32>,
+    pub total_slides: Option<u32>,
+    pub current_text: Option<String>,
+    pub next_text: Option<String>,
+    pub cleared: Option<bool>,
+    pub stage_message: Option<String>,
+}
+
 
 pub fn recompute_derived_alerts(state: &mut AppStateSnapshot) {
     // Check "Silent Pastor Mic" condition: Pastor DCA (dca-1) is unmuted during Sermon/Welcome,
     // but Dante Conmon UDP 8751 metering shows 0xFE (<-90 dBFS) due to beltpack mute/power fault.
     if let Some(pastor) = state.dcas.iter_mut().find(|d| d.id == "dca-1") {
-        if state.beltpack_fault_simulated {
-            pastor.signal_db = -90.0;
-            pastor.signal_present = false;
-        } else if !pastor.muted {
-            pastor.signal_db = -11.5;
-            pastor.signal_present = true;
-        } else {
-            pastor.signal_db = -58.0;
-            pastor.signal_present = false;
+        // In live mode the signal values come from real X32/Dante meter events; only the
+        // simulator synthesizes them.
+        if state.mock_mode {
+            if state.beltpack_fault_simulated {
+                pastor.signal_db = -90.0;
+                pastor.signal_present = false;
+            } else if !pastor.muted {
+                pastor.signal_db = -11.5;
+                pastor.signal_present = true;
+            } else {
+                pastor.signal_db = -58.0;
+                pastor.signal_present = false;
+            }
         }
     }
 

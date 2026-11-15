@@ -1,6 +1,14 @@
 import React, { useEffect, useState } from "react";
 import { Cpu, Lock, AlertOctagon, FlaskConical } from "lucide-react";
-import { bridge } from "./bridge";
+import {
+  applyCueProgress,
+  applyHealthEvent,
+  applyMeterEvent,
+  applyStatePatch,
+  bridge,
+  subscribeEvents,
+} from "./bridge";
+import type { UnlistenFn } from "@tauri-apps/api/event";
 import type { AppStateSnapshot, ViewMode } from "./types";
 import { PreflightView } from "./components/PreflightView";
 import { ShowModeView } from "./components/ShowModeView";
@@ -11,11 +19,41 @@ export const App: React.FC = () => {
   const [mode, setMode] = useState<ViewMode>("preflight");
 
   useEffect(() => {
-    bridge.getAppState().then(setState);
+    let disposed = false;
+    let unlisten: UnlistenFn | undefined;
+
+    bridge.getAppState().then((snapshot) => {
+      if (disposed) return;
+      setState(snapshot);
+
+      // Live mode hydrates once, then only listens for pushed patches. The simulator keeps
+      // its 1 Hz tick so the mock bitrate/timer still animates in the browser.
+      if (!snapshot.mockMode) {
+        subscribeEvents({
+          onHealth: (event) =>
+            setState((prev) => (prev ? applyHealthEvent(prev, event) : prev)),
+          onMeter: (event) =>
+            setState((prev) => (prev ? applyMeterEvent(prev, event) : prev)),
+          onStatePatch: (event) =>
+            setState((prev) => (prev ? applyStatePatch(prev, event) : prev)),
+          onCueProgress: (event) =>
+            setState((prev) => (prev ? applyCueProgress(prev, event) : prev)),
+        }).then((fn) => {
+          if (disposed) fn();
+          else unlisten = fn;
+        });
+      }
+    });
+
     const timer = setInterval(() => {
       setState((prev) => (prev?.mockMode ? bridge.tickSimulator() : prev));
     }, 1000);
-    return () => clearInterval(timer);
+
+    return () => {
+      disposed = true;
+      clearInterval(timer);
+      unlisten?.();
+    };
   }, []);
 
   if (!state) {
@@ -187,6 +225,7 @@ export const App: React.FC = () => {
           onNudgeDca={(id, delta) => bridge.nudgeDcaLevel(id, delta).then(setState)}
           onRecallCamera={(id) => bridge.recallCameraPreset(id).then(setState)}
           onSlideAction={(act) => bridge.triggerSlideAction(act).then(setState)}
+          onSelectSlide={(slideNumber) => bridge.goToSlide(slideNumber).then(setState)}
           onBroadcastToggle={(id, live) => bridge.setBroadcastState(id, live).then(setState)}
         />
       )}

@@ -92,6 +92,17 @@ export interface NdiReceiver {
   tallyProgram: boolean;
 }
 
+export type SlideKind = "title" | "lyrics" | "scripture" | "media" | "blank";
+
+export interface SlideCue {
+  id: string;
+  number: number;
+  section: string;
+  title: string;
+  text: string;
+  kind: SlideKind;
+}
+
 export interface SlideState {
   app: string;
   playlistName: string;
@@ -103,6 +114,12 @@ export interface SlideState {
   cleared: boolean;
   stageMessage: string;
   transportLayer: string;
+  /**
+   * Live slide list for the active presentation. Optional so older native
+   * backends still hydrate; the Show Mode grid synthesises placeholders when
+   * this is absent.
+   */
+  slides?: SlideCue[];
 }
 
 export interface ServiceCue {
