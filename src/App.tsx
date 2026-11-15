@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { Cpu, Lock } from "lucide-react";
+import { Cpu, Lock, AlertOctagon, FlaskConical } from "lucide-react";
 import { bridge } from "./bridge";
 import type { AppStateSnapshot, ViewMode } from "./types";
 import { PreflightView } from "./components/PreflightView";
@@ -22,6 +22,8 @@ export const App: React.FC = () => {
     return <div style={{ padding: 32, color: "#9CA3AF" }}>Loading One Ring...</div>;
   }
 
+  const anyLive = state.broadcasts.some((b) => b.live);
+
   return (
     <div style={{ minHeight: "100vh", background: "#0B0D10", color: "#F3F4F6" }}>
       {/* TOP HEALTH STRIP */}
@@ -29,15 +31,15 @@ export const App: React.FC = () => {
         style={{
           height: 64,
           padding: "0 16px",
-          background: "#14181F",
-          borderBottom: "1px solid #252C38",
+          background: anyLive ? "#1F1215" : "#14181F",
+          borderBottom: `1px solid ${anyLive ? "#DC2626" : "#252C38"}`,
           display: "flex",
           alignItems: "center",
           justifyContent: "space-between",
           gap: 12,
         }}
       >
-        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
           <strong style={{ fontSize: 16, letterSpacing: "-0.01em" }}>ONE RING</strong>
           <span className="mono" style={{ fontSize: 12, color: "#9CA3AF" }}>
             {state.serviceName}
@@ -60,13 +62,34 @@ export const App: React.FC = () => {
               <Cpu size={12} /> SIMULATOR
             </span>
           )}
+          <button
+            type="button"
+            onClick={() => bridge.toggleRehearsalMode().then(setState)}
+            className="mono"
+            title="Toggle Ghost / Dry-Run Rehearsal Mode (verifies cue plans without touching live outputs)"
+            style={{
+              fontSize: 11,
+              padding: "4px 9px",
+              borderRadius: 6,
+              cursor: "pointer",
+              background: state.rehearsalMode ? "rgba(245,158,11,0.2)" : "#1C222D",
+              color: state.rehearsalMode ? "#FBBF24" : "#9CA3AF",
+              border: `1px solid ${state.rehearsalMode ? "#F59E0B" : "#2E3746"}`,
+              display: "flex",
+              alignItems: "center",
+              gap: 5,
+            }}
+          >
+            <FlaskConical size={12} />
+            {state.rehearsalMode ? "REHEARSAL (DRY-RUN)" : "LIVE EXEC"}
+          </button>
         </div>
 
         <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
           {state.health.map((h) => (
             <span
               key={h.id}
-              title={h.detail}
+              title={`${h.protocol} — ${h.detail} (${h.latencyMs}ms)`}
               className="mono"
               style={{
                 fontSize: 11,
@@ -88,6 +111,7 @@ export const App: React.FC = () => {
                 }}
               />
               {h.label}
+              <span style={{ color: "#6B7280", fontSize: 10 }}>{h.latencyMs}ms</span>
             </span>
           ))}
         </div>
@@ -117,9 +141,38 @@ export const App: React.FC = () => {
         </div>
       </header>
 
+      {/* SILENT PASTOR MIC BANNER (Dante Conmon UDP :8751 0xFE detector) */}
+      {state.silentMicAlert && (
+        <div
+          style={{
+            background: "rgba(220,38,38,0.22)",
+            borderBottom: "1px solid #EF4444",
+            padding: "10px 20px",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: 12,
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "center", gap: 10, color: "#FCA5A5", fontWeight: 700, fontSize: 14 }}>
+            <AlertOctagon size={18} color="#EF4444" />
+            <span>{state.silentMicAlert}</span>
+          </div>
+          <button
+            type="button"
+            className="btn"
+            onClick={() => bridge.toggleBeltpackFault().then(setState)}
+            style={{ height: 32, padding: "0 12px", fontSize: 12, background: "#7F1D1D", borderColor: "#EF4444" }}
+          >
+            Clear Simulated Beltpack Fault
+          </button>
+        </div>
+      )}
+
       {mode === "preflight" && (
         <PreflightView
           state={state}
+          onRunProbes={() => bridge.runPreflightProbes().then(setState)}
           onEnterShowMode={() => setMode("show")}
           onOpenEngineer={() => setMode("engineer")}
         />
@@ -143,6 +196,10 @@ export const App: React.FC = () => {
           state={state}
           onBroadcastToggle={(id, live) => bridge.setBroadcastState(id, live).then(setState)}
           onToggleDcaMute={(id) => bridge.toggleDcaMute(id).then(setState)}
+          onToggleBeltpackFault={() => bridge.toggleBeltpackFault().then(setState)}
+          onSwitchNdiReceiver={(rxId, src) => bridge.switchNdiReceiver(rxId, src).then(setState)}
+          onAutoHealNdi={() => bridge.autoHealNdiReceivers().then(setState)}
+          onFlashDanteIdentify={(routeId) => bridge.flashDanteIdentify(routeId).then(setState)}
         />
       )}
     </div>

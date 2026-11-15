@@ -5,6 +5,8 @@ export interface DomainHealth {
   label: string;
   status: "ok" | "warn" | "error";
   detail: string;
+  protocol: string;
+  latencyMs: number;
 }
 
 export interface PreflightCheck {
@@ -13,7 +15,17 @@ export interface PreflightCheck {
   title: string;
   status: "pass" | "warn" | "fail";
   detail: string;
+  evidence: string;
   fixLabel?: string | null;
+}
+
+export interface TopologyIssue {
+  id: string;
+  cueId: string;
+  severity: "warn" | "error";
+  domain: string;
+  message: string;
+  autoFixable: boolean;
 }
 
 export interface DcaChannel {
@@ -25,6 +37,9 @@ export interface DcaChannel {
   minDb: number;
   maxDb: number;
   guardMute: boolean;
+  signalDb: number;
+  signalPresent: boolean;
+  danteTxChannel: string;
 }
 
 export interface CameraPreset {
@@ -32,6 +47,8 @@ export interface CameraPreset {
   cameraId: string;
   name: string;
   presetIndex: number;
+  protocol: string;
+  tally: "program" | "preview" | "idle";
 }
 
 export interface BroadcastTarget {
@@ -42,6 +59,37 @@ export interface BroadcastTarget {
   droppedFrames: number;
   elapsedSec: number;
   endpoint: string;
+  canvas: string;
+}
+
+export interface BroadcastCanvas {
+  uuid: string;
+  name: string;
+  aspect: string;
+  resolution: string;
+  activeScene: string;
+  engine: string;
+}
+
+export interface DanteRoute {
+  id: string;
+  rxDevice: string;
+  rxChannel: string;
+  txDevice: string;
+  txChannel: string;
+  rxStatus: "UNICAST" | "MULTICAST" | "PREPARING" | "UNRESOLVED";
+  signalDbfs: number;
+  identifyFlashing: boolean;
+}
+
+export interface NdiReceiver {
+  id: string;
+  receiverName: string;
+  ip: string;
+  subscribedSource: string;
+  expectedSource: string;
+  status: "CONNECTED" | "DRIFT" | "OFFLINE";
+  tallyProgram: boolean;
 }
 
 export interface SlideState {
@@ -53,6 +101,8 @@ export interface SlideState {
   currentText: string;
   nextText: string;
   cleared: boolean;
+  stageMessage: string;
+  transportLayer: string;
 }
 
 export interface ServiceCue {
@@ -61,25 +111,57 @@ export interface ServiceCue {
   title: string;
   actions: string[];
   obsScene: string;
+  verticalScene: string;
   cameraPresetId: string;
   slideLabel: string;
   unmuteDcas: string[];
   muteDcas: string[];
+  recordChapter: string;
+  riskTier: number;
+}
+
+export interface CueVerificationStep {
+  domain: string;
+  expected: string;
+  observed: string;
+  status: "APPLIED" | "REHEARSAL" | "DRIFT";
+  latencyMs: number;
+}
+
+export interface CueVerificationReport {
+  cueTitle: string;
+  rehearsal: boolean;
+  timestamp: string;
+  steps: CueVerificationStep[];
 }
 
 export interface AppStateSnapshot {
   mockMode: boolean;
+  rehearsalMode: boolean;
   serviceName: string;
   activeCueIndex: number;
   canUndo: boolean;
+  undoDepth: number;
+  lastUndoLabel?: string | null;
+  silentMicAlert?: string | null;
+  beltpackFaultSimulated: boolean;
   health: DomainHealth[];
   preflight: PreflightCheck[];
+  topologyIssues: TopologyIssue[];
   dcas: DcaChannel[];
   cameras: CameraPreset[];
   activeCameraPresetId: string;
   obsScene: string;
+  verticalScene: string;
+  canvases: BroadcastCanvas[];
   broadcasts: BroadcastTarget[];
+  recordChapters: string[];
+  danteClock: string;
+  danteRoutes: DanteRoute[];
+  ndiReceivers: NdiReceiver[];
+  ndiSources: string[];
   slides: SlideState;
   cues: ServiceCue[];
-  danteClock: string;
+  lastVerification?: CueVerificationReport | null;
+  eventLog: string[];
 }

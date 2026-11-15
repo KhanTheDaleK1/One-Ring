@@ -102,21 +102,24 @@ Testing church production software without a physical X32, Dante network, or PTZ
 
 | Domain | Targets | Transport & Protocol Details |
 | :--- | :--- | :--- |
-| **FOH Slides** | **ProPresenter** | HTTP REST (`/v1/presentation/...`, `/v1/timers`, `/v1/status/layers`) + WebSocket/chunked status stream for active slide, stage message, and playlist sync. |
+| **FOH Slides** | **ProPresenter** | HTTP REST (`/v1/presentation/...`, `/v1/timers`, `/v1/status/layers`), `POST /v1/status/updates` multiplexed chunked status stream, and ProLink UDP multicast (`224.0.0.90:18514`) two-step preroll per `docs/re-findings/propresenter.md`. |
 | | **EasyWorship** | TCP/WebSocket remote control protocol; integration shaped by `docs/re-findings/easyworship.md` (handshake, schedule item trigger, blackout/clear). |
-| **Livestream** | **OBS Studio** | **OBS WebSocket v5** (`tokio-tungstenite`) with SHA-256 challenge-response auth (`Identify` op), scene switching, `StartStream`/`StopStream`, `StartOutput`/`StopOutput` (for `obs-multi-rtmp` / custom outputs), record state, and source mute. |
-| | **Streamlabs** | Local WebSocket / JSON-RPC named-pipe/port API (authentication token, scene/source visibility, stream/record & multistream toggles) informed by `docs/re-findings/streamlabs.md`. |
+| **Livestream** | **OBS Studio** | **OBS WebSocket v5** (`tokio-tungstenite`) with SHA-256 challenge-response auth (`Identify` op), scene switching, `StartStream`/`StopStream`, `GetCanvasList` (OBS 33 dual-canvas `16:9` + `9:16`), `CreateRecordChapter`, and `StartOutput`/`StopOutput` per `docs/re-findings/obs.md`. |
+| | **Streamlabs** | Local loopback TCP (`127.0.0.1:28194`), Windows Named Pipe (`\\.\pipe\slobs`), or SockJS WebSocket (`:59650/api`) JSON-RPC 2.0 API (`StreamingService`, `ScenesService`, `DualOutputService`, `AudioService`) informed by `docs/re-findings/streamlabs.md`. |
 | | **Multi-Broadcast (YouTube + Facebook)** | Simultaneous dual/multi-destination RTMPS fan-out via either: (1) OBS/Streamlabs multi-output control, or (2) a Rust-managed **local RTMP-to-RTMPS `tee` relay** (`rtmps://a.rtmp.youtube.com/live2/...` + `rtmps://live-api-s.facebook.com:443/rtmp/...`) so a single local encode feeds both platforms with independent per-target start/stop, bitrate/drop telemetry, auto-reconnect, and OS Keychain stream-key storage. |
-| **Audio Mixing** | **Behringer X32** | **OSC over UDP (`:10023`)**. Background task sends `/xremote` every **8 seconds** (required `<10s` keepalive) to receive live board updates. Supports channel faders (`/ch/NN/mix/fader`), mutes (`/ch/NN/mix/on`), DCAs (`/dca/N/fader`, `/dca/N/on`), bus sends, and scene/snippet recall (`/-action/goscene`). |
-| **Dante & NDI** | **Dante** (Controller, DVS, Via, Studio) | mDNS-SD discovery via `_netaudio-arc._tcp.local` and `_netaudio-chan._tcp.local`. Control/routing/clocking hooks wired to `docs/re-findings/dante-*.md` specs (UDP ARC packets, channel subscription, clock master status). |
-| | **NDI 6 Tools** | mDNS-SD discovery via `_ndi._tcp.local`. Source enumeration, NDI routing/matrix switching, tally state, and NDI Bridge/Studio Monitor hooks per `docs/re-findings/ndi-*.md`. |
+| **Audio Mixing** | **Behringer X32** | **OSC over UDP (`:10023`)** per `docs/re-findings/x32.md`. Background task sends `/xremote` every **8 seconds** (required `<10s` keepalive) to receive live board updates. Supports channel faders (`/ch/NN/mix/fader`), mutes (`/ch/NN/mix/on`), DCAs (`/dca/N/fader`, `/dca/N/on`), bus sends, and scene/snippet recall (`/-action/goscene`). |
+| **Dante & NDI** | **Dante** (Controller, DVS, Via, Studio) | mDNS-SD discovery via `_netaudio-arc._tcp.local`, `_netaudio-cmc._tcp.local`, and `_netaudio-chan._tcp.local`. Control/routing/clocking hooks wired to `docs/re-findings/dante.md` (UDP `:4440` ARC packets `0x27FF`/`0x2809` with `RXSTATUS` verification, `0x0063` `IDENTIFY_QUERY` LED flash, and UDP `:8751` Conmon `0xFFFF` header + `0xFE` beltpack mute detection). |
+| | **NDI 6 Tools** | mDNS-SD discovery via `_ndi._tcp.local` and NDI 6 Discovery Service (`TCP :5959` length-prefixed XML). Source enumeration, remote `<control_receiver>` matrix switching, tally state, and NDI PTZ hooks per `docs/re-findings/ndi.md`. |
 | **Cameras** | **VISCA-over-IP** | UDP (`:52381`) with 8-byte VISCA-IP header (payload type + incrementing 32-bit sequence number). Commands: Pan/Tilt/Zoom speed vectors, Preset Recall/Set, Exposure/WB, Tally. |
-| | **NDI PTZ** | NDI PTZ XML/metadata commands (`ntk_ptz_*` / NDI SDK FFI or native wire protocol per RE findings) for pan/tilt/zoom, focus, and preset recall. |
+| | **NDI PTZ** | NDI PTZ XML/metadata commands (`<ntk_ptz_pan_tilt_speed>`, `<ntk_ptz_recall_preset>` per `docs/re-findings/ndi.md`) for pan/tilt/zoom, focus, and preset recall. |
 
 ### Integration Hooks for `docs/re-findings/`
-`ring-discovery` and `ring-av-routing` define a `ProtocolSpec` boundary:
-- Discovery resolves mDNS TXT records and IP/port pairs into normalized `DiscoveredEndpoint` structs.
-- Reverse-engineered packet codecs (e.g., Dante ARC channel subscribe, EasyWorship remote auth, Streamlabs local RPC) live in isolated modules under `crates/ring-*/src/protocols/` with explicit references to `docs/re-findings/<app>.md` and golden packet unit tests.
+`src-tauri/src/protocols/` (and `ring-discovery` / `ring-av-routing`) define clean-room protocol codecs and wire frames directly from `docs/re-findings/`:
+- `dante.md` → `src-tauri/src/protocols/dante.rs`
+- `ndi.md` → `src-tauri/src/protocols/ndi.rs`
+- `obs.md` & `streamlabs.md` → `src-tauri/src/protocols/obs_streamlabs.rs`
+- `propresenter.md` → `src-tauri/src/protocols/propresenter.rs`
+- `x32.md` → `src-tauri/src/protocols/x32.rs`
 
 ---
 
