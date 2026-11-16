@@ -1,6 +1,7 @@
-import React from "react";
+import React, { useMemo } from "react";
 import { Download, Sparkles, X, ExternalLink } from "lucide-react";
 import type { UpdateInfo } from "../types";
+import { openUrl } from "../bridge";
 
 interface UpdateModalProps {
   update: UpdateInfo;
@@ -8,6 +9,52 @@ interface UpdateModalProps {
 }
 
 export const UpdateModal: React.FC<UpdateModalProps> = ({ update, onDismiss }) => {
+  // Determine user OS platform from userAgent
+  const platform = useMemo(() => {
+    if (typeof navigator === "undefined") return "unknown";
+    const ua = navigator.userAgent.toLowerCase();
+    if (ua.includes("mac") || ua.includes("darwin")) return "mac";
+    if (ua.includes("win")) return "windows";
+    if (ua.includes("linux")) return "linux";
+    return "unknown";
+  }, []);
+
+  // Filter installers to only show platform-relevant assets
+  const filteredAssets = useMemo(() => {
+    if (!update.assets || update.assets.length === 0) return [];
+    if (platform === "mac") {
+      const macAssets = update.assets.filter(
+        (a) => a.name.endsWith(".dmg") || a.name.endsWith(".app.tar.gz")
+      );
+      return macAssets.length > 0 ? macAssets : update.assets;
+    }
+    if (platform === "windows") {
+      const winAssets = update.assets.filter(
+        (a) => a.name.endsWith(".exe") || a.name.endsWith(".msi")
+      );
+      return winAssets.length > 0 ? winAssets : update.assets;
+    }
+    return update.assets;
+  }, [update.assets, platform]);
+
+  // Primary installer target based on current platform
+  const primaryDownloadUrl = useMemo(() => {
+    if (platform === "mac") {
+      const dmg = update.assets.find((a) => a.name.endsWith(".dmg"));
+      if (dmg) return dmg.browser_download_url;
+    }
+    if (platform === "windows") {
+      const exe = update.assets.find((a) => a.name.endsWith("-setup.exe") || a.name.endsWith(".msi"));
+      if (exe) return exe.browser_download_url;
+    }
+    return update.download_url || update.html_url;
+  }, [update, platform]);
+
+  const handleDownload = (e: React.MouseEvent, url: string) => {
+    e.preventDefault();
+    openUrl(url);
+  };
+
   return (
     <div
       style={{
@@ -100,7 +147,7 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({ update, onDismiss }) =
             border: "1px solid #1E293B",
             borderRadius: 8,
             padding: 16,
-            maxHeight: 220,
+            maxHeight: 180,
             overflowY: "auto",
             fontSize: 13,
             lineHeight: 1.5,
@@ -115,38 +162,41 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({ update, onDismiss }) =
           </div>
         </div>
 
-        {/* Installer Download Options */}
-        {update.assets.length > 0 && (
+        {/* Filtered Platform Installer Option(s) */}
+        {filteredAssets.length > 0 && (
           <div>
             <div style={{ fontSize: 12, fontWeight: 600, color: "#94A3B8", marginBottom: 8 }}>
-              Available Installers:
+              {platform === "mac" ? "macOS Package:" : platform === "windows" ? "Windows Package:" : "Available Installers:"}
             </div>
             <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-              {update.assets.map((asset) => (
-                <a
+              {filteredAssets.map((asset) => (
+                <button
                   key={asset.name}
-                  href={asset.browser_download_url}
-                  target="_blank"
-                  rel="noreferrer"
+                  type="button"
+                  onClick={(e) => handleDownload(e, asset.browser_download_url)}
                   style={{
                     display: "flex",
                     alignItems: "center",
                     justifyContent: "space-between",
-                    padding: "8px 12px",
+                    padding: "10px 14px",
                     background: "#1E2533",
                     border: "1px solid #2E3748",
                     borderRadius: 6,
                     color: "#60A5FA",
-                    textDecoration: "none",
-                    fontSize: 12,
+                    cursor: "pointer",
+                    fontSize: 13,
+                    textAlign: "left",
+                    width: "100%",
                   }}
                 >
-                  <span>{asset.name}</span>
-                  <div style={{ display: "flex", alignItems: "center", gap: 6, color: "#94A3B8" }}>
-                    <span>{(asset.size / (1024 * 1024)).toFixed(1)} MB</span>
-                    <Download size={14} color="#60A5FA" />
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <Download size={15} color="#60A5FA" />
+                    <span style={{ fontWeight: 600 }}>{asset.name}</span>
                   </div>
-                </a>
+                  <span style={{ color: "#94A3B8", fontSize: 12 }}>
+                    {(asset.size / (1024 * 1024)).toFixed(1)} MB
+                  </span>
+                </button>
               ))}
             </div>
           </div>
@@ -158,7 +208,7 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({ update, onDismiss }) =
             type="button"
             onClick={onDismiss}
             style={{
-              padding: "8px 16px",
+              padding: "9px 16px",
               background: "#1E293B",
               border: "1px solid #334155",
               color: "#CBD5E1",
@@ -169,49 +219,47 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({ update, onDismiss }) =
           >
             Later
           </button>
-          {update.download_url && (
-            <a
-              href={update.download_url}
-              target="_blank"
-              rel="noreferrer"
+          {primaryDownloadUrl && (
+            <button
+              type="button"
+              onClick={(e) => handleDownload(e, primaryDownloadUrl)}
               style={{
                 display: "flex",
                 alignItems: "center",
                 gap: 8,
-                padding: "8px 18px",
+                padding: "9px 18px",
                 background: "#2563EB",
                 border: "1px solid #3B82F6",
                 color: "#FFFFFF",
                 borderRadius: 6,
-                textDecoration: "none",
+                cursor: "pointer",
                 fontWeight: 600,
                 fontSize: 13,
               }}
             >
               <Download size={15} />
-              Download & Install Update
-            </a>
+              {platform === "mac" ? "Download .dmg" : platform === "windows" ? "Download .exe" : "Download Update"}
+            </button>
           )}
-          <a
-            href={update.html_url}
-            target="_blank"
-            rel="noreferrer"
+          <button
+            type="button"
+            onClick={(e) => handleDownload(e, update.html_url)}
             style={{
               display: "flex",
               alignItems: "center",
               gap: 4,
-              padding: "8px 12px",
+              padding: "9px 12px",
               background: "transparent",
               border: "1px solid #334155",
               color: "#94A3B8",
               borderRadius: 6,
-              textDecoration: "none",
+              cursor: "pointer",
               fontSize: 13,
             }}
           >
             <ExternalLink size={14} />
             GitHub
-          </a>
+          </button>
         </div>
       </div>
     </div>

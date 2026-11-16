@@ -592,6 +592,30 @@ fn import_show_file(show: ShowFile, state: State<ManagedState>) -> AppStateSnaps
 }
 
 
+
+#[tauri::command]
+fn open_in_browser(url: String) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    std::process::Command::new("open")
+        .arg(&url)
+        .spawn()
+        .map_err(|e| e.to_string())?;
+
+    #[cfg(target_os = "windows")]
+    std::process::Command::new("cmd")
+        .args(&["/C", "start", "", &url])
+        .spawn()
+        .map_err(|e| e.to_string())?;
+
+    #[cfg(target_os = "linux")]
+    std::process::Command::new("xdg-open")
+        .arg(&url)
+        .spawn()
+        .map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
 #[tauri::command]
 async fn check_update() -> Result<Option<updater::UpdateInfo>, String> {
     tokio::task::spawn_blocking(updater::check_for_updates)
@@ -650,7 +674,8 @@ pub fn run() {
             update_settings,
             export_show_file,
             import_show_file,
-            check_update
+            check_update,
+            open_in_browser
         ])
         .run(tauri::generate_context!())
         .expect("error while running One Ring");

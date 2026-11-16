@@ -754,3 +754,16 @@ export async function checkForUpdate(): Promise<UpdateInfo | null> {
   }
   return invokeTauri<UpdateInfo | null>("check_update");
 }
+
+
+export async function openUrl(url: string): Promise<void> {
+  if (isTauri()) {
+    try {
+      await invokeTauri("open_in_browser", { url });
+      return;
+    } catch {
+      // fallback
+    }
+  }
+  window.open(url, "_blank");
+}
