@@ -1,3 +1,22 @@
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CanvasId {
+    Mixing,
+    Video,
+    Slides,
+    Broadcast,
+    Master,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CanvasTabConfig {
+    pub id: CanvasId,
+    pub label: String,
+    pub enabled: bool,
+}
+
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -989,7 +1008,7 @@ pub fn recompute_derived_alerts(state: &mut AppStateSnapshot) {
 
 pub fn default_simulator_state() -> AppStateSnapshot {
     let mut state = AppStateSnapshot {
-        mock_mode: true,
+        mock_mode: false,
         rehearsal_mode: false,
         service_name: "Untitled Show".into(),
         active_cue_index: 0,

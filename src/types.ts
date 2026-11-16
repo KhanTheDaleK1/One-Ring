@@ -1,12 +1,12 @@
-export type ViewMode =
-  | "engineer"
-  | "preflight"
-  | "show"
-  | "audio"
-  | "slides"
-  | "broadcast"
-  | "cameras"
-  | "settings";
+export type CanvasId = "mixing" | "video" | "slides" | "broadcast" | "master";
+
+export type ViewMode = CanvasId | "settings";
+
+export interface CanvasTabConfig {
+  id: CanvasId;
+  label: string;
+  enabled: boolean;
+}
 
 export interface DomainHealth {
   id: string;
@@ -231,6 +231,8 @@ export interface NdiPtzSettings {
 }
 
 export interface GeneralSettings {
+  canvasTitle: string;
+  canvasTabs: CanvasTabConfig[];
   /** PIN required to unlock Engineer Mode from Volunteer Show Mode. */
   engineerPin: string;
 }

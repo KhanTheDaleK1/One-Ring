@@ -344,6 +344,14 @@ const initialSettings = (): AppSettings => ({
   },
   general: {
     engineerPin: "",
+    canvasTitle: "Main Sanctuary",
+    canvasTabs: [
+      { id: "mixing", label: "Mixing", enabled: true },
+      { id: "video", label: "Video", enabled: true },
+      { id: "slides", label: "Slides", enabled: true },
+      { id: "broadcast", label: "Broadcast", enabled: true },
+      { id: "master", label: "Master", enabled: true },
+    ],
   },
   station: {
     role: "master",
@@ -433,7 +441,7 @@ function rebuildPreflight(s: AppStateSnapshot) {
 }
 
 const initialSimState = (): AppStateSnapshot => ({
-  mockMode: true,
+  mockMode: false,
   rehearsalMode: false,
   serviceName: "Untitled Show",
   activeCueIndex: 0,

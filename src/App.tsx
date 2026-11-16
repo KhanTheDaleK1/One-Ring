@@ -15,15 +15,19 @@ import { ShowModeView } from "./components/ShowModeView";
 import { EngineerView } from "./components/EngineerView";
 import { SettingsView } from "./components/SettingsView";
 import { ShowNameModal } from "./components/ShowNameModal";
+import { WelcomeTour } from "./components/WelcomeTour";
 import { UpdateModal } from "./components/UpdateModal";
 import { checkForUpdate } from "./bridge";
 import type { UpdateInfo } from "./types";
 
 export const App: React.FC = () => {
   const [state, setState] = useState<AppStateSnapshot | null>(null);
-  const [mode, setMode] = useState<ViewMode>("preflight");
+  const [mode, setMode] = useState<ViewMode>("mixing");
   const [availableUpdate, setAvailableUpdate] = useState<UpdateInfo | null>(null);
   const [isEditingShowName, setIsEditingShowName] = useState(false);
+  const [showWelcomeTour, setShowWelcomeTour] = useState(() => {
+    return localStorage.getItem("onering_tour_completed") !== "true";
+  });
 
   useEffect(() => {
     let disposed = false;
@@ -88,13 +92,8 @@ export const App: React.FC = () => {
       }
     });
 
-    const timer = setInterval(() => {
-      setState((prev) => (prev?.mockMode ? bridge.tickSimulator() : prev));
-    }, 1000);
-
     return () => {
       disposed = true;
-      clearInterval(timer);
       unlisten?.();
       unlistenMenu?.();
     };
@@ -143,45 +142,21 @@ export const App: React.FC = () => {
             <span className="mono" style={{ fontWeight: 600 }}>{state.serviceName || "Untitled Show"}</span>
             <Pencil size={11} color="#60A5FA" />
           </button>
-          {state.mockMode && (
-            <span
-              className="mono"
-              style={{
-                fontSize: 11,
-                padding: "3px 8px",
-                borderRadius: 6,
-                background: "rgba(59,130,246,0.16)",
-                color: "#60A5FA",
-                border: "1px solid #1D4ED8",
-                display: "flex",
-                alignItems: "center",
-                gap: 4,
-              }}
-            >
-              <Cpu size={12} /> SIMULATOR
-            </span>
-          )}
-          <button
-            type="button"
-            onClick={() => bridge.toggleRehearsalMode().then(setState)}
-            className="mono"
-            title="Toggle Ghost / Dry-Run Rehearsal Mode (verifies cue plans without touching live outputs)"
+          <span
             style={{
               fontSize: 11,
-              padding: "4px 9px",
-              borderRadius: 6,
-              cursor: "pointer",
-              background: state.rehearsalMode ? "rgba(245,158,11,0.2)" : "#1C222D",
-              color: state.rehearsalMode ? "#FBBF24" : "#9CA3AF",
-              border: `1px solid ${state.rehearsalMode ? "#F59E0B" : "#2E3746"}`,
-              display: "flex",
-              alignItems: "center",
-              gap: 5,
+              color: "#64748B",
+              fontWeight: 600,
+              letterSpacing: "0.04em",
+              textTransform: "uppercase",
+              padding: "2px 8px",
+              background: "#12161F",
+              borderRadius: 4,
+              border: "1px solid #1E2533",
             }}
           >
-            <FlaskConical size={12} />
-            {state.rehearsalMode ? "REHEARSAL (DRY-RUN)" : "LIVE EXEC"}
-          </button>
+            {state.settings.general.canvasTitle || "Main Sanctuary"}
+          </span>
         </div>
 
         <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
@@ -216,34 +191,55 @@ export const App: React.FC = () => {
         </div>
 
         <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-          {(["preflight", "show", "engineer", "settings"] as ViewMode[]).map((m) => (
-            <button
-              key={m}
-              type="button"
-              className="btn"
-              onClick={() => setMode(m)}
-              style={{
-                height: 36,
-                padding: "0 12px",
-                fontSize: 13,
-                background: mode === m ? "#2563EB" : "#1C222D",
-                borderColor: mode === m ? "#60A5FA" : "#2E3746",
-                display: "flex",
-                alignItems: "center",
-                gap: 6,
-              }}
-            >
-              {m === "engineer" && <Lock size={13} />}
-              {m === "settings" && <Settings size={13} />}
-              {m === "preflight"
-                ? "Preflight"
-                : m === "show"
-                  ? "Show Mode"
-                  : m === "engineer"
-                    ? "Engineer"
-                    : "Settings"}
-            </button>
-          ))}
+          {(state.settings.general.canvasTabs || [
+            { id: "mixing", label: "Mixing", enabled: true },
+            { id: "video", label: "Video", enabled: true },
+            { id: "slides", label: "Slides", enabled: true },
+            { id: "broadcast", label: "Broadcast", enabled: true },
+            { id: "master", label: "Master", enabled: true },
+          ])
+            .filter((t) => t.enabled)
+            .map((tab) => (
+              <button
+                key={tab.id}
+                type="button"
+                className="btn"
+                onClick={() => setMode(tab.id as ViewMode)}
+                style={{
+                  height: 36,
+                  padding: "0 14px",
+                  fontSize: 13,
+                  fontWeight: mode === tab.id ? 700 : 500,
+                  background: mode === tab.id ? "#2563EB" : "#1C222D",
+                  borderColor: mode === tab.id ? "#60A5FA" : "#2E3746",
+                  color: mode === tab.id ? "#FFFFFF" : "#CBD5E1",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 6,
+                }}
+              >
+                {tab.label}
+              </button>
+            ))}
+
+          <button
+            type="button"
+            className="btn"
+            onClick={() => setMode("settings")}
+            style={{
+              height: 36,
+              padding: "0 12px",
+              fontSize: 13,
+              background: mode === "settings" ? "#2563EB" : "#1C222D",
+              borderColor: mode === "settings" ? "#60A5FA" : "#2E3746",
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
+            }}
+          >
+            <Settings size={14} />
+            Settings
+          </button>
         </div>
       </header>
 
@@ -275,16 +271,19 @@ export const App: React.FC = () => {
         </div>
       )}
 
-      {mode === "preflight" && (
-        <PreflightView
+      {mode === "mixing" && (
+        <EngineerView
           state={state}
-          onRunProbes={() => bridge.runPreflightProbes().then(setState)}
-          onEnterShowMode={() => setMode("show")}
-          onOpenEngineer={() => setMode("engineer")}
+          onBroadcastToggle={(id, live) => bridge.setBroadcastState(id, live).then(setState)}
+          onToggleDcaMute={(id) => bridge.toggleDcaMute(id).then(setState)}
+          onToggleBeltpackFault={() => bridge.toggleBeltpackFault().then(setState)}
+          onSwitchNdiReceiver={(rxId, src) => bridge.switchNdiReceiver(rxId, src).then(setState)}
+          onAutoHealNdi={() => bridge.autoHealNdiReceivers().then(setState)}
+          onFlashDanteIdentify={(routeId) => bridge.flashDanteIdentify(routeId).then(setState)}
         />
       )}
 
-      {mode === "show" && (
+      {mode === "video" && (
         <ShowModeView
           state={state}
           onTriggerCue={(idx) => bridge.triggerCue(idx).then(setState)}
@@ -298,7 +297,21 @@ export const App: React.FC = () => {
         />
       )}
 
-      {mode === "engineer" && (
+      {mode === "slides" && (
+        <ShowModeView
+          state={state}
+          onTriggerCue={(idx) => bridge.triggerCue(idx).then(setState)}
+          onUndoCue={() => bridge.undoLastCue().then(setState)}
+          onToggleDcaMute={(id) => bridge.toggleDcaMute(id).then(setState)}
+          onNudgeDca={(id, delta) => bridge.nudgeDcaLevel(id, delta).then(setState)}
+          onRecallCamera={(id) => bridge.recallCameraPreset(id).then(setState)}
+          onSlideAction={(act) => bridge.triggerSlideAction(act).then(setState)}
+          onSelectSlide={(slideNumber) => bridge.goToSlide(slideNumber).then(setState)}
+          onBroadcastToggle={(id, live) => bridge.setBroadcastState(id, live).then(setState)}
+        />
+      )}
+
+      {mode === "broadcast" && (
         <EngineerView
           state={state}
           onBroadcastToggle={(id, live) => bridge.setBroadcastState(id, live).then(setState)}
@@ -309,6 +322,33 @@ export const App: React.FC = () => {
           onFlashDanteIdentify={(routeId) => bridge.flashDanteIdentify(routeId).then(setState)}
         />
       )}
+
+      {mode === "master" && (
+        <ShowModeView
+          state={state}
+          onTriggerCue={(idx) => bridge.triggerCue(idx).then(setState)}
+          onUndoCue={() => bridge.undoLastCue().then(setState)}
+          onToggleDcaMute={(id) => bridge.toggleDcaMute(id).then(setState)}
+          onNudgeDca={(id, delta) => bridge.nudgeDcaLevel(id, delta).then(setState)}
+          onRecallCamera={(id) => bridge.recallCameraPreset(id).then(setState)}
+          onSlideAction={(act) => bridge.triggerSlideAction(act).then(setState)}
+          onSelectSlide={(slideNumber) => bridge.goToSlide(slideNumber).then(setState)}
+          onBroadcastToggle={(id, live) => bridge.setBroadcastState(id, live).then(setState)}
+        />
+      )}
+
+      <WelcomeTour
+        isOpen={showWelcomeTour}
+        onComplete={() => {
+          localStorage.setItem("onering_tour_completed", "true");
+          setShowWelcomeTour(false);
+        }}
+        onNavigateTab={(tabKey) => {
+          if (["preflight", "show", "engineer", "settings"].includes(tabKey)) {
+            setMode(tabKey as ViewMode);
+          }
+        }}
+      />
 
       <ShowNameModal
         currentName={state.serviceName || "Untitled Show"}
