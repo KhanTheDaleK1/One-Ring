@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { Cpu, Lock, AlertOctagon, FlaskConical } from "lucide-react";
+import { Cpu, Lock, AlertOctagon, FlaskConical, Settings } from "lucide-react";
 import {
   applyCueProgress,
   applyHealthEvent,
@@ -13,6 +13,7 @@ import type { AppStateSnapshot, ViewMode } from "./types";
 import { PreflightView } from "./components/PreflightView";
 import { ShowModeView } from "./components/ShowModeView";
 import { EngineerView } from "./components/EngineerView";
+import { SettingsView } from "./components/SettingsView";
 
 export const App: React.FC = () => {
   const [state, setState] = useState<AppStateSnapshot | null>(null);
@@ -155,7 +156,7 @@ export const App: React.FC = () => {
         </div>
 
         <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-          {(["preflight", "show", "engineer"] as ViewMode[]).map((m) => (
+          {(["preflight", "show", "engineer", "settings"] as ViewMode[]).map((m) => (
             <button
               key={m}
               type="button"
@@ -173,7 +174,14 @@ export const App: React.FC = () => {
               }}
             >
               {m === "engineer" && <Lock size={13} />}
-              {m === "preflight" ? "Preflight" : m === "show" ? "Show Mode" : "Engineer"}
+              {m === "settings" && <Settings size={13} />}
+              {m === "preflight"
+                ? "Preflight"
+                : m === "show"
+                  ? "Show Mode"
+                  : m === "engineer"
+                    ? "Engineer"
+                    : "Settings"}
             </button>
           ))}
         </div>
@@ -239,6 +247,13 @@ export const App: React.FC = () => {
           onSwitchNdiReceiver={(rxId, src) => bridge.switchNdiReceiver(rxId, src).then(setState)}
           onAutoHealNdi={() => bridge.autoHealNdiReceivers().then(setState)}
           onFlashDanteIdentify={(routeId) => bridge.flashDanteIdentify(routeId).then(setState)}
+        />
+      )}
+
+      {mode === "settings" && (
+        <SettingsView
+          state={state}
+          onSave={(settings) => bridge.saveSettings(settings).then(setState)}
         />
       )}
     </div>

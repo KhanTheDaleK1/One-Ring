@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 pub type SharedState = Arc<Mutex<AppStateSnapshot>>;
@@ -113,7 +114,19 @@ pub struct NdiReceiver {
     pub tally_program: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct SlideCue {
+    pub id: String,
+    pub number: u32,
+    pub section: String,
+    pub title: String,
+    pub text: String,
+    /// "title" | "lyrics" | "scripture" | "media" | "blank"
+    pub kind: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct SlideState {
     pub app: String,
@@ -126,6 +139,8 @@ pub struct SlideState {
     pub cleared: bool,
     pub stage_message: String,
     pub transport_layer: String,
+    #[serde(default)]
+    pub slides: Option<Vec<SlideCue>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -164,6 +179,280 @@ pub struct CueVerificationReport {
     pub steps: Vec<CueVerificationStep>,
 }
 
+// ---------------------------------------------------------------------------------------------
+// Settings & Device Configuration
+// ---------------------------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DcaMapping {
+    pub dca_id: String,
+    pub dca_number: u8,
+    pub dca_name: String,
+    pub source_channel: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct X32Settings {
+    pub ip_address: String,
+    pub osc_port: u16,
+    pub keepalive_interval_sec: u32,
+    pub dca_mappings: Vec<DcaMapping>,
+}
+
+impl Default for X32Settings {
+    fn default() -> Self {
+        Self {
+            ip_address: String::new(),
+            osc_port: 10023,
+            keepalive_interval_sec: 8,
+            dca_mappings: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DanteSettings {
+    pub subnet_interface: String,
+    pub conmon_meter_port: u16,
+    pub conmon_control_port: u16,
+    pub clock_sync_warn_ms: u32,
+    pub clock_sync_error_ms: u32,
+}
+
+impl Default for DanteSettings {
+    fn default() -> Self {
+        Self {
+            subnet_interface: "Auto (default route)".into(),
+            conmon_meter_port: 8751,
+            conmon_control_port: 8700,
+            clock_sync_warn_ms: 50,
+            clock_sync_error_ms: 150,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RtmpDestination {
+    pub id: String,
+    pub platform: String,
+    pub rtmp_url: String,
+    pub stream_key: String,
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BroadcastSettings {
+    pub destinations: Vec<RtmpDestination>,
+    pub recording_path: String,
+    pub recording_format: String, // "MKV" | "MP4"
+    pub encoder: String,          // "NVENC" | "VideoToolbox" | "Software"
+}
+
+impl Default for BroadcastSettings {
+    fn default() -> Self {
+        Self {
+            destinations: Vec::new(),
+            recording_path: String::new(),
+            recording_format: "MKV".into(),
+            encoder: "Software".into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DisplayAssignments {
+    pub foh_window: String,
+    pub stage_display_window: String,
+    pub ndi_alpha_output: String,
+}
+
+impl Default for DisplayAssignments {
+    fn default() -> Self {
+        Self {
+            foh_window: String::new(),
+            stage_display_window: String::new(),
+            ndi_alpha_output: String::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SlidesSettings {
+    pub songselect_client_id: String,
+    pub songselect_client_secret: String,
+    pub display_assignments: DisplayAssignments,
+}
+
+impl Default for SlidesSettings {
+    fn default() -> Self {
+        Self {
+            songselect_client_id: String::new(),
+            songselect_client_secret: String::new(),
+            display_assignments: DisplayAssignments::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CameraPresetName {
+    pub preset_id: String,
+    pub camera_id: String,
+    pub label: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NdiPtzSettings {
+    pub discovery_range_start: String,
+    pub discovery_range_end: String,
+    pub visca_port: u16,
+    pub preset_names: Vec<CameraPresetName>,
+}
+
+impl Default for NdiPtzSettings {
+    fn default() -> Self {
+        Self {
+            discovery_range_start: String::new(),
+            discovery_range_end: String::new(),
+            visca_port: 52381,
+            preset_names: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GeneralSettings {
+    /// PIN required to unlock Engineer Mode from Volunteer Show Mode.
+    pub engineer_pin: String,
+}
+
+impl Default for GeneralSettings {
+    fn default() -> Self {
+        Self {
+            engineer_pin: String::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StationSettings {
+    /// "slides" | "audio" | "broadcast" | "director" | "master"
+    pub role: String,
+    pub station_name: String,
+    pub lock_to_role: bool,
+}
+
+impl Default for StationSettings {
+    fn default() -> Self {
+        Self {
+            role: "master".into(),
+            station_name: String::new(),
+            lock_to_role: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncSettings {
+    pub lan_discovery_enabled: bool,
+    pub hub_address: String,
+    pub sync_port: u16,
+    pub cloud_sync_enabled: bool,
+    pub account_email: String,
+    pub profile_name: String,
+    pub venue_id: String,
+    pub sync_token: String,
+    pub auto_sync_on_launch: bool,
+    pub last_synced_at: String,
+}
+
+impl Default for SyncSettings {
+    fn default() -> Self {
+        Self {
+            lan_discovery_enabled: true,
+            hub_address: "ws://0.0.0.0:47800".into(),
+            sync_port: 47_800,
+            cloud_sync_enabled: false,
+            account_email: String::new(),
+            profile_name: String::new(),
+            venue_id: String::new(),
+            sync_token: String::new(),
+            auto_sync_on_launch: false,
+            last_synced_at: String::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppSettings {
+    pub x32: X32Settings,
+    pub dante: DanteSettings,
+    pub broadcast: BroadcastSettings,
+    pub slides: SlidesSettings,
+    pub ndi_ptz: NdiPtzSettings,
+    pub general: GeneralSettings,
+    pub station: StationSettings,
+    pub sync: SyncSettings,
+}
+
+impl Default for AppSettings {
+    fn default() -> Self {
+        Self {
+            x32: X32Settings::default(),
+            dante: DanteSettings::default(),
+            broadcast: BroadcastSettings::default(),
+            slides: SlidesSettings::default(),
+            ndi_ptz: NdiPtzSettings::default(),
+            general: GeneralSettings::default(),
+            station: StationSettings::default(),
+            sync: SyncSettings::default(),
+        }
+    }
+}
+
+/// Another One Ring node discovered on the LAN.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConnectedStation {
+    pub id: String,
+    pub name: String,
+    pub role: String,
+    pub online: bool,
+    pub latency_ms: u32,
+}
+
+/// Portable, user-authored show file (`*.ring.json`).
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ShowFile {
+    pub format: String,
+    pub version: u32,
+    pub exported_at: String,
+    pub service_name: String,
+    pub cues: Vec<ServiceCue>,
+    pub dcas: Vec<DcaChannel>,
+    pub cameras: Vec<CameraPreset>,
+    pub canvases: Vec<BroadcastCanvas>,
+    pub broadcasts: Vec<BroadcastTarget>,
+    pub record_chapters: Vec<String>,
+    pub dante_routes: Vec<DanteRoute>,
+    pub ndi_receivers: Vec<NdiReceiver>,
+    pub ndi_sources: Vec<String>,
+    pub slides: SlideState,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppStateSnapshot {
@@ -195,6 +484,12 @@ pub struct AppStateSnapshot {
     pub cues: Vec<ServiceCue>,
     pub last_verification: Option<CueVerificationReport>,
     pub event_log: Vec<String>,
+    #[serde(default)]
+    pub settings: AppSettings,
+    #[serde(default)]
+    pub connected_stations: Vec<ConnectedStation>,
+    #[serde(default)]
+    pub sync_status: String,
 }
 
 #[derive(Clone)]
@@ -208,6 +503,8 @@ pub struct ManagedState {
     pub undo_stack: Arc<Mutex<Vec<UndoEntry>>>,
     /// Live adapter registry, absent in simulator mode.
     pub runtime: Mutex<Option<Arc<crate::runtime::AdapterRegistry>>>,
+    /// Where `AppSettings` is persisted. `None` keeps settings in memory only.
+    pub settings_path: Mutex<Option<PathBuf>>,
 }
 
 impl Default for ManagedState {
@@ -216,6 +513,7 @@ impl Default for ManagedState {
             inner: Arc::new(Mutex::new(default_simulator_state())),
             undo_stack: Arc::new(Mutex::new(Vec::new())),
             runtime: Mutex::new(None),
+            settings_path: Mutex::new(None),
         }
     }
 }
@@ -225,6 +523,51 @@ impl ManagedState {
     pub fn snapshot(&self) -> AppStateSnapshot {
         self.inner.lock().unwrap().clone()
     }
+
+    /// Point the managed state at `path` and hydrate settings from disk when present.
+    pub fn attach_settings_path(&self, path: PathBuf) {
+        if let Some(settings) = read_settings_from_disk(&path) {
+            let mut inner = self.inner.lock().unwrap();
+            inner.settings = settings;
+            inner.push_event_log(format!(
+                "[settings] Loaded device configuration from {}",
+                path.display()
+            ));
+        }
+        *self.settings_path.lock().unwrap() = Some(path);
+    }
+
+    /// Persist the current settings snapshot. Returns an error string for logging.
+    pub fn save_settings(&self) -> Result<(), String> {
+        let path = self.settings_path.lock().unwrap().clone();
+        let Some(path) = path else {
+            return Ok(());
+        };
+        let settings = self.inner.lock().unwrap().settings.clone();
+        write_settings_to_disk(&path, &settings)
+    }
+}
+
+/// Read a persisted `AppSettings` file. Missing/corrupt files fall back to defaults.
+pub fn read_settings_from_disk(path: &Path) -> Option<AppSettings> {
+    let raw = std::fs::read_to_string(path).ok()?;
+    serde_json::from_str(&raw).ok()
+}
+
+/// Atomically-ish write settings to disk, creating parent directories as needed.
+pub fn write_settings_to_disk(path: &Path, settings: &AppSettings) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|err| format!("create settings dir {}: {err}", parent.display()))?;
+    }
+    let json = serde_json::to_string_pretty(settings)
+        .map_err(|err| format!("serialize settings: {err}"))?;
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, json)
+        .map_err(|err| format!("write settings tmp {}: {err}", tmp.display()))?;
+    std::fs::rename(&tmp, path)
+        .map_err(|err| format!("commit settings {}: {err}", path.display()))?;
+    Ok(())
 }
 
 /// Run `f` against the shared snapshot and return its result. Never held across an `.await`.
@@ -380,6 +723,201 @@ impl AppStateSnapshot {
         }
         self.canvases.clone()
     }
+
+    /// Extract the portable show content (everything the operator authors).
+    pub fn to_show_file(&self) -> ShowFile {
+        ShowFile {
+            format: "one-ring-show".into(),
+            version: 1,
+            exported_at: String::new(),
+            service_name: self.service_name.clone(),
+            cues: self.cues.clone(),
+            dcas: self.dcas.clone(),
+            cameras: self.cameras.clone(),
+            canvases: self.canvases.clone(),
+            broadcasts: self.broadcasts.clone(),
+            record_chapters: self.record_chapters.clone(),
+            dante_routes: self.dante_routes.clone(),
+            ndi_receivers: self.ndi_receivers.clone(),
+            ndi_sources: self.ndi_sources.clone(),
+            slides: self.slides.clone(),
+        }
+    }
+
+    /// Replace all authored show content from a `*.ring.json` payload.
+    pub fn apply_show_file(&mut self, show: ShowFile) {
+        self.service_name = if show.service_name.trim().is_empty() {
+            "Untitled Show".into()
+        } else {
+            show.service_name
+        };
+        self.cues = show.cues;
+        self.dcas = show.dcas;
+        self.cameras = show.cameras;
+        self.canvases = show.canvases;
+        self.broadcasts = show.broadcasts;
+        self.record_chapters = show.record_chapters;
+        self.dante_routes = show.dante_routes;
+        self.ndi_receivers = show.ndi_receivers;
+        self.ndi_sources = show.ndi_sources;
+        self.slides = show.slides;
+        self.active_cue_index = 0;
+        self.last_verification = None;
+        self.silent_mic_alert = None;
+        self.beltpack_fault_simulated = false;
+        self.active_camera_preset_id = self
+            .cameras
+            .first()
+            .map(|camera| camera.id.clone())
+            .unwrap_or_default();
+        self.obs_scene = self
+            .canvases
+            .first()
+            .map(|canvas| canvas.active_scene.clone())
+            .unwrap_or_default();
+        self.vertical_scene = self
+            .canvases
+            .get(1)
+            .map(|canvas| canvas.active_scene.clone())
+            .unwrap_or_default();
+        self.rebuild_preflight();
+        recompute_derived_alerts(self);
+        self.push_event_log(format!(
+            "[show-file] Loaded '{}' ({} cues, {} DCAs, {} cameras, {} slides)",
+            self.service_name,
+            self.cues.len(),
+            self.dcas.len(),
+            self.cameras.len(),
+            self.slides.slides.as_ref().map(|s| s.len()).unwrap_or(0)
+        ));
+    }
+
+    /// Rebuild readiness checks from the current blank/custom show content.
+    pub fn rebuild_preflight(&mut self) {
+        use PreflightCheck as Check;
+        let mut checks = Vec::new();
+        let push = |checks: &mut Vec<Check>, ok: bool, id: &str, domain: &str, title: String, detail: String| {
+            checks.push(Check {
+                id: id.into(),
+                domain: domain.into(),
+                title,
+                status: if ok { "pass".into() } else { "warn".into() },
+                detail: detail.clone(),
+                evidence: detail,
+                fix_label: if ok { None } else { Some("Open Show Builder".into()) },
+            });
+        };
+
+        push(
+            &mut checks,
+            !self.cues.is_empty(),
+            "chk-cues",
+            "Show File",
+            "Service cue stack is populated".into(),
+            format!("{} cue(s) in the current show file", self.cues.len()),
+        );
+        push(
+            &mut checks,
+            !self.dcas.is_empty() && !self.settings.x32.ip_address.trim().is_empty(),
+            "chk-audio",
+            "Audio Mixing",
+            "Mixer endpoint and DCA layout are configured".into(),
+            if self.settings.x32.ip_address.trim().is_empty() {
+                "Set the mixer IP address in Settings → Audio Mixing".into()
+            } else {
+                format!("{} DCA(s) mapped to {}", self.dcas.len(), self.settings.x32.ip_address)
+            },
+        );
+        push(
+            &mut checks,
+            !self.dante_routes.is_empty(),
+            "chk-routing",
+            "Audio Network",
+            "Audio network routes are defined".into(),
+            format!("{} route(s) configured", self.dante_routes.len()),
+        );
+        push(
+            &mut checks,
+            !self.broadcasts.is_empty(),
+            "chk-broadcast",
+            "Broadcasting",
+            "Broadcast and recording outputs are configured".into(),
+            format!("{} output(s) configured", self.broadcasts.len()),
+        );
+        push(
+            &mut checks,
+            self.slides.slides.as_ref().map(|s| !s.is_empty()).unwrap_or(false),
+            "chk-slides",
+            "Slides",
+            "Slide deck is loaded".into(),
+            format!(
+                "{} slide(s) in '{}'",
+                self.slides.slides.as_ref().map(|s| s.len()).unwrap_or(0),
+                self.slides.presentation_name
+            ),
+        );
+        push(
+            &mut checks,
+            !self.cameras.is_empty(),
+            "chk-cameras",
+            "Cameras",
+            "Camera presets are defined".into(),
+            format!("{} preset(s) configured", self.cameras.len()),
+        );
+        self.preflight = checks;
+        self.topology_issues.clear();
+    }
+
+    /// Rebuild broadcast targets from Settings so user endpoints drive Show Mode.
+    pub fn sync_broadcasts_from_settings(&mut self) {
+        let mut next: Vec<BroadcastTarget> = self
+            .settings
+            .broadcast
+            .destinations
+            .iter()
+            .filter(|dest| dest.enabled)
+            .map(|dest| BroadcastTarget {
+                id: dest.id.clone(),
+                platform: dest.platform.clone(),
+                live: false,
+                bitrate_kbps: 0,
+                dropped_frames: 0,
+                elapsed_sec: 0,
+                endpoint: dest.rtmp_url.clone(),
+                canvas: "Program".into(),
+            })
+            .collect();
+
+        if !self.settings.broadcast.recording_path.trim().is_empty() {
+            next.push(BroadcastTarget {
+                id: "record".into(),
+                platform: format!(
+                    "Local Recording ({})",
+                    self.settings.broadcast.recording_format
+                ),
+                live: false,
+                bitrate_kbps: 0,
+                dropped_frames: 0,
+                elapsed_sec: 0,
+                endpoint: format!(
+                    "{}.{}",
+                    self.settings.broadcast.recording_path.trim_end_matches('.'),
+                    self.settings.broadcast.recording_format.to_lowercase()
+                ),
+                canvas: "Program".into(),
+            });
+        }
+
+        for target in &mut next {
+            if let Some(existing) = self.broadcasts.iter().find(|b| b.id == target.id) {
+                target.live = existing.live;
+                target.bitrate_kbps = existing.bitrate_kbps;
+                target.dropped_frames = existing.dropped_frames;
+                target.elapsed_sec = existing.elapsed_sec;
+            }
+        }
+        self.broadcasts = next;
+    }
 }
 
 /// Partial slide update produced by the ProPresenter status stream.
@@ -396,43 +934,50 @@ pub struct SlidesPatch {
 }
 
 
+fn looks_like_pastor(name: &str) -> bool {
+    let lowered = name.to_lowercase();
+    lowered.contains("pastor") || lowered.contains("speaker") || lowered.contains("preach")
+}
+
 pub fn recompute_derived_alerts(state: &mut AppStateSnapshot) {
-    // Check "Silent Pastor Mic" condition: Pastor DCA (dca-1) is unmuted during Sermon/Welcome,
-    // but Dante Conmon UDP 8751 metering shows 0xFE (<-90 dBFS) due to beltpack mute/power fault.
-    if let Some(pastor) = state.dcas.iter_mut().find(|d| d.id == "dca-1") {
-        // In live mode the signal values come from real X32/Dante meter events; only the
-        // simulator synthesizes them.
-        if state.mock_mode {
-            if state.beltpack_fault_simulated {
-                pastor.signal_db = -90.0;
-                pastor.signal_present = false;
-            } else if !pastor.muted {
-                pastor.signal_db = -11.5;
-                pastor.signal_present = true;
+    // The simulator synthesizes meter values only for the mock backend; live meter
+    // events are authoritative. No specific DCA is assumed to exist.
+    if state.mock_mode {
+        let fault_id = state
+            .dcas
+            .iter()
+            .find(|d| looks_like_pastor(&d.name))
+            .or_else(|| state.dcas.first())
+            .map(|d| d.id.clone());
+        for dca in &mut state.dcas {
+            if Some(&dca.id) == fault_id.as_ref() && state.beltpack_fault_simulated {
+                dca.signal_db = -90.0;
+                dca.signal_present = false;
+            } else if dca.muted {
+                dca.signal_db = -90.0;
+                dca.signal_present = false;
             } else {
-                pastor.signal_db = -58.0;
-                pastor.signal_present = false;
+                dca.signal_db = if dca.signal_db < -60.0 { -12.0 } else { dca.signal_db };
+                dca.signal_present = true;
             }
         }
     }
 
-    let pastor_unmuted_but_silent = state
+    let silent = state
         .dcas
         .iter()
-        .find(|d| d.id == "dca-1")
-        .map(|d| !d.muted && !d.signal_present)
-        .unwrap_or(false);
+        .find(|d| looks_like_pastor(&d.name))
+        .filter(|d| !d.muted && !d.signal_present)
+        .map(|d| d.name.clone());
 
-    if pastor_unmuted_but_silent {
-        state.silent_mic_alert = Some(
-            "SILENT PASTOR MIC: DCA 1 (Pastor) is LIVE/UNMUTED, but Dante Conmon UDP :8751 reports 0xFE (<-90 dBFS) on ULXD4-Pastor-Tx1. Check beltpack power/mute switch!"
-                .into(),
-        );
-    } else {
-        state.silent_mic_alert = None;
-    }
+    state.silent_mic_alert = silent.map(|name| {
+        format!(
+            "SILENT INPUT: '{}' is live/unmuted, but the audio meter reports no signal. Check the beltpack, cable, or input patch.",
+            name
+        )
+    });
 
-    // Update camera tallies based on active preset
+    // Update camera tallies based on the active preset.
     for cam in &mut state.cameras {
         if cam.id == state.active_camera_preset_id {
             cam.tally = "program".into();
@@ -443,474 +988,51 @@ pub fn recompute_derived_alerts(state: &mut AppStateSnapshot) {
 }
 
 pub fn default_simulator_state() -> AppStateSnapshot {
-    let mut s = AppStateSnapshot {
+    let mut state = AppStateSnapshot {
         mock_mode: true,
         rehearsal_mode: false,
-        service_name: "Sunday 10:30 AM Service".into(),
+        service_name: "Untitled Show".into(),
         active_cue_index: 0,
         can_undo: false,
         undo_depth: 0,
         last_undo_label: None,
         silent_mic_alert: None,
         beltpack_fault_simulated: false,
-        dante_clock: "48 kHz / 24-bit • PTP Grandmaster Locked (X32-Dante 00:1D:C1:8A:44:10) • Conmon UDP :8751 Metering Active".into(),
-        health: vec![
-            DomainHealth {
-                id: "x32".into(),
-                label: "X32".into(),
-                status: "ok".into(),
-                detail: "OSC 10.1.24.50:10023 (/xremote 8s)".into(),
-                protocol: "X32 OSC UDP :10023".into(),
-                latency_ms: 2,
-            },
-            DomainHealth {
-                id: "dante".into(),
-                label: "Dante".into(),
-                status: "ok".into(),
-                detail: "ARC + Conmon :8700/:8751 Locked".into(),
-                protocol: "Audinate ARC/Conmon UDP".into(),
-                latency_ms: 1,
-            },
-            DomainHealth {
-                id: "yt".into(),
-                label: "YT + FB".into(),
-                status: "ok".into(),
-                detail: "OBS v5 :4455 + SLOBS :28194 Ready".into(),
-                protocol: "obswebsocket.msgpack + JSON-RPC".into(),
-                latency_ms: 3,
-            },
-            DomainHealth {
-                id: "slides".into(),
-                label: "ProPresenter".into(),
-                status: "ok".into(),
-                detail: "POST /v1/status/updates Stream Active".into(),
-                protocol: "ProPresenter 22 control-tower v1".into(),
-                latency_ms: 4,
-            },
-            DomainHealth {
-                id: "cams".into(),
-                label: "NDI 6 / PTZ".into(),
-                status: "ok".into(),
-                detail: "Discovery :5959 (4 Rx, 3 PTZ)".into(),
-                protocol: "NDI 6 Discovery :5959 + VISCA :52381".into(),
-                latency_ms: 3,
-            },
-        ],
-        preflight: vec![
-            PreflightCheck {
-                id: "chk-topology".into(),
-                domain: "Show-File vs. Live Topology".into(),
-                title: "All 6 service cues verified against live OBS canvases, PTZ presets, Dante Rx & ProPresenter playlist".into(),
-                status: "pass".into(),
-                detail: "0 missing scenes, 0 missing crosspoints, 0 orphan presets".into(),
-                evidence: "6/6 cues validated against live capability graph".into(),
-                fix_label: None,
-            },
-            PreflightCheck {
-                id: "chk-x32".into(),
-                domain: "Behringer X32".into(),
-                title: "OSC reachable on UDP :10023, /xremote subscription active, Main LR unmuted".into(),
-                status: "pass".into(),
-                detail: "X32 Producer (FW 4.09) • 4 DCAs mapped • /meters/1 streaming".into(),
-                evidence: "RTT 1.8 ms • Scene 01 'Pre-Service'".into(),
-                fix_label: Some("Re-Sync X32 Scene".into()),
-            },
-            PreflightCheck {
-                id: "chk-dante".into(),
-                domain: "Dante Network".into(),
-                title: "Single PTP Grandmaster (48 kHz), 4/4 ARC crosspoints UNICAST, Conmon UDP :8751 metering active".into(),
-                status: "pass".into(),
-                detail: "X32-Dante ↔ DVS-Broadcast ↔ ULXD4-Wireless all RXSTATUS=UNICAST".into(),
-                evidence: "0 clock sync errors • Multicast 224.0.0.232:8751".into(),
-                fix_label: Some("Re-Verify Crosspoints".into()),
-            },
-            PreflightCheck {
-                id: "chk-stream".into(),
-                domain: "OBS 33 / Streamlabs Dual-Canvas".into(),
-                title: "Horizontal (16:9) + Vertical (9:16) canvases verified; YouTube + Facebook RTMPS outputs ready".into(),
-                status: "pass".into(),
-                detail: "OBS v5 (:4455) + Streamlabs Local TCP (127.0.0.1:28194 auto-auth)".into(),
-                evidence: "CPU 8.4% • GPU Headroom 84% • Disk 7.9 TB free".into(),
-                fix_label: Some("Test Output Handshake".into()),
-            },
-            PreflightCheck {
-                id: "chk-slides".into(),
-                domain: "ProPresenter 22.0.1".into(),
-                title: "Multiplexed chunked stream (POST /v1/status/updates) active; Stage Display & ProLink ready".into(),
-                status: "pass".into(),
-                detail: "Playlist 'Sunday 10:30 AM' loaded • _proapiv1._tcp advertised".into(),
-                evidence: "Chunked stream 0 drops • ProLink 224.0.0.90:18514 synced".into(),
-                fix_label: Some("Focus Active Playlist".into()),
-            },
-            PreflightCheck {
-                id: "chk-ndi".into(),
-                domain: "NDI 6 & PTZ Cameras".into(),
-                title: "NDI 6 Discovery (:5959) receiver_listener active; all 3 building displays on intended sources".into(),
-                status: "pass".into(),
-                detail: "Lobby TV, Stage Confidence & Broadcast Key verified via <query_receivers/>".into(),
-                evidence: "Metadata-only PTZ (<ndi_enabled_streams video=false text=true/>)".into(),
-                fix_label: Some("Auto-Heal NDI Displays".into()),
-            },
-        ],
-        topology_issues: vec![],
-        dcas: vec![
-            DcaChannel {
-                id: "dca-1".into(),
-                number: 1,
-                name: "Pastor Wireless".into(),
-                muted: true,
-                level_db: 0.0,
-                min_db: -6.0,
-                max_db: 6.0,
-                guard_mute: false,
-                signal_db: -58.0,
-                signal_present: false,
-                dante_tx_channel: "ULXD4-Pastor-Tx1".into(),
-            },
-            DcaChannel {
-                id: "dca-2".into(),
-                number: 2,
-                name: "Worship Band".into(),
-                muted: true,
-                level_db: -2.0,
-                min_db: -9.0,
-                max_db: 3.0,
-                guard_mute: false,
-                signal_db: -18.0,
-                signal_present: true,
-                dante_tx_channel: "X32-Band-Stem".into(),
-            },
-            DcaChannel {
-                id: "dca-3".into(),
-                number: 3,
-                name: "Media / ProPresenter".into(),
-                muted: false,
-                level_db: 0.0,
-                min_db: -12.0,
-                max_db: 3.0,
-                guard_mute: false,
-                signal_db: -14.2,
-                signal_present: true,
-                dante_tx_channel: "DVS-ProPresenter-L/R".into(),
-            },
-            DcaChannel {
-                id: "dca-4".into(),
-                number: 4,
-                name: "Main FOH LR".into(),
-                muted: false,
-                level_db: 0.0,
-                min_db: -3.0,
-                max_db: 0.0,
-                guard_mute: true,
-                signal_db: -12.8,
-                signal_present: true,
-                dante_tx_channel: "X32-Main-LR".into(),
-            },
-        ],
-        cameras: vec![
-            CameraPreset {
-                id: "cam-wide".into(),
-                camera_id: "cam1".into(),
-                name: "1: Stage Wide".into(),
-                preset_index: 1,
-                protocol: "NDI Metadata PTZ".into(),
-                tally: "program".into(),
-            },
-            CameraPreset {
-                id: "cam-pulpit".into(),
-                camera_id: "cam1".into(),
-                name: "2: Pulpit Tight".into(),
-                preset_index: 2,
-                protocol: "NDI Metadata PTZ".into(),
-                tally: "idle".into(),
-            },
-            CameraPreset {
-                id: "cam-worship".into(),
-                camera_id: "cam2".into(),
-                name: "3: Worship Center".into(),
-                preset_index: 1,
-                protocol: "VISCA-over-IP :52381".into(),
-                tally: "idle".into(),
-            },
-            CameraPreset {
-                id: "cam-crowd".into(),
-                camera_id: "cam3".into(),
-                name: "4: Crowd / Keys".into(),
-                preset_index: 1,
-                protocol: "VISCA-over-IP :52381".into(),
-                tally: "idle".into(),
-            },
-        ],
-        active_camera_preset_id: "cam-wide".into(),
-        obs_scene: "Pre-Service Loop".into(),
-        vertical_scene: "Vertical: Pre-Service Reels".into(),
-        canvases: vec![
-            BroadcastCanvas {
-                uuid: "canvas-main-16x9".into(),
-                name: "Primary Broadcast (Horizontal)".into(),
-                aspect: "16:9".into(),
-                resolution: "1920x1080 @ 60fps".into(),
-                active_scene: "Pre-Service Loop".into(),
-                engine: "OBS 33 GetCanvasList (MAIN | ACTIVATE | MIX_AUDIO)".into(),
-            },
-            BroadcastCanvas {
-                uuid: "canvas-vert-9x16".into(),
-                name: "Social / Shorts Feed (Vertical)".into(),
-                aspect: "9:16".into(),
-                resolution: "1080x1920 @ 60fps".into(),
-                active_scene: "Vertical: Pre-Service Reels".into(),
-                engine: "Streamlabs DualOutputService + OBS 33 Canvas".into(),
-            },
-        ],
-        broadcasts: vec![
-            BroadcastTarget {
-                id: "youtube".into(),
-                platform: "YouTube Live (16:9)".into(),
-                live: false,
-                bitrate_kbps: 0,
-                dropped_frames: 0,
-                elapsed_sec: 0,
-                endpoint: "rtmps://a.rtmp.youtube.com/live2".into(),
-                canvas: "Horizontal 16:9".into(),
-            },
-            BroadcastTarget {
-                id: "facebook".into(),
-                platform: "Facebook + Vertical Simulcast".into(),
-                live: false,
-                bitrate_kbps: 0,
-                dropped_frames: 0,
-                elapsed_sec: 0,
-                endpoint: "rtmps://live-api-s.facebook.com:443/rtmp".into(),
-                canvas: "Horizontal 16:9 + Vertical 9:16".into(),
-            },
-            BroadcastTarget {
-                id: "record".into(),
-                platform: "Local Multi-Chapter MKV".into(),
-                live: false,
-                bitrate_kbps: 0,
-                dropped_frames: 0,
-                elapsed_sec: 0,
-                endpoint: "/mnt/BCloud/Recordings/Sunday.mkv".into(),
-                canvas: "Horizontal 16:9".into(),
-            },
-        ],
-        record_chapters: vec!["00:00 — Pre-Service Loop (Ready)".into()],
-        dante_routes: vec![
-            DanteRoute {
-                id: "dr-1".into(),
-                rx_device: "X32-FOH-Dante".into(),
-                rx_channel: "Rx 01 (Pastor Mic)".into(),
-                tx_device: "ULXD4-Rack-A".into(),
-                tx_channel: "ULXD4-Pastor-Tx1".into(),
-                rx_status: "UNICAST".into(),
-                signal_dbfs: -12,
-                identify_flashing: false,
-            },
-            DanteRoute {
-                id: "dr-2".into(),
-                rx_device: "X32-FOH-Dante".into(),
-                rx_channel: "Rx 17-18 (ProPresenter)".into(),
-                tx_device: "MacStudio-FOH (DVS)".into(),
-                tx_channel: "DVS-ProPresenter-L/R".into(),
-                rx_status: "UNICAST".into(),
-                signal_dbfs: -14,
-                identify_flashing: false,
-            },
-            DanteRoute {
-                id: "dr-3".into(),
-                rx_device: "Broadcast-OBS (Dante Studio)".into(),
-                rx_channel: "Rx 01-02 (Broadcast Mix)".into(),
-                tx_device: "X32-FOH-Dante".into(),
-                tx_channel: "Matrix 1-2 (Stream Bus)".into(),
-                rx_status: "MULTICAST".into(),
-                signal_dbfs: -9,
-                identify_flashing: false,
-            },
-            DanteRoute {
-                id: "dr-4".into(),
-                rx_device: "Lobby-Amp-PoE".into(),
-                rx_channel: "Rx 01 (Lobby Fill)".into(),
-                tx_device: "X32-FOH-Dante".into(),
-                tx_channel: "Matrix 3 (Foyer)".into(),
-                rx_status: "UNICAST".into(),
-                signal_dbfs: -16,
-                identify_flashing: false,
-            },
-        ],
-        ndi_receivers: vec![
-            NdiReceiver {
-                id: "ndi-rx-1".into(),
-                receiver_name: "Lobby Signage Display (Studio Monitor)".into(),
-                ip: "10.1.24.71:5960".into(),
-                subscribed_source: "ONE-RING (Lobby Feed)".into(),
-                expected_source: "ONE-RING (Lobby Feed)".into(),
-                status: "CONNECTED".into(),
-                tally_program: true,
-            },
-            NdiReceiver {
-                id: "ndi-rx-2".into(),
-                receiver_name: "Stage Confidence Monitor".into(),
-                ip: "10.1.24.72:5960".into(),
-                subscribed_source: "PROPRESENTER (Stage Display)".into(),
-                expected_source: "PROPRESENTER (Stage Display)".into(),
-                status: "CONNECTED".into(),
-                tally_program: false,
-            },
-            NdiReceiver {
-                id: "ndi-rx-3".into(),
-                receiver_name: "OBS Lower-Third Keyer".into(),
-                ip: "127.0.0.1:5961".into(),
-                subscribed_source: "PROPRESENTER (Audience Alpha Key)".into(),
-                expected_source: "PROPRESENTER (Audience Alpha Key)".into(),
-                status: "CONNECTED".into(),
-                tally_program: true,
-            },
-        ],
-        ndi_sources: vec![
-            "ONE-RING (Lobby Feed)".into(),
-            "PROPRESENTER (Stage Display)".into(),
-            "PROPRESENTER (Audience Alpha Key)".into(),
-            "CAM-1 (Stage Wide NDI|HX3)".into(),
-            "CAM-2 (Pulpit Tight NDI|HX3)".into(),
-            "OBS-PROGRAM (Main Output)".into(),
-        ],
+        health: Vec::new(),
+        preflight: Vec::new(),
+        topology_issues: Vec::new(),
+        dcas: Vec::new(),
+        cameras: Vec::new(),
+        active_camera_preset_id: String::new(),
+        obs_scene: String::new(),
+        vertical_scene: String::new(),
+        canvases: Vec::new(),
+        broadcasts: Vec::new(),
+        record_chapters: Vec::new(),
+        dante_clock: String::new(),
+        dante_routes: Vec::new(),
+        ndi_receivers: Vec::new(),
+        ndi_sources: Vec::new(),
         slides: SlideState {
-            app: "ProPresenter 22.0.1".into(),
-            playlist_name: "Sunday 10:30 AM".into(),
-            presentation_name: "Pre-Service Announcements".into(),
-            current_slide: 1,
-            total_slides: 8,
-            current_text: "Welcome! Service begins in 5 minutes.".into(),
-            next_text: "5-Minute Countdown Video".into(),
+            app: "Slides".into(),
+            playlist_name: String::new(),
+            presentation_name: String::new(),
+            current_slide: 0,
+            total_slides: 0,
+            current_text: String::new(),
+            next_text: String::new(),
             cleared: false,
-            stage_message: "Doors Open • Mic Check Complete".into(),
-            transport_layer: "presentation (Auto-Advance Active)".into(),
+            stage_message: String::new(),
+            transport_layer: "local".into(),
+            slides: Some(Vec::new()),
         },
-        cues: vec![
-            ServiceCue {
-                id: "cue-1".into(),
-                index: 1,
-                title: "Pre-Service Loop".into(),
-                actions: vec![
-                    "ProPresenter: Pre-Service Announcements".into(),
-                    "X32: Media DCA ON, Pastor/Band Muted".into(),
-                    "OBS 16:9 + 9:16: Pre-Service Loop".into(),
-                    "PTZ Cam 1: Stage Wide".into(),
-                ],
-                obs_scene: "Pre-Service Loop".into(),
-                vertical_scene: "Vertical: Pre-Service Reels".into(),
-                camera_preset_id: "cam-wide".into(),
-                slide_label: "Pre-Service Announcements".into(),
-                unmute_dcas: vec!["dca-3".into()],
-                mute_dcas: vec!["dca-1".into(), "dca-2".into()],
-                record_chapter: "Pre-Service Loop".into(),
-                risk_tier: 1,
-            },
-            ServiceCue {
-                id: "cue-2".into(),
-                index: 2,
-                title: "Countdown & Go Live (YT + FB + Rec)".into(),
-                actions: vec![
-                    "ProPresenter: 5-Minute Countdown (ProLink Preroll)".into(),
-                    "OBS + SLOBS: Start YT + FB + MKV Recording".into(),
-                    "OBS 33: CreateRecordChapter('Countdown')".into(),
-                ],
-                obs_scene: "Countdown".into(),
-                vertical_scene: "Vertical: Countdown".into(),
-                camera_preset_id: "cam-wide".into(),
-                slide_label: "5-Minute Countdown".into(),
-                unmute_dcas: vec!["dca-3".into()],
-                mute_dcas: vec!["dca-1".into(), "dca-2".into()],
-                record_chapter: "5-Minute Countdown".into(),
-                risk_tier: 2,
-            },
-            ServiceCue {
-                id: "cue-3".into(),
-                index: 3,
-                title: "Worship Set".into(),
-                actions: vec![
-                    "ProPresenter: Praise (Song 1) + Stage Lyrics".into(),
-                    "X32: Unmute Worship Band DCA 2".into(),
-                    "OBS 16:9: Band Wide • 9:16: Lead Vocal Crop".into(),
-                    "PTZ Cam 2: Worship Center".into(),
-                ],
-                obs_scene: "Band Wide".into(),
-                vertical_scene: "Vertical: Worship Lead".into(),
-                camera_preset_id: "cam-worship".into(),
-                slide_label: "Praise (Song 1)".into(),
-                unmute_dcas: vec!["dca-2".into()],
-                mute_dcas: vec!["dca-1".into()],
-                record_chapter: "Worship Set".into(),
-                risk_tier: 1,
-            },
-            ServiceCue {
-                id: "cue-4".into(),
-                index: 4,
-                title: "Welcome & Announcements".into(),
-                actions: vec![
-                    "ProPresenter: Welcome & Next Steps".into(),
-                    "X32: Unmute Pastor DCA 1 (Verify Dante Tx1 Signal)".into(),
-                    "OBS 16:9 + 9:16: Stage Host".into(),
-                    "PTZ Cam 1: Stage Wide".into(),
-                ],
-                obs_scene: "Stage".into(),
-                vertical_scene: "Vertical: Host Center".into(),
-                camera_preset_id: "cam-wide".into(),
-                slide_label: "Welcome & Next Steps".into(),
-                unmute_dcas: vec!["dca-1".into(), "dca-3".into()],
-                mute_dcas: vec!["dca-2".into()],
-                record_chapter: "Welcome & Announcements".into(),
-                risk_tier: 1,
-            },
-            ServiceCue {
-                id: "cue-5".into(),
-                index: 5,
-                title: "Sermon: Hope Anchored".into(),
-                actions: vec![
-                    "ProPresenter: Sermon Notes + Lower-Third Alpha Key".into(),
-                    "X32: Pastor DCA 1 ON + Band Muted".into(),
-                    "OBS 33: Cut to Pulpit + CreateRecordChapter('Sermon')".into(),
-                    "PTZ Cam 1: Recall Preset 2 (Pulpit Tight)".into(),
-                ],
-                obs_scene: "Pulpit".into(),
-                vertical_scene: "Vertical: Pastor Tight 9:16".into(),
-                camera_preset_id: "cam-pulpit".into(),
-                slide_label: "Sermon: Hope Anchored".into(),
-                unmute_dcas: vec!["dca-1".into(), "dca-3".into()],
-                mute_dcas: vec!["dca-2".into()],
-                record_chapter: "Sermon: Hope Anchored".into(),
-                risk_tier: 1,
-            },
-            ServiceCue {
-                id: "cue-6".into(),
-                index: 6,
-                title: "Closing & Benediction".into(),
-                actions: vec![
-                    "ProPresenter: Benediction & Dismissal".into(),
-                    "X32: Pastor + Worship Band DCAs Active".into(),
-                    "OBS 16:9: Stage Wide • NDI Lobby: Dismissal Slide".into(),
-                    "PTZ Cam 3: Crowd / Keys".into(),
-                ],
-                obs_scene: "Stage Wide".into(),
-                vertical_scene: "Vertical: Closing Wide".into(),
-                camera_preset_id: "cam-crowd".into(),
-                slide_label: "Benediction & Dismissal".into(),
-                unmute_dcas: vec!["dca-1".into(), "dca-2".into()],
-                mute_dcas: vec![],
-                record_chapter: "Closing & Benediction".into(),
-                risk_tier: 1,
-            },
-        ],
+        cues: Vec::new(),
         last_verification: None,
-        event_log: vec![
-            "[22:00:01] [ring-discovery] mDNS + Multicast active: _netaudio-arc._udp, _ndi._tcp, _proapiv1._tcp, 224.0.0.90:18514".into(),
-            "[22:00:02] [propresenter] Connected to POST /v1/status/updates (chunked multiplex stream: 6 topics)".into(),
-            "[22:00:02] [streamlabs] Auto-authorized on local TCP 127.0.0.1:28194 + \\\\.\\pipe\\slobs (DualOutputService synced)".into(),
-            "[22:00:03] [obs-ws-v5] Identified on ws://127.0.0.1:4455 (obswebsocket.msgpack, 2 canvases)".into(),
-            "[22:00:03] [dante-conmon] Subscribed to UDP 224.0.0.232:8751 1-byte dBFS peak metering".into(),
-            "[22:00:04] [ndi-discovery] Connected to TCP :5959 as receiver_listener (3 active receivers verified)".into(),
-        ],
+        settings: AppSettings::default(),
+        connected_stations: Vec::new(),
+        sync_status: "local".into(),
+        event_log: Vec::new(),
     };
-    recompute_derived_alerts(&mut s);
-    s
+    recompute_derived_alerts(&mut state);
+    state
 }

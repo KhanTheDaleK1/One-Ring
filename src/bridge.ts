@@ -1,10 +1,14 @@
 import type {
+  AppSettings,
   AppStateSnapshot,
+  BroadcastTarget,
   CueVerificationStep,
-  SlideCue,
-  SlideKind,
+  PreflightCheck,
+  SlideState,
 } from "./types";
 import type { UnlistenFn } from "@tauri-apps/api/event";
+import { applyShowFileToSnapshot } from "./showFile";
+import type { RingShowFile } from "./types";
 
 const isTauri = () =>
   typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -242,113 +246,39 @@ export async function subscribeEvents(
   };
 }
 
+const looksLikePastor = (name: string) => /pastor|speaker|preach/i.test(name);
+
+/** Simulator-only meter synthesis. Never invents show content, only animates configured DCAs. */
 function recomputeDerived(s: AppStateSnapshot) {
-  const pastor = s.dcas.find((d) => d.id === "dca-1");
-  if (pastor) {
-    if (s.beltpackFaultSimulated) {
-      pastor.signalDb = -90;
-      pastor.signalPresent = false;
-    } else if (!pastor.muted) {
-      pastor.signalDb = -11.5;
-      pastor.signalPresent = true;
-    } else {
-      pastor.signalDb = -58;
-      pastor.signalPresent = false;
-    }
+  if (s.mockMode) {
+    const faultId = (s.dcas.find((d) => looksLikePastor(d.name)) ?? s.dcas[0])?.id;
+    s.dcas = s.dcas.map((dca) => {
+      if (dca.id === faultId && s.beltpackFaultSimulated) {
+        return { ...dca, signalDb: -90, signalPresent: false };
+      }
+      if (dca.muted) {
+        return { ...dca, signalDb: -90, signalPresent: false };
+      }
+      return {
+        ...dca,
+        signalDb: dca.signalDb < -60 ? -12 : dca.signalDb,
+        signalPresent: true,
+      };
+    });
   }
-  if (pastor && !pastor.muted && !pastor.signalPresent) {
-    s.silentMicAlert =
-      "SILENT PASTOR MIC: DCA 1 (Pastor) is LIVE/UNMUTED, but Dante Conmon UDP :8751 reports 0xFE (<-90 dBFS) on ULXD4-Pastor-Tx1. Check beltpack power/mute switch!";
-  } else {
-    s.silentMicAlert = null;
-  }
-  s.cameras = s.cameras.map((c) => ({
-    ...c,
-    tally: c.id === s.activeCameraPresetId ? "program" : "idle",
+
+  const silent = s.dcas.find(
+    (dca) => looksLikePastor(dca.name) && !dca.muted && !dca.signalPresent
+  );
+  s.silentMicAlert = silent
+    ? `SILENT INPUT: '${silent.name}' is live/unmuted, but the audio meter reports no signal. Check the beltpack, cable, or input patch.`
+    : null;
+
+  s.cameras = s.cameras.map((camera) => ({
+    ...camera,
+    tally: camera.id === s.activeCameraPresetId ? "program" : "idle",
   }));
 }
-
-type SlideSeed = [section: string, title: string, text: string, kind?: SlideKind];
-
-const makeSlideSet = (prefix: string, seeds: SlideSeed[]): SlideCue[] =>
-  seeds.map(([section, title, text, kind = "lyrics"], index) => ({
-    id: `${prefix}-${index + 1}`,
-    number: index + 1,
-    section,
-    title,
-    text,
-    kind,
-  }));
-
-/**
- * Clean-room placeholder slide decks used by the built-in simulator. The
- * visual grid mirrors the live presentation payload shape, so replacing this
- * with ProPresenter / EasyWorship data later requires no Show Mode changes.
- */
-const SLIDE_SETS: Record<string, SlideCue[]> = {
-  "Pre-Service Announcements": makeSlideSet("preservice", [
-    ["Welcome", "Welcome", "Welcome! Service begins in 5 minutes.", "title"],
-    ["Announcements", "Kids Check-In", "Kids check-in is open in the lobby.", "media"],
-    ["Announcements", "Tonight", "Youth group meets tonight at 6:00 PM.", "media"],
-    ["Next Steps", "New Here?", "Stop by the Welcome Desk for a gift.", "media"],
-    ["Giving", "Give Online", "Give online or at the giving boxes.", "media"],
-    ["Community", "Small Groups", "Join a small group this fall.", "media"],
-    ["Prayer", "Prayer Team", "Prayer team is available after service.", "media"],
-    ["Countdown", "2 Minutes", "Worship begins in 2 minutes.", "title"],
-  ]),
-  "5-Minute Countdown": makeSlideSet("countdown", [
-    ["Countdown", "5:00", "Worship begins in 5 minutes.", "title"],
-    ["Countdown", "4:00", "Worship begins in 4 minutes.", "title"],
-    ["Countdown", "3:00", "Worship begins in 3 minutes.", "title"],
-    ["Countdown", "2:00", "Worship begins in 2 minutes.", "title"],
-    ["Countdown", "1:00", "Worship begins in 1 minute.", "title"],
-  ]),
-  "Praise (Song 1)": makeSlideSet("worship", [
-    ["Verse 1", "Verse 1", "We lift our eyes to the morning light", "lyrics"],
-    ["Verse 1", "Verse 1 (cont.)", "Your faithfulness carries us through the night", "lyrics"],
-    ["Chorus", "Chorus", "Holy, holy, You are worthy", "lyrics"],
-    ["Chorus", "Chorus (cont.)", "All the earth will sing Your praise", "lyrics"],
-    ["Verse 2", "Verse 2", "We fix our hearts on the hope You bring", "lyrics"],
-    ["Verse 2", "Verse 2 (cont.)", "Every fear is quieted when we sing", "lyrics"],
-    ["Bridge", "Bridge", "You are the King of glory", "lyrics"],
-    ["Bridge", "Bridge (repeat)", "You are the King of glory", "lyrics"],
-    ["Chorus", "Final Chorus", "Holy, holy, You are worthy", "lyrics"],
-    ["Tag", "Tag", "Jesus, You are worthy", "lyrics"],
-  ]),
-  "Welcome & Next Steps": makeSlideSet("welcome", [
-    ["Welcome", "Welcome Home", "We are glad you are here today.", "title"],
-    ["Announcements", "Announcements", "Take a moment to review this week's news.", "media"],
-    ["Next Steps", "Next Steps", "Find community, serve, and grow with us.", "media"],
-    ["Giving", "Generosity", "Thank you for supporting the mission.", "media"],
-    ["Prayer", "Prayer", "Prayer team is available at the front.", "media"],
-    ["Closing", "See You Soon", "Join us again next Sunday.", "title"],
-  ]),
-  "Sermon: Hope Anchored": makeSlideSet("sermon", [
-    ["Sermon", "Hope Anchored", "A living hope for every season.", "title"],
-    ["Scripture", "Hebrews 6:19", "We have this hope as an anchor for the soul.", "scripture"],
-    ["Point 1", "Hope Holds", "Hope holds us steady when the storm comes.", "lyrics"],
-    ["Point 2", "Hope Looks Up", "Hope looks beyond today's circumstance.", "lyrics"],
-    ["Point 3", "Hope Is Anchored", "Hope is anchored in the person of Christ.", "lyrics"],
-    ["Application", "Respond", "Where is God inviting you to trust Him?", "media"],
-    ["Prayer", "Prayer", "Pray for hope in the waiting.", "media"],
-    ["Closing", "Hope Anchored", "Go from here anchored in hope.", "title"],
-  ]),
-  "Benediction & Dismissal": makeSlideSet("benediction", [
-    ["Benediction", "Benediction", "May the God of hope fill you with all joy.", "scripture"],
-    ["Blessing", "Blessing", "Go in peace, rooted and grounded in love.", "scripture"],
-    ["Sending", "Sending", "You are sent to carry hope to the world.", "media"],
-    ["Dismissal", "Dismissal", "Thank you for worshiping with us today.", "title"],
-  ]),
-};
-
-const slideSetFor = (label: string): SlideCue[] =>
-  SLIDE_SETS[label] ??
-  makeSlideSet(`adhoc-${label.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`, [
-    [label, label, label, "title"],
-    ["Ready", "Ready", "Slide content is waiting for the live presentation feed.", "media"],
-  ]);
-
-const INITIAL_SLIDES = slideSetFor("Pre-Service Announcements");
 
 function applySlidePosition(s: AppStateSnapshot, slideNumber: number) {
   const slides = s.slides.slides ?? [];
@@ -361,200 +291,178 @@ function applySlidePosition(s: AppStateSnapshot, slideNumber: number) {
   s.slides.nextText = slides[target]?.text ?? "";
 }
 
+const blankSlides = (): SlideState => ({
+  app: "Slides",
+  playlistName: "",
+  presentationName: "",
+  currentSlide: 0,
+  totalSlides: 0,
+  currentText: "",
+  nextText: "",
+  cleared: false,
+  stageMessage: "",
+  transportLayer: "local",
+  slides: [],
+});
+
+/** Defaults mirror `AppSettings::default()` in src-tauri/src/state.rs. */
+const initialSettings = (): AppSettings => ({
+  x32: {
+    ipAddress: "",
+    oscPort: 10023,
+    keepaliveIntervalSec: 8,
+    dcaMappings: [],
+  },
+  dante: {
+    subnetInterface: "Auto (default route)",
+    conmonMeterPort: 8751,
+    conmonControlPort: 8700,
+    clockSyncWarnMs: 50,
+    clockSyncErrorMs: 150,
+  },
+  broadcast: {
+    destinations: [],
+    recordingPath: "",
+    recordingFormat: "MKV",
+    encoder: "Software",
+  },
+  slides: {
+    songselectClientId: "",
+    songselectClientSecret: "",
+    displayAssignments: {
+      fohWindow: "",
+      stageDisplayWindow: "",
+      ndiAlphaOutput: "",
+    },
+  },
+  ndiPtz: {
+    discoveryRangeStart: "",
+    discoveryRangeEnd: "",
+    viscaPort: 52381,
+    presetNames: [],
+  },
+  general: {
+    engineerPin: "",
+  },
+  station: {
+    role: "master",
+    stationName: "",
+    lockToRole: false,
+  },
+  sync: {
+    lanDiscoveryEnabled: true,
+    hubAddress: "ws://0.0.0.0:47800",
+    syncPort: 47800,
+    cloudSyncEnabled: false,
+    accountEmail: "",
+    profileName: "",
+    venueId: "",
+    syncToken: "",
+    autoSyncOnLaunch: false,
+    lastSyncedAt: "",
+  },
+});
+
+/** Derive Show Mode outputs from user-configured Settings. */
+function broadcastsFromSettings(settings: AppSettings): BroadcastTarget[] {
+  const targets: BroadcastTarget[] = settings.broadcast.destinations
+    .filter((dest) => dest.enabled)
+    .map((dest) => ({
+      id: dest.id,
+      platform: dest.platform,
+      live: false,
+      bitrateKbps: 0,
+      droppedFrames: 0,
+      elapsedSec: 0,
+      endpoint: dest.rtmpUrl,
+      canvas: "Program",
+    }));
+
+  if (settings.broadcast.recordingPath.trim()) {
+    targets.push({
+      id: "record",
+      platform: `Local Recording (${settings.broadcast.recordingFormat})`,
+      live: false,
+      bitrateKbps: 0,
+      droppedFrames: 0,
+      elapsedSec: 0,
+      endpoint: `${settings.broadcast.recordingPath.replace(/\.$/, "")}.${settings.broadcast.recordingFormat.toLowerCase()}`,
+      canvas: "Program",
+    });
+  }
+  return targets;
+}
+
+/** Rebuild readiness checks from the current authored content (no demo checks). */
+function rebuildPreflight(s: AppStateSnapshot) {
+  const slideCount = s.slides.slides?.length ?? 0;
+  const check = (
+    id: string,
+    domain: string,
+    title: string,
+    ok: boolean,
+    detail: string
+  ): PreflightCheck => ({
+    id,
+    domain,
+    title,
+    status: ok ? "pass" : "warn",
+    detail,
+    evidence: detail,
+    fixLabel: ok ? null : "Open Show Builder",
+  });
+
+  s.preflight = [
+    check("chk-cues", "Show File", "Service cue stack is populated", s.cues.length > 0, `${s.cues.length} cue(s) in the current show file`),
+    check(
+      "chk-audio",
+      "Audio Mixing",
+      "Mixer endpoint and DCA layout are configured",
+      s.dcas.length > 0 && s.settings.x32.ipAddress.trim().length > 0,
+      s.settings.x32.ipAddress.trim().length === 0
+        ? "Set the mixer IP address in Settings → Audio Mixing"
+        : `${s.dcas.length} DCA(s) mapped to ${s.settings.x32.ipAddress}`
+    ),
+    check("chk-routing", "Audio Network", "Audio network routes are defined", s.danteRoutes.length > 0, `${s.danteRoutes.length} route(s) configured`),
+    check("chk-broadcast", "Broadcasting", "Broadcast and recording outputs are configured", s.broadcasts.length > 0, `${s.broadcasts.length} output(s) configured`),
+    check("chk-slides", "Slides", "Slide deck is loaded", slideCount > 0, `${slideCount} slide(s) in '${s.slides.presentationName}'`),
+    check("chk-cameras", "Cameras", "Camera presets are defined", s.cameras.length > 0, `${s.cameras.length} preset(s) configured`),
+  ];
+  s.topologyIssues = [];
+}
+
 const initialSimState = (): AppStateSnapshot => ({
   mockMode: true,
   rehearsalMode: false,
-  serviceName: "Sunday 10:30 AM Service",
+  serviceName: "Untitled Show",
   activeCueIndex: 0,
   canUndo: false,
   undoDepth: 0,
   lastUndoLabel: null,
   silentMicAlert: null,
   beltpackFaultSimulated: false,
-  danteClock:
-    "48 kHz / 24-bit • PTP Grandmaster Locked (X32-Dante 00:1D:C1:8A:44:10) • Conmon UDP :8751 Metering Active",
-  health: [
-    { id: "x32", label: "X32", status: "ok", detail: "OSC 10.1.24.50:10023 (/xremote 8s)", protocol: "X32 OSC UDP :10023", latencyMs: 2 },
-    { id: "dante", label: "Dante", status: "ok", detail: "ARC + Conmon :8700/:8751 Locked", protocol: "Audinate ARC/Conmon UDP", latencyMs: 1 },
-    { id: "yt", label: "YT + FB", status: "ok", detail: "OBS v5 :4455 + SLOBS :28194 Ready", protocol: "obswebsocket.msgpack + JSON-RPC", latencyMs: 3 },
-    { id: "slides", label: "ProPresenter", status: "ok", detail: "POST /v1/status/updates Stream Active", protocol: "ProPresenter 22 control-tower v1", latencyMs: 4 },
-    { id: "cams", label: "NDI 6 / PTZ", status: "ok", detail: "Discovery :5959 (3 Rx, 4 Presets)", protocol: "NDI 6 Discovery :5959 + VISCA :52381", latencyMs: 3 },
-  ],
-  preflight: [
-    {
-      id: "chk-topology",
-      domain: "Show-File vs. Live Topology",
-      title: "All 6 service cues verified against live OBS canvases, PTZ presets, Dante Rx & ProPresenter playlist",
-      status: "pass",
-      detail: "0 missing scenes, 0 missing crosspoints, 0 orphan presets",
-      evidence: "6/6 cues validated against live capability graph",
-      fixLabel: null,
-    },
-    {
-      id: "chk-x32",
-      domain: "Behringer X32",
-      title: "OSC reachable on UDP :10023, /xremote subscription active, Main LR unmuted",
-      status: "pass",
-      detail: "X32 Producer (FW 4.09) • 4 DCAs mapped • /meters/1 streaming",
-      evidence: "RTT 1.8 ms • Scene 01 'Pre-Service'",
-      fixLabel: "Re-Sync X32 Scene",
-    },
-    {
-      id: "chk-dante",
-      domain: "Dante Network",
-      title: "Single PTP Grandmaster (48 kHz), 4/4 ARC crosspoints UNICAST/MULTICAST, Conmon UDP :8751 metering active",
-      status: "pass",
-      detail: "X32-Dante ↔ DVS-Broadcast ↔ ULXD4-Wireless all RXSTATUS=OK",
-      evidence: "0 clock sync errors • Multicast 224.0.0.232:8751",
-      fixLabel: "Re-Verify Crosspoints",
-    },
-    {
-      id: "chk-stream",
-      domain: "OBS 33 / Streamlabs Dual-Canvas",
-      title: "Horizontal (16:9) + Vertical (9:16) canvases verified; YouTube + Facebook RTMPS outputs ready",
-      status: "pass",
-      detail: "OBS v5 (:4455) + Streamlabs Local TCP (127.0.0.1:28194 auto-auth)",
-      evidence: "CPU 8.4% • GPU Headroom 84% • Disk 7.9 TB free",
-      fixLabel: "Test Output Handshake",
-    },
-    {
-      id: "chk-slides",
-      domain: "ProPresenter 22.0.1",
-      title: "Multiplexed chunked stream (POST /v1/status/updates) active; Stage Display & ProLink ready",
-      status: "pass",
-      detail: "Playlist 'Sunday 10:30 AM' loaded • _proapiv1._tcp advertised",
-      evidence: "Chunked stream 0 drops • ProLink 224.0.0.90:18514 synced",
-      fixLabel: "Focus Active Playlist",
-    },
-    {
-      id: "chk-ndi",
-      domain: "NDI 6 & PTZ Cameras",
-      title: "NDI 6 Discovery (:5959) receiver_listener active; all 3 building displays on intended sources",
-      status: "pass",
-      detail: "Lobby TV, Stage Confidence & Broadcast Key verified via <query_receivers/>",
-      evidence: "Metadata-only PTZ (<ndi_enabled_streams video=false text=true/>)",
-      fixLabel: "Auto-Heal NDI Displays",
-    },
-  ],
+  health: [],
+  preflight: [],
   topologyIssues: [],
-  dcas: [
-    { id: "dca-1", number: 1, name: "Pastor Wireless", muted: true, levelDb: 0, minDb: -6, maxDb: 6, guardMute: false, signalDb: -58, signalPresent: false, danteTxChannel: "ULXD4-Pastor-Tx1" },
-    { id: "dca-2", number: 2, name: "Worship Band", muted: true, levelDb: -2, minDb: -9, maxDb: 3, guardMute: false, signalDb: -18, signalPresent: true, danteTxChannel: "X32-Band-Stem" },
-    { id: "dca-3", number: 3, name: "Media / ProPresenter", muted: false, levelDb: 0, minDb: -12, maxDb: 3, guardMute: false, signalDb: -14.2, signalPresent: true, danteTxChannel: "DVS-ProPresenter-L/R" },
-    { id: "dca-4", number: 4, name: "Main FOH LR", muted: false, levelDb: 0, minDb: -3, maxDb: 0, guardMute: true, signalDb: -12.8, signalPresent: true, danteTxChannel: "X32-Main-LR" },
-  ],
-  cameras: [
-    { id: "cam-wide", cameraId: "cam1", name: "1: Stage Wide", presetIndex: 1, protocol: "NDI Metadata PTZ", tally: "program" },
-    { id: "cam-pulpit", cameraId: "cam1", name: "2: Pulpit Tight", presetIndex: 2, protocol: "NDI Metadata PTZ", tally: "idle" },
-    { id: "cam-worship", cameraId: "cam2", name: "3: Worship Center", presetIndex: 1, protocol: "VISCA-over-IP :52381", tally: "idle" },
-    { id: "cam-crowd", cameraId: "cam3", name: "4: Crowd / Keys", presetIndex: 1, protocol: "VISCA-over-IP :52381", tally: "idle" },
-  ],
-  activeCameraPresetId: "cam-wide",
-  obsScene: "Pre-Service Loop",
-  verticalScene: "Vertical: Pre-Service Reels",
-  canvases: [
-    {
-      uuid: "canvas-main-16x9",
-      name: "Primary Broadcast (Horizontal)",
-      aspect: "16:9",
-      resolution: "1920x1080 @ 60fps",
-      activeScene: "Pre-Service Loop",
-      engine: "OBS 33 GetCanvasList (MAIN | ACTIVATE | MIX_AUDIO)",
-    },
-    {
-      uuid: "canvas-vert-9x16",
-      name: "Social / Shorts Feed (Vertical)",
-      aspect: "9:16",
-      resolution: "1080x1920 @ 60fps",
-      activeScene: "Vertical: Pre-Service Reels",
-      engine: "Streamlabs DualOutputService + OBS 33 Canvas",
-    },
-  ],
-  broadcasts: [
-    { id: "youtube", platform: "YouTube Live (16:9)", live: false, bitrateKbps: 0, droppedFrames: 0, elapsedSec: 0, endpoint: "rtmps://a.rtmp.youtube.com/live2", canvas: "Horizontal 16:9" },
-    { id: "facebook", platform: "Facebook + Vertical Simulcast", live: false, bitrateKbps: 0, droppedFrames: 0, elapsedSec: 0, endpoint: "rtmps://live-api-s.facebook.com:443/rtmp", canvas: "Horizontal 16:9 + Vertical 9:16" },
-    { id: "record", platform: "Local Multi-Chapter MKV", live: false, bitrateKbps: 0, droppedFrames: 0, elapsedSec: 0, endpoint: "/mnt/BCloud/Recordings/Sunday.mkv", canvas: "Horizontal 16:9" },
-  ],
-  recordChapters: ["00:00 — Pre-Service Loop (Ready)"],
-  danteRoutes: [
-    { id: "dr-1", rxDevice: "X32-FOH-Dante", rxChannel: "Rx 01 (Pastor Mic)", txDevice: "ULXD4-Rack-A", txChannel: "ULXD4-Pastor-Tx1", rxStatus: "UNICAST", signalDbfs: -12, identifyFlashing: false },
-    { id: "dr-2", rxDevice: "X32-FOH-Dante", rxChannel: "Rx 17-18 (ProPresenter)", txDevice: "MacStudio-FOH (DVS)", txChannel: "DVS-ProPresenter-L/R", rxStatus: "UNICAST", signalDbfs: -14, identifyFlashing: false },
-    { id: "dr-3", rxDevice: "Broadcast-OBS (Dante Studio)", rxChannel: "Rx 01-02 (Broadcast Mix)", txDevice: "X32-FOH-Dante", txChannel: "Matrix 1-2 (Stream Bus)", rxStatus: "MULTICAST", signalDbfs: -9, identifyFlashing: false },
-    { id: "dr-4", rxDevice: "Lobby-Amp-PoE", rxChannel: "Rx 01 (Lobby Fill)", txDevice: "X32-FOH-Dante", txChannel: "Matrix 3 (Foyer)", rxStatus: "UNICAST", signalDbfs: -16, identifyFlashing: false },
-  ],
-  ndiReceivers: [
-    { id: "ndi-rx-1", receiverName: "Lobby Signage Display (Studio Monitor)", ip: "10.1.24.71:5960", subscribedSource: "ONE-RING (Lobby Feed)", expectedSource: "ONE-RING (Lobby Feed)", status: "CONNECTED", tallyProgram: true },
-    { id: "ndi-rx-2", receiverName: "Stage Confidence Monitor", ip: "10.1.24.72:5960", subscribedSource: "PROPRESENTER (Stage Display)", expectedSource: "PROPRESENTER (Stage Display)", status: "CONNECTED", tallyProgram: false },
-    { id: "ndi-rx-3", receiverName: "OBS Lower-Third Keyer", ip: "127.0.0.1:5961", subscribedSource: "PROPRESENTER (Audience Alpha Key)", expectedSource: "PROPRESENTER (Audience Alpha Key)", status: "CONNECTED", tallyProgram: true },
-  ],
-  ndiSources: [
-    "ONE-RING (Lobby Feed)",
-    "PROPRESENTER (Stage Display)",
-    "PROPRESENTER (Audience Alpha Key)",
-    "CAM-1 (Stage Wide NDI|HX3)",
-    "CAM-2 (Pulpit Tight NDI|HX3)",
-    "OBS-PROGRAM (Main Output)",
-  ],
-  slides: {
-    app: "ProPresenter 22.0.1",
-    playlistName: "Sunday 10:30 AM",
-    presentationName: "Pre-Service Announcements",
-    currentSlide: 1,
-    totalSlides: INITIAL_SLIDES.length,
-    currentText: INITIAL_SLIDES[0]?.text ?? "",
-    nextText: INITIAL_SLIDES[1]?.text ?? "",
-    cleared: false,
-    stageMessage: "Doors Open • Mic Check Complete",
-    transportLayer: "presentation (Auto-Advance Active)",
-    slides: INITIAL_SLIDES,
-  },
-  cues: [
-    {
-      id: "cue-1", index: 1, title: "Pre-Service Loop",
-      actions: ["ProPresenter: Pre-Service Announcements", "X32: Media DCA ON, Pastor/Band Muted", "OBS 16:9 + 9:16: Pre-Service Loop", "PTZ Cam 1: Stage Wide"],
-      obsScene: "Pre-Service Loop", verticalScene: "Vertical: Pre-Service Reels", cameraPresetId: "cam-wide", slideLabel: "Pre-Service Announcements",
-      unmuteDcas: ["dca-3"], muteDcas: ["dca-1", "dca-2"], recordChapter: "Pre-Service Loop", riskTier: 1,
-    },
-    {
-      id: "cue-2", index: 2, title: "Countdown & Go Live (YT + FB + Rec)",
-      actions: ["ProPresenter: 5-Minute Countdown (ProLink Preroll)", "OBS + SLOBS: Start YT + FB + MKV Recording", "OBS 33: CreateRecordChapter('Countdown')"],
-      obsScene: "Countdown", verticalScene: "Vertical: Countdown", cameraPresetId: "cam-wide", slideLabel: "5-Minute Countdown",
-      unmuteDcas: ["dca-3"], muteDcas: ["dca-1", "dca-2"], recordChapter: "5-Minute Countdown", riskTier: 2,
-    },
-    {
-      id: "cue-3", index: 3, title: "Worship Set",
-      actions: ["ProPresenter: Praise (Song 1) + Stage Lyrics", "X32: Unmute Worship Band DCA 2", "OBS 16:9: Band Wide • 9:16: Lead Vocal Crop", "PTZ Cam 2: Worship Center"],
-      obsScene: "Band Wide", verticalScene: "Vertical: Worship Lead", cameraPresetId: "cam-worship", slideLabel: "Praise (Song 1)",
-      unmuteDcas: ["dca-2"], muteDcas: ["dca-1"], recordChapter: "Worship Set", riskTier: 1,
-    },
-    {
-      id: "cue-4", index: 4, title: "Welcome & Announcements",
-      actions: ["ProPresenter: Welcome & Next Steps", "X32: Unmute Pastor DCA 1 (Verify Dante Tx1 Signal)", "OBS 16:9 + 9:16: Stage Host", "PTZ Cam 1: Stage Wide"],
-      obsScene: "Stage", verticalScene: "Vertical: Host Center", cameraPresetId: "cam-wide", slideLabel: "Welcome & Next Steps",
-      unmuteDcas: ["dca-1", "dca-3"], muteDcas: ["dca-2"], recordChapter: "Welcome & Announcements", riskTier: 1,
-    },
-    {
-      id: "cue-5", index: 5, title: "Sermon: Hope Anchored",
-      actions: ["ProPresenter: Sermon Notes + Lower-Third Alpha Key", "X32: Pastor DCA 1 ON + Band Muted", "OBS 33: Cut to Pulpit + CreateRecordChapter('Sermon')", "PTZ Cam 1: Recall Preset 2 (Pulpit Tight)"],
-      obsScene: "Pulpit", verticalScene: "Vertical: Pastor Tight 9:16", cameraPresetId: "cam-pulpit", slideLabel: "Sermon: Hope Anchored",
-      unmuteDcas: ["dca-1", "dca-3"], muteDcas: ["dca-2"], recordChapter: "Sermon: Hope Anchored", riskTier: 1,
-    },
-    {
-      id: "cue-6", index: 6, title: "Closing & Benediction",
-      actions: ["ProPresenter: Benediction & Dismissal", "X32: Pastor + Worship Band DCAs Active", "OBS 16:9: Stage Wide • NDI Lobby: Dismissal Slide", "PTZ Cam 3: Crowd / Keys"],
-      obsScene: "Stage Wide", verticalScene: "Vertical: Closing Wide", cameraPresetId: "cam-crowd", slideLabel: "Benediction & Dismissal",
-      unmuteDcas: ["dca-1", "dca-2"], muteDcas: [], recordChapter: "Closing & Benediction", riskTier: 1,
-    },
-  ],
+  dcas: [],
+  cameras: [],
+  activeCameraPresetId: "",
+  obsScene: "",
+  verticalScene: "",
+  canvases: [],
+  broadcasts: [],
+  recordChapters: [],
+  danteClock: "",
+  danteRoutes: [],
+  ndiReceivers: [],
+  ndiSources: [],
+  slides: blankSlides(),
+  cues: [],
   lastVerification: null,
-  eventLog: [
-    "[22:00:01] [ring-discovery] mDNS + Multicast active: _netaudio-arc._udp, _ndi._tcp, _proapiv1._tcp, 224.0.0.90:18514",
-    "[22:00:02] [propresenter] Connected to POST /v1/status/updates (chunked multiplex stream: 6 topics)",
-    "[22:00:02] [streamlabs] Auto-authorized on local TCP 127.0.0.1:28194 + \\\\.\\pipe\\slobs (DualOutputService synced)",
-    "[22:00:03] [obs-ws-v5] Identified on ws://127.0.0.1:4455 (obswebsocket.msgpack, 2 canvases)",
-    "[22:00:03] [dante-conmon] Subscribed to UDP 224.0.0.232:8751 1-byte dBFS peak metering",
-    "[22:00:04] [ndi-discovery] Connected to TCP :5959 as receiver_listener (3 active receivers verified)",
-  ],
+  settings: initialSettings(),
+  connectedStations: [],
+  syncStatus: "local",
+  eventLog: [],
 });
 
 let simState: AppStateSnapshot = initialSimState();
@@ -587,13 +495,9 @@ export const bridge = {
       if (simState.canvases[0]) simState.canvases[0].activeScene = cue.obsScene;
       if (simState.canvases[1]) simState.canvases[1].activeScene = cue.verticalScene;
       simState.activeCameraPresetId = cue.cameraPresetId;
-      const nextSlides = slideSetFor(cue.slideLabel);
-      simState.slides.presentationName = cue.slideLabel;
-      simState.slides.slides = nextSlides;
-      simState.slides.currentSlide = 1;
-      simState.slides.totalSlides = nextSlides.length;
-      simState.slides.currentText = nextSlides[0]?.text ?? "";
-      simState.slides.nextText = nextSlides[1]?.text ?? "";
+      if (cue.slideLabel.trim()) {
+        simState.slides.presentationName = cue.slideLabel;
+      }
       simState.slides.cleared = false;
       simState.dcas = simState.dcas.map((d) => ({
         ...d,
@@ -617,10 +521,10 @@ export const bridge = {
       rehearsal: simState.rehearsalMode,
       timestamp: "Just now",
       steps: [
-        { domain: "ProPresenter v1", expected: `Presentation == '${cue.slideLabel}'`, observed: `POST /v1/status/updates confirmed '${cue.slideLabel}'`, status: modeTag, latencyMs: 4 },
-        { domain: "Behringer X32 OSC", expected: `Unmute [${cue.unmuteDcas.join(", ")}]`, observed: "UDP :10023 /dca/1..4/on verified", status: modeTag, latencyMs: 2 },
-        { domain: "OBS 33 + Streamlabs Dual-Canvas", expected: `16:9='${cue.obsScene}', 9:16='${cue.verticalScene}'`, observed: `SerialFrame + CreateRecordChapter('${cue.recordChapter}') acked`, status: modeTag, latencyMs: 5 },
-        { domain: "NDI 6 / VISCA PTZ", expected: `Preset == '${cue.cameraPresetId}'`, observed: "Tally + PTZ preset settled", status: modeTag, latencyMs: 3 },
+        { domain: "Slides", expected: `Presentation == '${cue.slideLabel}'`, observed: `Slide transport confirmed '${cue.slideLabel}'`, status: modeTag, latencyMs: 4 },
+        { domain: "Audio Mixing", expected: `Unmute [${cue.unmuteDcas.join(", ")}]`, observed: "DCA mute states verified", status: modeTag, latencyMs: 2 },
+        { domain: "Broadcasting", expected: `16:9='${cue.obsScene}', 9:16='${cue.verticalScene}'`, observed: `Program + record chapter '${cue.recordChapter}' acknowledged`, status: modeTag, latencyMs: 5 },
+        { domain: "Cameras", expected: `Preset == '${cue.cameraPresetId}'`, observed: "Tally + preset settled", status: modeTag, latencyMs: 3 },
       ],
     };
     simState.eventLog.unshift(
@@ -769,8 +673,41 @@ export const bridge = {
 
   async runPreflightProbes(): Promise<AppStateSnapshot> {
     if (isTauri()) return invokeTauri("run_preflight_probes");
-    simState.preflight = simState.preflight.map((p) => ({ ...p, status: "pass" }));
-    simState.eventLog.unshift("[preflight] Executed live topology + protocol probes across all 6 domains: 6/6 PASS");
+    rebuildPreflight(simState);
+    const passed = simState.preflight.filter((check) => check.status === "pass").length;
+    simState.eventLog.unshift(
+      `[preflight] Readiness sweep complete: ${passed}/${simState.preflight.length} checks passing`
+    );
+    return structuredClone(simState);
+  },
+
+  async saveSettings(settings: AppSettings): Promise<AppStateSnapshot> {
+    if (isTauri()) return invokeTauri("update_settings", { settings });
+    simState.settings = structuredClone(settings);
+    simState.broadcasts = broadcastsFromSettings(simState.settings).map((target) => {
+      const existing = simState.broadcasts.find((b) => b.id === target.id);
+      return existing
+        ? {
+            ...target,
+            live: existing.live,
+            bitrateKbps: existing.bitrateKbps,
+            droppedFrames: existing.droppedFrames,
+            elapsedSec: existing.elapsedSec,
+          }
+        : target;
+    });
+    rebuildPreflight(simState);
+    simState.eventLog.unshift(
+      "[settings] Configuration saved (audio, network, broadcasting, slides, cameras, station, sync)"
+    );
+    return structuredClone(simState);
+  },
+
+  async applyShowFile(show: RingShowFile): Promise<AppStateSnapshot> {
+    if (isTauri()) return invokeTauri("import_show_file", { show });
+    simState = applyShowFileToSnapshot(simState, show);
+    undoStack = [];
+    syncSimUndo();
     return structuredClone(simState);
   },
 

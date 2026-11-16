@@ -1,4 +1,12 @@
-export type ViewMode = "preflight" | "show" | "engineer";
+export type ViewMode =
+  | "engineer"
+  | "preflight"
+  | "show"
+  | "audio"
+  | "slides"
+  | "broadcast"
+  | "cameras"
+  | "settings";
 
 export interface DomainHealth {
   id: string;
@@ -152,6 +160,143 @@ export interface CueVerificationReport {
   steps: CueVerificationStep[];
 }
 
+// ---------------------------------------------------------------------------------------------
+// Settings & Device Configuration — persisted by src-tauri/src/state.rs
+// ---------------------------------------------------------------------------------------------
+
+export interface DcaMapping {
+  dcaId: string;
+  dcaNumber: number;
+  dcaName: string;
+  /** Source channel routed into the DCA, e.g. "Ch 09 — Pastor Wireless". */
+  sourceChannel: string;
+}
+
+export interface X32Settings {
+  ipAddress: string;
+  oscPort: number;
+  keepaliveIntervalSec: number;
+  dcaMappings: DcaMapping[];
+}
+
+export interface DanteSettings {
+  subnetInterface: string;
+  conmonMeterPort: number;
+  conmonControlPort: number;
+  clockSyncWarnMs: number;
+  clockSyncErrorMs: number;
+}
+
+export interface RtmpDestination {
+  id: string;
+  platform: string;
+  rtmpUrl: string;
+  streamKey: string;
+  enabled: boolean;
+}
+
+export type RecordingFormat = "MKV" | "MP4";
+export type VideoEncoder = "NVENC" | "VideoToolbox" | "Software";
+
+export interface BroadcastSettings {
+  destinations: RtmpDestination[];
+  recordingPath: string;
+  recordingFormat: RecordingFormat;
+  encoder: VideoEncoder;
+}
+
+export interface DisplayAssignments {
+  fohWindow: string;
+  stageDisplayWindow: string;
+  ndiAlphaOutput: string;
+}
+
+export interface SlidesSettings {
+  songselectClientId: string;
+  songselectClientSecret: string;
+  displayAssignments: DisplayAssignments;
+}
+
+export interface CameraPresetName {
+  presetId: string;
+  cameraId: string;
+  label: string;
+}
+
+export interface NdiPtzSettings {
+  discoveryRangeStart: string;
+  discoveryRangeEnd: string;
+  viscaPort: number;
+  presetNames: CameraPresetName[];
+}
+
+export interface GeneralSettings {
+  /** PIN required to unlock Engineer Mode from Volunteer Show Mode. */
+  engineerPin: string;
+}
+
+export type StationRole = "slides" | "audio" | "broadcast" | "director" | "master";
+
+export interface StationSettings {
+  /** The position this physical machine is dedicated to. */
+  role: StationRole;
+  stationName: string;
+  /** Lock the navigation to the tabs relevant to this role. */
+  lockToRole: boolean;
+}
+
+export interface SyncSettings {
+  /** Discover other One Ring nodes on the LAN (mDNS + WebSocket hub). */
+  lanDiscoveryEnabled: boolean;
+  hubAddress: string;
+  syncPort: number;
+  /** Cloud profile sync for show files, cues, endpoints and preferences. */
+  cloudSyncEnabled: boolean;
+  accountEmail: string;
+  profileName: string;
+  venueId: string;
+  syncToken: string;
+  autoSyncOnLaunch: boolean;
+  lastSyncedAt: string;
+}
+
+export interface ConnectedStation {
+  id: string;
+  name: string;
+  role: StationRole;
+  online: boolean;
+  latencyMs: number;
+}
+
+export interface AppSettings {
+  x32: X32Settings;
+  dante: DanteSettings;
+  broadcast: BroadcastSettings;
+  slides: SlidesSettings;
+  ndiPtz: NdiPtzSettings;
+  general: GeneralSettings;
+  station: StationSettings;
+  sync: SyncSettings;
+}
+
+/** Portable, user-authored show file (`*.ring.json`). */
+export interface RingShowFile {
+  format: "one-ring-show";
+  version: 1;
+  exportedAt: string;
+  serviceName: string;
+  cues: ServiceCue[];
+  dcas: DcaChannel[];
+  cameras: CameraPreset[];
+  canvases: BroadcastCanvas[];
+  broadcasts: BroadcastTarget[];
+  recordChapters: string[];
+  danteRoutes: DanteRoute[];
+  ndiReceivers: NdiReceiver[];
+  ndiSources: string[];
+  slides: SlideState;
+}
+
 export interface AppStateSnapshot {
   mockMode: boolean;
   rehearsalMode: boolean;
@@ -181,4 +326,8 @@ export interface AppStateSnapshot {
   cues: ServiceCue[];
   lastVerification?: CueVerificationReport | null;
   eventLog: string[];
+  settings: AppSettings;
+  /** Other One Ring nodes visible on the LAN. */
+  connectedStations: ConnectedStation[];
+  syncStatus: string;
 }

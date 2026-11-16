@@ -8,8 +8,8 @@ use runtime::propresenter_adapter::ProPresenterCommand;
 use runtime::x32_adapter::X32Command;
 use runtime::{AdapterCommand, AdapterRegistry, RuntimeConfig};
 use state::{
-    recompute_derived_alerts, with_state, AppStateSnapshot, CueVerificationReport,
-    CueVerificationStep, ManagedState, ServiceCue, SharedState, UndoEntry,
+    recompute_derived_alerts, with_state, AppSettings, AppStateSnapshot, CueVerificationReport,
+    CueVerificationStep, ManagedState, ServiceCue, SharedState, ShowFile, UndoEntry,
 };
 use std::sync::Arc;
 use tauri::{Emitter, Manager, State};
@@ -553,16 +553,52 @@ fn flash_dante_identify(route_id: String, state: State<ManagedState>) -> AppStat
 }
 
 #[tauri::command]
-fn run_preflight_probes(state: State<ManagedState>) -> AppStateSnapshot {
+fn update_settings(settings: AppSettings, state: State<ManagedState>) -> AppStateSnapshot {
     let mut inner = state.inner.lock().unwrap();
-    for chk in &mut inner.preflight {
-        chk.status = "pass".into();
-    }
-    inner.event_log.insert(
-        0,
-        "[preflight] Executed live topology + protocol probes across all 6 domains: 6/6 PASS"
+    inner.settings = settings;
+    inner.sync_broadcasts_from_settings();
+    inner.rebuild_preflight();
+    inner.push_event_log(
+        "[settings] Configuration saved (audio, network, broadcasting, slides, cameras, station, sync)"
             .into(),
     );
+    let snapshot = inner.clone();
+    drop(inner);
+
+    if let Err(err) = state.save_settings() {
+        let mut inner = state.inner.lock().unwrap();
+        inner.push_event_log(format!(
+            "[settings] WARNING: failed to persist configuration: {err}"
+        ));
+        return inner.clone();
+    }
+    snapshot
+}
+
+#[tauri::command]
+fn export_show_file(state: State<ManagedState>) -> ShowFile {
+    let inner = state.inner.lock().unwrap();
+    let mut show = inner.to_show_file();
+    show.exported_at = format!("{:?}", std::time::SystemTime::now());
+    show
+}
+
+#[tauri::command]
+fn import_show_file(show: ShowFile, state: State<ManagedState>) -> AppStateSnapshot {
+    let mut inner = state.inner.lock().unwrap();
+    inner.apply_show_file(show);
+    inner.clone()
+}
+
+#[tauri::command]
+fn run_preflight_probes(state: State<ManagedState>) -> AppStateSnapshot {
+    let mut inner = state.inner.lock().unwrap();
+    inner.rebuild_preflight();
+    let passed = inner.preflight.iter().filter(|c| c.status == "pass").count();
+    let total = inner.preflight.len();
+    inner.push_event_log(format!(
+        "[preflight] Readiness sweep complete: {passed}/{total} checks passing"
+    ));
     inner.clone()
 }
 
@@ -572,6 +608,10 @@ pub fn run() {
         .manage(ManagedState::default())
         .setup(|app| {
             let managed = app.state::<ManagedState>();
+            // Automatic load: hydrate persisted device configuration before adapters start.
+            if let Ok(config_dir) = app.path().app_config_dir() {
+                managed.attach_settings_path(config_dir.join("settings.json"));
+            }
             let shared = managed.inner.clone();
             let config = RuntimeConfig::from_env();
             if config.live {
@@ -597,7 +637,10 @@ pub fn run() {
             switch_ndi_receiver,
             auto_heal_ndi_receivers,
             flash_dante_identify,
-            run_preflight_probes
+            run_preflight_probes,
+            update_settings,
+            export_show_file,
+            import_show_file
         ])
         .run(tauri::generate_context!())
         .expect("error while running One Ring");
