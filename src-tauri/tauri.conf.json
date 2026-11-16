@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "One Ring — Church Production Suite",
+        "title": "One Ring \u2014 Church Production Suite",
         "width": 1360,
         "height": 860,
         "minWidth": 1080,
@@ -31,6 +31,7 @@
       "icons/32x32.png",
       "icons/128x128.png",
       "icons/128x128@2x.png",
+      "icons/icon.icns",
       "icons/icon.ico",
       "icons/icon.png"
     ]
