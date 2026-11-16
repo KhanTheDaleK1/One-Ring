@@ -22,6 +22,7 @@ import type {
 interface SettingsViewProps {
   state: AppStateSnapshot;
   onSave: (settings: AppSettings) => void;
+  onCheckUpdates?: () => void;
 }
 
 type SettingsTab =
@@ -108,7 +109,7 @@ function cloneSettings(settings: AppSettings): AppSettings {
   return JSON.parse(JSON.stringify(settings)) as AppSettings;
 }
 
-export const SettingsView: React.FC<SettingsViewProps> = ({ state, onSave }) => {
+export const SettingsView: React.FC<SettingsViewProps> = ({ state, onSave, onCheckUpdates }) => {
   const [tab, setTab] = useState<SettingsTab>("x32");
   const [draft, setDraft] = useState<AppSettings>(() => cloneSettings(state.settings));
   const [showSecret, setShowSecret] = useState(false);

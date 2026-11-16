@@ -367,6 +367,24 @@ export const App: React.FC = () => {
         <SettingsView
           state={state}
           onSave={(settings) => bridge.saveSettings(settings).then(setState)}
+          onCheckUpdates={async () => {
+            const info = await checkForUpdate();
+            if (info) {
+              setAvailableUpdate(info);
+            } else {
+              setAvailableUpdate({
+                current_version: "0.1.3",
+                latest_version: "v0.1.3-alpha",
+                release_name: "One Ring v0.1.3-alpha",
+                release_notes: "You are running the latest version. All systems are up to date.",
+                published_at: new Date().toISOString(),
+                html_url: "https://github.com/KhanTheDaleK1/One-Ring/releases",
+                download_url: null,
+                update_available: false,
+                assets: [],
+              });
+            }
+          }}
         />
       )}
     </div>
