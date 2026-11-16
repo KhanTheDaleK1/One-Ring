@@ -8,7 +8,7 @@ import {
   bridge,
   subscribeEvents,
 } from "./bridge";
-import type { UnlistenFn } from "@tauri-apps/api/event";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { AppStateSnapshot, ViewMode } from "./types";
 import { PreflightView } from "./components/PreflightView";
 import { ShowModeView } from "./components/ShowModeView";
@@ -34,6 +34,34 @@ export const App: React.FC = () => {
         setAvailableUpdate(info);
       }
     });
+
+    
+    // Listen for macOS menu items: "About One Ring" or "Check for Updates..."
+    let unlistenMenu: (() => void) | undefined;
+    if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
+      listen("show_update_modal", async () => {
+        const info = await checkForUpdate();
+        if (info) {
+          setAvailableUpdate(info);
+        } else {
+          // Provide fallback about info even if offline
+          setAvailableUpdate({
+            current_version: "0.1.0",
+            latest_version: "v0.1.0-alpha.2",
+            release_name: "One Ring — Church Production Suite",
+            release_notes: "You are running One Ring v0.1.0. All systems up to date.",
+            published_at: new Date().toISOString(),
+            html_url: "https://github.com/KhanTheDaleK1/One-Ring",
+            download_url: null,
+            update_available: false,
+            assets: [],
+          });
+        }
+      }).then((unsub: UnlistenFn) => {
+        if (disposed) unsub();
+        else unlistenMenu = unsub;
+      });
+    }
 
     bridge.getAppState().then((snapshot) => {
       if (disposed) return;
@@ -66,6 +94,7 @@ export const App: React.FC = () => {
       disposed = true;
       clearInterval(timer);
       unlisten?.();
+      unlistenMenu?.();
     };
   }, []);
 

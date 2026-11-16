@@ -641,6 +641,67 @@ pub fn run() {
         .manage(ManagedState::default())
         .setup(|app| {
             let managed = app.state::<ManagedState>();
+
+            // Build custom macOS Application Menu with "About One Ring" and "Check for Updates..."
+            #[cfg(target_os = "macos")]
+            {
+                use tauri::menu::{Menu, MenuItem, Submenu, PredefinedMenuItem};
+                let app_handle = app.handle().clone();
+                let about = MenuItem::with_id(app, "about", "About One Ring", true, None::<&str>)?;
+                let check_update = MenuItem::with_id(app, "check_updates", "Check for Updates...", true, None::<&str>)?;
+                let app_submenu = Submenu::with_items(
+                    app,
+                    "One Ring",
+                    true,
+                    &[
+                        &about,
+                        &check_update,
+                        &PredefinedMenuItem::separator(app)?,
+                        &PredefinedMenuItem::services(app, None)?,
+                        &PredefinedMenuItem::separator(app)?,
+                        &PredefinedMenuItem::hide(app, None)?,
+                        &PredefinedMenuItem::hide_others(app, None)?,
+                        &PredefinedMenuItem::show_all(app, None)?,
+                        &PredefinedMenuItem::separator(app)?,
+                        &PredefinedMenuItem::quit(app, None)?,
+                    ],
+                )?;
+                let edit_submenu = Submenu::with_items(
+                    app,
+                    "Edit",
+                    true,
+                    &[
+                        &PredefinedMenuItem::undo(app, None)?,
+                        &PredefinedMenuItem::redo(app, None)?,
+                        &PredefinedMenuItem::separator(app)?,
+                        &PredefinedMenuItem::cut(app, None)?,
+                        &PredefinedMenuItem::copy(app, None)?,
+                        &PredefinedMenuItem::paste(app, None)?,
+                        &PredefinedMenuItem::select_all(app, None)?,
+                    ],
+                )?;
+                let window_submenu = Submenu::with_items(
+                    app,
+                    "Window",
+                    true,
+                    &[
+                        &PredefinedMenuItem::minimize(app, None)?,
+                        &PredefinedMenuItem::fullscreen(app, None)?,
+                        &PredefinedMenuItem::separator(app)?,
+                        &PredefinedMenuItem::close_window(app, None)?,
+                    ],
+                )?;
+                let menu = Menu::with_items(app, &[&app_submenu, &edit_submenu, &window_submenu])?;
+                app.set_menu(menu)?;
+
+                let handle_clone = app_handle.clone();
+                app.on_menu_event(move |_app, event| {
+                    if event.id() == "about" || event.id() == "check_updates" {
+                        let _ = handle_clone.emit("show_update_modal", ());
+                    }
+                });
+            }
+
             // Automatic load: hydrate persisted device configuration before adapters start.
             if let Ok(config_dir) = app.path().app_config_dir() {
                 managed.attach_settings_path(config_dir.join("settings.json"));
