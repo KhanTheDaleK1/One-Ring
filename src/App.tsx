@@ -14,14 +14,26 @@ import { PreflightView } from "./components/PreflightView";
 import { ShowModeView } from "./components/ShowModeView";
 import { EngineerView } from "./components/EngineerView";
 import { SettingsView } from "./components/SettingsView";
+import { UpdateModal } from "./components/UpdateModal";
+import { checkForUpdate } from "./bridge";
+import type { UpdateInfo } from "./types";
 
 export const App: React.FC = () => {
   const [state, setState] = useState<AppStateSnapshot | null>(null);
   const [mode, setMode] = useState<ViewMode>("preflight");
+  const [availableUpdate, setAvailableUpdate] = useState<UpdateInfo | null>(null);
 
   useEffect(() => {
     let disposed = false;
     let unlisten: UnlistenFn | undefined;
+
+    
+    // Check for updates on startup
+    checkForUpdate().then((info) => {
+      if (!disposed && info && info.update_available) {
+        setAvailableUpdate(info);
+      }
+    });
 
     bridge.getAppState().then((snapshot) => {
       if (disposed) return;
@@ -248,6 +260,10 @@ export const App: React.FC = () => {
           onAutoHealNdi={() => bridge.autoHealNdiReceivers().then(setState)}
           onFlashDanteIdentify={(routeId) => bridge.flashDanteIdentify(routeId).then(setState)}
         />
+      )}
+
+      {availableUpdate && (
+        <UpdateModal update={availableUpdate} onDismiss={() => setAvailableUpdate(null)} />
       )}
 
       {mode === "settings" && (

@@ -1,6 +1,7 @@
 pub mod protocols;
 mod runtime;
 mod state;
+pub mod updater;
 
 use runtime::events::{CueProgressEvent, EventSink, HealthEvent, MeterEvent, StatePatch};
 use runtime::obs_adapter::ObsCommand;
@@ -590,6 +591,14 @@ fn import_show_file(show: ShowFile, state: State<ManagedState>) -> AppStateSnaps
     inner.clone()
 }
 
+
+#[tauri::command]
+async fn check_update() -> Result<Option<updater::UpdateInfo>, String> {
+    tokio::task::spawn_blocking(updater::check_for_updates)
+        .await
+        .map_err(|e| format!("Failed to spawn update task: {e}"))?
+}
+
 #[tauri::command]
 fn run_preflight_probes(state: State<ManagedState>) -> AppStateSnapshot {
     let mut inner = state.inner.lock().unwrap();
@@ -640,7 +649,8 @@ pub fn run() {
             run_preflight_probes,
             update_settings,
             export_show_file,
-            import_show_file
+            import_show_file,
+            check_update
         ])
         .run(tauri::generate_context!())
         .expect("error while running One Ring");

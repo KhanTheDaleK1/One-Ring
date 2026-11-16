@@ -9,6 +9,7 @@ import {
   Save,
   Shield,
   Sliders,
+  Users,
   Video,
 } from "lucide-react";
 import type {
@@ -23,14 +24,22 @@ interface SettingsViewProps {
   onSave: (settings: AppSettings) => void;
 }
 
-type SettingsTab = "x32" | "dante" | "broadcast" | "slides" | "ndi" | "general";
+type SettingsTab =
+  | "x32"
+  | "dante"
+  | "broadcast"
+  | "slides"
+  | "ndi"
+  | "general"
+  | "station";
 
 const TABS: Array<{ id: SettingsTab; label: string; icon: React.ReactNode }> = [
-  { id: "x32", label: "X32 Mixer", icon: <Sliders size={15} /> },
-  { id: "dante", label: "Dante Audio", icon: <Network size={15} /> },
-  { id: "broadcast", label: "Video & Broadcast", icon: <Video size={15} /> },
-  { id: "slides", label: "Presentation / Slides", icon: <Monitor size={15} /> },
-  { id: "ndi", label: "NDI & PTZ Cameras", icon: <Camera size={15} /> },
+  { id: "x32", label: "Audio Mixing", icon: <Sliders size={15} /> },
+  { id: "dante", label: "Audio Network", icon: <Network size={15} /> },
+  { id: "broadcast", label: "Broadcasting", icon: <Video size={15} /> },
+  { id: "slides", label: "Slides", icon: <Monitor size={15} /> },
+  { id: "ndi", label: "Cameras", icon: <Camera size={15} /> },
+  { id: "station", label: "Station & Sync", icon: <Users size={15} /> },
   { id: "general", label: "General", icon: <Shield size={15} /> },
 ];
 
@@ -122,8 +131,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ state, onSave }) => 
     [draft, state.settings]
   );
 
-  const pinValid = /^\d{4,8}$/.test(draft.general.engineerPin);
-  const x32Valid = draft.x32.ipAddress.trim().length > 0 && draft.x32.oscPort > 0;
+  const pinValid =
+    draft.general.engineerPin === "" || /^\d{4,8}$/.test(draft.general.engineerPin);
+  const x32Valid = draft.x32.oscPort > 0;
 
   function patchSection<K extends keyof AppSettings>(
     key: K,
@@ -152,6 +162,48 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ state, onSave }) => 
       destinations: draft.broadcast.destinations.map((dest) =>
         dest.id === id ? { ...dest, ...patch } : dest
       ),
+    });
+  };
+
+  const addDestination = (platform: "youtube" | "facebook" | "custom") => {
+    const id = `${platform}-${Date.now().toString(36)}`;
+    const preset = {
+      youtube: { platform: "YouTube Live", rtmpUrl: "rtmps://a.rtmp.youtube.com/live2" },
+      facebook: { platform: "Facebook Live", rtmpUrl: "rtmps://live-api-s.facebook.com:443/rtmp" },
+      custom: { platform: "Custom RTMPS", rtmpUrl: "" },
+    }[platform];
+    patchSection("broadcast", {
+      destinations: [
+        ...draft.broadcast.destinations,
+        { id, platform: preset.platform, rtmpUrl: preset.rtmpUrl, streamKey: "", enabled: true },
+      ],
+    });
+  };
+
+  const removeDestination = (id: string) => {
+    patchSection("broadcast", {
+      destinations: draft.broadcast.destinations.filter((dest) => dest.id !== id),
+    });
+  };
+
+  const importShowChannels = () => {
+    patchSection("x32", {
+      dcaMappings: state.dcas.map((dca) => ({
+        dcaId: dca.id,
+        dcaNumber: dca.number,
+        dcaName: dca.name,
+        sourceChannel: dca.danteTxChannel,
+      })),
+    });
+  };
+
+  const importShowPresets = () => {
+    patchSection("ndiPtz", {
+      presetNames: state.cameras.map((camera) => ({
+        presetId: camera.id,
+        cameraId: camera.cameraId,
+        label: camera.name,
+      })),
     });
   };
 
@@ -239,7 +291,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ state, onSave }) => 
           }}
         >
           {saveNote ??
-            [!x32Valid && "X32 needs an IP address and OSC port.", !pinValid && "Engineer PIN must be 4–8 digits."]
+            [!x32Valid && "OSC port must be between 1 and 65535.", !pinValid && "Engineer PIN must be empty or 4–8 digits."]
               .filter(Boolean)
               .join(" ")}
         </div>
@@ -271,18 +323,18 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ state, onSave }) => 
 
       {tab === "x32" && (
         <div className="card" style={{ padding: 20, display: "grid", gap: 14 }}>
-          <h3 style={{ margin: 0 }}>Behringer X32 — OSC Control</h3>
+          <h3 style={{ margin: 0 }}>Audio Mixing — Console Control</h3>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 12 }}>
-            <Field label="Mixer IP address" hint="IPv4 address of the X32 on the control VLAN.">
+            <Field label="Mixer IP address" hint="IPv4 address of the mixing console on the control VLAN.">
               <input
                 style={inputStyle}
                 className="mono"
                 value={draft.x32.ipAddress}
                 onChange={(e) => patchSection("x32", { ipAddress: e.target.value })}
-                placeholder="10.1.24.50"
+                placeholder="192.168.1.50"
               />
             </Field>
-            <Field label="OSC port" hint="UDP control port. X32 default is 10023.">
+            <Field label="OSC port" hint="UDP control port. Console default is 10023.">
               <input
                 style={inputStyle}
                 className="mono"
@@ -293,7 +345,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ state, onSave }) => 
                 onChange={(e) => patchSection("x32", { oscPort: Number(e.target.value) })}
               />
             </Field>
-            <Field label="Keepalive interval (s)" hint="/xremote subscription refresh cadence.">
+            <Field label="Keepalive interval (s)" hint="Keepalive subscription refresh cadence.">
               <input
                 style={inputStyle}
                 className="mono"
@@ -312,6 +364,11 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ state, onSave }) => 
             title="Channel → DCA mappings"
             description="Bind the source channels that feed each show DCA used by the cue engine."
           >
+            <div style={{ marginBottom: 10 }}>
+              <button type="button" className="btn" onClick={importShowChannels} disabled={state.dcas.length === 0} style={{ height: 32, padding: "0 11px", fontSize: 12 }}>
+                Import channels from show file
+              </button>
+            </div>
             <div style={{ display: "grid", gap: 8 }}>
               {draft.x32.dcaMappings.map((mapping) => (
                 <div
@@ -337,7 +394,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ state, onSave }) => 
               ))}
               {draft.x32.dcaMappings.length === 0 && (
                 <div style={{ fontSize: 12, color: "#9CA3AF" }}>
-                  No DCA mappings yet — the mixer state will populate them on first sync.
+                  No DCA mappings yet. Add channels in the show builder, then import them here.
                 </div>
               )}
             </div>
@@ -347,26 +404,26 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ state, onSave }) => 
 
       {tab === "dante" && (
         <div className="card" style={{ padding: 20, display: "grid", gap: 14 }}>
-          <h3 style={{ margin: 0 }}>Dante Audio Network</h3>
+          <h3 style={{ margin: 0 }}>Audio Network</h3>
           <div style={{ display: "grid", gridTemplateColumns: "1.2fr 1fr 1fr", gap: 12 }}>
-            <Field label="Subnet interface" hint="NIC used for Dante discovery / ARC / Conmon traffic.">
+            <Field label="Network interface" hint="NIC used for audio-network discovery and metering traffic.">
               <input
                 style={inputStyle}
                 className="mono"
                 list="dante-interfaces"
                 value={draft.dante.subnetInterface}
                 onChange={(e) => patchSection("dante", { subnetInterface: e.target.value })}
-                placeholder="en0 — Dante VLAN"
+                placeholder="en0 — Audio VLAN"
               />
               <datalist id="dante-interfaces">
                 <option value="Auto (default route)" />
-                <option value="en0 — Ethernet / Dante VLAN" />
+                <option value="en0 — Ethernet / Audio VLAN" />
                 <option value="en1 — Wi-Fi" />
-                <option value="eth0 — Dante VLAN" />
+                <option value="eth0 — Audio VLAN" />
                 <option value="192.168.10.0/24" />
               </datalist>
             </Field>
-            <Field label="Conmon meter UDP port" hint="Dante Conmon peak metering. Default 8751.">
+            <Field label="Metering UDP port" hint="Peak metering UDP port. Default 8751.">
               <input
                 style={inputStyle}
                 className="mono"
@@ -377,7 +434,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ state, onSave }) => 
                 onChange={(e) => patchSection("dante", { conmonMeterPort: Number(e.target.value) })}
               />
             </Field>
-            <Field label="Conmon control UDP port" hint="ARC / identify control channel. Default 8700.">
+            <Field label="Control UDP port" hint="Device control / identify channel. Default 8700.">
               <input
                 style={inputStyle}
                 className="mono"
@@ -393,7 +450,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ state, onSave }) => 
           </div>
 
           <SubSection
-            title="Clock sync warning thresholds"
+            title="Clock Sync Warning Thresholds"
             description="Raise a warning or error when PTP offset exceeds these millisecond thresholds."
           >
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
@@ -473,7 +530,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ state, onSave }) => 
             </SubSection>
           ))}
 
-          <SubSection title="Local recording" description="Applied to OBS recording outputs and chapter marks.">
+          <SubSection title="Local recording" description="Applied to recording outputs and chapter marks.">
             <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1fr", gap: 12 }}>
               <Field label="Recording path" hint="Folder or filename stem for service recordings.">
                 <input
@@ -481,7 +538,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ state, onSave }) => 
                   className="mono"
                   value={draft.broadcast.recordingPath}
                   onChange={(e) => patchSection("broadcast", { recordingPath: e.target.value })}
-                  placeholder="/mnt/BCloud/Recordings/Sunday"
+                  placeholder="/recordings/service"
                 />
               </Field>
               <Field label="Container format">
@@ -518,9 +575,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ state, onSave }) => 
 
       {tab === "slides" && (
         <div className="card" style={{ padding: 20, display: "grid", gap: 14 }}>
-          <h3 style={{ margin: 0 }}>Presentation / Slides</h3>
+          <h3 style={{ margin: 0 }}>Slides & Presentation</h3>
           <SubSection
-            title="CCLI SongSelect integration"
+            title="Song Library Credentials (CCLI SongSelect)"
             description="OAuth credentials for song search & import. Stored locally on the production machine."
           >
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
@@ -574,7 +631,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ state, onSave }) => 
           </SubSection>
 
           <SubSection
-            title="Physical display assignment"
+            title="Physical Display Assignment"
             description="Choose which output surface receives each presentation role."
           >
             <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 12 }}>
@@ -610,7 +667,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ state, onSave }) => 
                   }
                 />
               </Field>
-              <Field label="NDI Alpha output" hint="Lower-third key / alpha channel destination.">
+              <Field label="Alpha key output" hint="Lower-third key or alpha channel destination.">
                 <input
                   style={inputStyle}
                   className="mono"
@@ -631,8 +688,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ state, onSave }) => 
               <option value="DISPLAY1 — FOH Operator (1920x1080)" />
               <option value="DISPLAY2 — Stage Confidence (1920x1080)" />
               <option value="DISPLAY3 — 4K Broadcast (3840x2160)" />
-              <option value="NDI — PROPRESENTER (Stage Display)" />
-              <option value="NDI — PROPRESENTER (Audience Alpha Key)" />
+              <option value="Network Video — Stage Display" />
+              <option value="Network Video — Audience Alpha Key" />
             </datalist>
           </SubSection>
         </div>
@@ -640,7 +697,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ state, onSave }) => 
 
       {tab === "ndi" && (
         <div className="card" style={{ padding: 20, display: "grid", gap: 14 }}>
-          <h3 style={{ margin: 0 }}>NDI & PTZ Cameras</h3>
+          <h3 style={{ margin: 0 }}>Cameras & Discovery</h3>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
             <Field label="Discovery range start" hint="First IPv4 address swept for cameras.">
               <input
@@ -664,7 +721,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ state, onSave }) => 
                 placeholder="10.1.24.254"
               />
             </Field>
-            <Field label="VISCA-over-IP port" hint="UDP control port. Default 52381.">
+            <Field label="Camera control UDP port" hint="Camera control UDP port. Default 52381.">
               <input
                 style={inputStyle}
                 className="mono"
@@ -678,7 +735,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ state, onSave }) => 
           </div>
 
           <SubSection
-            title="Camera preset naming"
+            title="Camera Preset Naming"
             description="Friendly labels shown on Show Mode preset buttons."
           >
             <div style={{ display: "grid", gap: 8 }}>

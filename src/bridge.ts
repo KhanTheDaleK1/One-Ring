@@ -1,5 +1,6 @@
 import type {
   AppSettings,
+  UpdateInfo,
   AppStateSnapshot,
   BroadcastTarget,
   CueVerificationStep,
@@ -724,3 +725,32 @@ export const bridge = {
     return structuredClone(simState);
   },
 };
+
+export async function checkForUpdate(): Promise<UpdateInfo | null> {
+  if (!isTauri()) {
+    try {
+      const resp = await fetch("https://api.github.com/repos/KhanTheDaleK1/One-Ring/releases");
+      if (!resp.ok) return null;
+      const releases = await resp.json();
+      if (!releases || releases.length === 0) return null;
+      const latest = releases[0];
+      const currentVersion = "0.1.0";
+      const latestTag: string = latest.tag_name || "";
+      const updateAvailable = latestTag.replace(/^v/, "") !== currentVersion.replace(/^v/, "");
+      return {
+        current_version: currentVersion,
+        latest_version: latestTag,
+        release_name: latest.name || latestTag,
+        release_notes: latest.body || "",
+        published_at: latest.published_at || "",
+        html_url: latest.html_url || "",
+        download_url: latest.assets?.[0]?.browser_download_url || latest.html_url,
+        update_available: updateAvailable,
+        assets: latest.assets || [],
+      };
+    } catch {
+      return null;
+    }
+  }
+  return invokeTauri<UpdateInfo | null>("check_update");
+}
