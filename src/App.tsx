@@ -52,10 +52,10 @@ export const App: React.FC = () => {
         } else {
           // Provide fallback about info even if offline
           setAvailableUpdate({
-            current_version: "0.1.0",
-            latest_version: "v0.1.0-alpha.2",
+            current_version: "0.1.3",
+            latest_version: "v0.1.3-alpha",
             release_name: "One Ring — Church Production Suite",
-            release_notes: "You are running One Ring v0.1.0. All systems up to date.",
+            release_notes: "You are running One Ring v0.1.3-alpha. All systems up to date.",
             published_at: new Date().toISOString(),
             html_url: "https://github.com/KhanTheDaleK1/One-Ring",
             download_url: null,
