@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { Cpu, Lock, AlertOctagon, FlaskConical, Settings } from "lucide-react";
+import { Cpu, Lock, AlertOctagon, FlaskConical, Settings, Pencil } from "lucide-react";
 import {
   applyCueProgress,
   applyHealthEvent,
@@ -14,6 +14,7 @@ import { PreflightView } from "./components/PreflightView";
 import { ShowModeView } from "./components/ShowModeView";
 import { EngineerView } from "./components/EngineerView";
 import { SettingsView } from "./components/SettingsView";
+import { ShowNameModal } from "./components/ShowNameModal";
 import { UpdateModal } from "./components/UpdateModal";
 import { checkForUpdate } from "./bridge";
 import type { UpdateInfo } from "./types";
@@ -22,6 +23,7 @@ export const App: React.FC = () => {
   const [state, setState] = useState<AppStateSnapshot | null>(null);
   const [mode, setMode] = useState<ViewMode>("preflight");
   const [availableUpdate, setAvailableUpdate] = useState<UpdateInfo | null>(null);
+  const [isEditingShowName, setIsEditingShowName] = useState(false);
 
   useEffect(() => {
     let disposed = false;
@@ -121,9 +123,26 @@ export const App: React.FC = () => {
       >
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
           <strong style={{ fontSize: 16, letterSpacing: "-0.01em" }}>ONE RING</strong>
-          <span className="mono" style={{ fontSize: 12, color: "#9CA3AF" }}>
-            {state.serviceName}
-          </span>
+          <button
+            type="button"
+            onClick={() => setIsEditingShowName(true)}
+            title="Click to rename this service / show"
+            style={{
+              background: "rgba(255,255,255,0.05)",
+              border: "1px dashed #3B82F6",
+              borderRadius: 6,
+              padding: "3px 8px",
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
+              cursor: "pointer",
+              color: "#93C5FD",
+              fontSize: 12,
+            }}
+          >
+            <span className="mono" style={{ fontWeight: 600 }}>{state.serviceName || "Untitled Show"}</span>
+            <Pencil size={11} color="#60A5FA" />
+          </button>
           {state.mockMode && (
             <span
               className="mono"
@@ -290,6 +309,15 @@ export const App: React.FC = () => {
           onFlashDanteIdentify={(routeId) => bridge.flashDanteIdentify(routeId).then(setState)}
         />
       )}
+
+      <ShowNameModal
+        currentName={state.serviceName || "Untitled Show"}
+        isOpen={isEditingShowName}
+        onSave={(name) => {
+          setState((prev) => prev ? { ...prev, serviceName: name } : prev);
+        }}
+        onClose={() => setIsEditingShowName(false)}
+      />
 
       {availableUpdate && (
         <UpdateModal update={availableUpdate} onDismiss={() => setAvailableUpdate(null)} />
