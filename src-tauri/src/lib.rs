@@ -636,6 +636,49 @@ fn open_in_browser(url: String) -> Result<(), String> {
 
 
 #[tauri::command]
+fn list_open_windows() -> Vec<String> {
+    let mut windows = Vec::new();
+    #[cfg(target_os = "macos")]
+    {
+        if let Ok(out) = std::process::Command::new("osascript")
+            .arg("-e")
+            .arg(r#"tell application "System Events" to get {name, title of every window} of (every process whose background only is false)"#)
+            .output()
+        {
+            let s = String::from_utf8_lossy(&out.stdout);
+            for part in s.split(", ") {
+                let clean = part.trim().trim_matches('"');
+                if !clean.is_empty() && clean != "missing value" {
+                    windows.push(clean.to_string());
+                }
+            }
+        }
+    }
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(out) = std::process::Command::new("powershell")
+            .args([
+                "-NoProfile",
+                "-Command",
+                r#"Get-Process | Where-Object { $_.MainWindowTitle -ne '' } | ForEach-Object { "$($_.ProcessName) - $($_.MainWindowTitle)" }"#,
+            ])
+            .output()
+        {
+            let s = String::from_utf8_lossy(&out.stdout);
+            for line in s.lines() {
+                let clean = line.trim();
+                if !clean.is_empty() {
+                    windows.push(clean.to_string());
+                }
+            }
+        }
+    }
+    windows.sort();
+    windows.dedup();
+    windows
+}
+
+#[tauri::command]
 fn get_discovered_peers(registry: State<PeerRegistry>) -> Vec<DiscoveredPeer> {
     registry.list()
 }
@@ -774,6 +817,7 @@ pub fn run() {
             import_show_file,
             check_update,
             get_discovered_peers,
+            list_open_windows,
             open_in_browser
         ])
         .run(tauri::generate_context!())

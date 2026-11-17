@@ -797,3 +797,14 @@ export async function getDiscoveredPeers(): Promise<DiscoveredPeer[]> {
   }
   return [];
 }
+
+export async function listOpenWindows(): Promise<string[]> {
+  if (isTauri()) {
+    try {
+      return await invokeTauri<string[]>("list_open_windows");
+    } catch {
+      return [];
+    }
+  }
+  return ["ProPresenter — Main Presentation", "Google Chrome — YouTube Studio", "PowerPoint — Sunday Announcements"];
+}

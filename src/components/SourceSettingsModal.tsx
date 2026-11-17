@@ -1,4 +1,5 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
+import { listOpenWindows } from "../bridge";
 import {
   Settings,
   X,
@@ -32,6 +33,22 @@ export const SourceSettingsModal: React.FC<SourceSettingsModalProps> = ({
   if (!isOpen || !source) return null;
 
   const [name, setName] = useState(source.name);
+  const [openWindows, setOpenWindows] = useState<string[]>([]);
+  const [loadingWindows, setLoadingWindows] = useState(false);
+
+  const refreshWindows = () => {
+    setLoadingWindows(true);
+    listOpenWindows().then((wins) => {
+      setOpenWindows(wins);
+      setLoadingWindows(false);
+    });
+  };
+
+  useEffect(() => {
+    if (isOpen && source?.type === "window_capture") {
+      refreshWindows();
+    }
+  }, [isOpen, source?.type]);
   const [settings, setSettings] = useState<Record<string, any>>({ ...source.settings });
 
   const patchSetting = (key: string, val: any) => {
@@ -159,14 +176,26 @@ export const SourceSettingsModal: React.FC<SourceSettingsModalProps> = ({
         return (
           <>
             <div>
-              <label style={labelStyle}>Target Window</label>
-              <input
-                type="text"
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+                <label style={{ ...labelStyle, marginBottom: 0 }}>Select Window to Display</label>
+                <button
+                  type="button"
+                  onClick={refreshWindows}
+                  style={{ background: "transparent", border: "none", color: "#60A5FA", fontSize: 11, fontWeight: 700, cursor: "pointer" }}
+                >
+                  {loadingWindows ? "Scanning..." : "↻ Refresh Windows"}
+                </button>
+              </div>
+              <select
                 style={inputStyle}
                 value={settings.window || ""}
                 onChange={(e) => patchSetting("window", e.target.value)}
-                placeholder="e.g. PowerPoint Presentation, ProPresenter, Chrome"
-              />
+              >
+                <option value="">-- Choose an Open Window --</option>
+                {openWindows.map((w) => (
+                  <option key={w} value={w}>{w}</option>
+                ))}
+              </select>
             </div>
             <div>
               <label style={labelStyle}>Window Match Priority</label>
