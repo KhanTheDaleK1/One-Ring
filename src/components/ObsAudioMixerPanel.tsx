@@ -207,9 +207,56 @@ export const ObsAudioMixerPanel: React.FC<ObsAudioMixerPanelProps> = ({
   const [liveAudioActive, setLiveAudioActive] = useState(false);
   const [liveMicDb, setLiveMicDb] = useState<number>(-60);
   const [liveSystemDb, setLiveSystemDb] = useState<number>(-60);
+  const [dspHpfEnabled, setDspHpfEnabled] = useState(true);
+  const [dspCompEnabled, setDspCompEnabled] = useState(true);
   const audioCtxRef = React.useRef<AudioContext | null>(null);
   const micStreamRef = React.useRef<MediaStream | null>(null);
   const sysStreamRef = React.useRef<MediaStream | null>(null);
+  const hpfNodesRef = React.useRef<BiquadFilterNode[]>([]);
+  const compNodesRef = React.useRef<DynamicsCompressorNode[]>([]);
+
+  useEffect(() => {
+    const freq = dspHpfEnabled ? 80 : 10;
+    for (const node of hpfNodesRef.current) {
+      node.frequency.setTargetAtTime(freq, node.context.currentTime, 0.01);
+    }
+  }, [dspHpfEnabled]);
+
+  useEffect(() => {
+    const threshold = dspCompEnabled ? -18 : 0;
+    const ratio = dspCompEnabled ? 4 : 1;
+    for (const node of compNodesRef.current) {
+      node.threshold.setTargetAtTime(threshold, node.context.currentTime, 0.01);
+      node.ratio.setTargetAtTime(ratio, node.context.currentTime, 0.01);
+    }
+  }, [dspCompEnabled]);
+
+  const connectWithDspChain = (
+    ctx: AudioContext,
+    src: MediaStreamAudioSourceNode,
+    analyser: AnalyserNode
+  ) => {
+    const hpf = ctx.createBiquadFilter();
+    hpf.type = "highpass";
+    hpf.frequency.value = dspHpfEnabled ? 80 : 10;
+
+    const comp = ctx.createDynamicsCompressor();
+    comp.threshold.value = dspCompEnabled ? -18 : 0;
+    comp.ratio.value = dspCompEnabled ? 4 : 1;
+    comp.attack.value = 0.005;
+    comp.release.value = 0.15;
+
+    const gain = ctx.createGain();
+    gain.gain.value = 1.0;
+
+    src.connect(hpf);
+    hpf.connect(comp);
+    comp.connect(gain);
+    gain.connect(analyser);
+
+    hpfNodesRef.current.push(hpf);
+    compNodesRef.current.push(comp);
+  };
 
   const enableLivePcMicCapture = async () => {
     try {
@@ -221,7 +268,7 @@ export const ObsAudioMixerPanel: React.FC<ObsAudioMixerPanelProps> = ({
       const src = ctx.createMediaStreamSource(stream);
       const analyser = ctx.createAnalyser();
       analyser.fftSize = 512;
-      src.connect(analyser);
+      connectWithDspChain(ctx, src, analyser);
       const buf = new Float32Array(analyser.fftSize);
       setLiveAudioActive(true);
 
@@ -252,7 +299,7 @@ export const ObsAudioMixerPanel: React.FC<ObsAudioMixerPanelProps> = ({
         const src = ctx.createMediaStreamSource(stream);
         const analyser = ctx.createAnalyser();
         analyser.fftSize = 512;
-        src.connect(analyser);
+        connectWithDspChain(ctx, src, analyser);
         const buf = new Float32Array(analyser.fftSize);
         const poll = () => {
           if (!sysStreamRef.current) return;
@@ -431,6 +478,65 @@ export const ObsAudioMixerPanel: React.FC<ObsAudioMixerPanelProps> = ({
               {hiddenCount} Hidden
             </button>
           )}
+
+          <button
+            type="button"
+            onClick={enableLivePcMicCapture}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 5,
+              height: 28,
+              padding: "0 10px",
+              background: liveAudioActive ? "rgba(16, 185, 129, 0.16)" : "#161B24",
+              border: `1px solid ${liveAudioActive ? "#10B981" : "#283344"}`,
+              borderRadius: 6,
+              color: liveAudioActive ? "#6EE7B7" : "#94A3B8",
+              fontSize: 11,
+              fontWeight: 700,
+              cursor: "pointer",
+            }}
+          >
+            <Mic size={13} /> {liveAudioActive ? "PC Mic Armed" : "Arm PC Mic Capture"}
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setDspHpfEnabled((v) => !v)}
+            title="Toggle 80Hz High-Pass Filter DSP"
+            style={{
+              height: 24,
+              padding: "0 8px",
+              borderRadius: 999,
+              border: `1px solid ${dspHpfEnabled ? "#3B82F6" : "#283344"}`,
+              background: dspHpfEnabled ? "rgba(59, 130, 246, 0.18)" : "#161B24",
+              color: dspHpfEnabled ? "#93C5FD" : "#64748B",
+              fontSize: 10.5,
+              fontWeight: 700,
+              cursor: "pointer",
+            }}
+          >
+            HPF 80Hz
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setDspCompEnabled((v) => !v)}
+            title="Toggle Broadcast Compressor/Limiter DSP"
+            style={{
+              height: 24,
+              padding: "0 8px",
+              borderRadius: 999,
+              border: `1px solid ${dspCompEnabled ? "#10B981" : "#283344"}`,
+              background: dspCompEnabled ? "rgba(16, 185, 129, 0.18)" : "#161B24",
+              color: dspCompEnabled ? "#6EE7B7" : "#64748B",
+              fontSize: 10.5,
+              fontWeight: 700,
+              cursor: "pointer",
+            }}
+          >
+            Comp {dspCompEnabled ? "ON" : "OFF"}
+          </button>
 
           <button
             type="button"

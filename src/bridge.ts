@@ -917,3 +917,13 @@ export async function stopDirectFfmpegStream(): Promise<string> {
   }
   return "Direct FFmpeg stopped";
 }
+
+export async function startReplayBuffer(): Promise<string> {
+  if (isTauri()) return invokeTauri<string>("start_replay_buffer");
+  return "Replay Buffer armed (30s rolling ring)";
+}
+
+export async function saveReplayBuffer(): Promise<string> {
+  if (isTauri()) return invokeTauri<string>("save_replay_buffer");
+  return "Saved 30s Instant Replay clip!";
+}

@@ -724,6 +724,52 @@ const VerticalFader: React.FC<VerticalFaderProps> = ({
   );
 };
 
+const FX_EFFECT_TYPES = [
+  "Hall Reverb",
+  "Plate Reverb",
+  "Stereo Delay",
+  "Dual 31-Band GEQ",
+  "De-Esser",
+  "Wave Designer",
+  "Combinator",
+] as const;
+
+type FxEffectType = (typeof FX_EFFECT_TYPES)[number];
+
+interface FxSlotState {
+  slot: number;
+  type: FxEffectType;
+  bypassed: boolean;
+  params: [number, number, number, number];
+}
+
+function buildInitialFxSlots(): FxSlotState[] {
+  return Array.from({ length: 8 }, (_, idx) => ({
+    slot: idx + 1,
+    type: FX_EFFECT_TYPES[idx % FX_EFFECT_TYPES.length],
+    bypassed: false,
+    params: [0.5, 0.5, 0.5, 0.5],
+  }));
+}
+
+function faderDbToNormalized(db: number): number {
+  const clamped = Math.max(-90, Math.min(10, db));
+  if (clamped <= -90) return 0;
+  if (clamped <= -60) return ((clamped + 90) / 30) * 0.0625;
+  if (clamped <= -30) return 0.0625 + ((clamped + 60) / 30) * 0.1875;
+  if (clamped <= -10) return 0.25 + ((clamped + 30) / 20) * 0.25;
+  return 0.5 + ((clamped + 10) / 20) * 0.5;
+}
+
+function normalizedToFaderDb(val: number): number {
+  const clamped = Math.max(0, Math.min(1, val));
+  if (clamped <= 0) return -90;
+  if (clamped <= 0.0625) return -90 + (clamped / 0.0625) * 30;
+  if (clamped <= 0.25) return -60 + ((clamped - 0.0625) / 0.1875) * 30;
+  if (clamped <= 0.5) return -30 + ((clamped - 0.25) / 0.25) * 20;
+  return -10 + ((clamped - 0.5) / 0.5) * 20;
+}
+
 export const X32FullConsoleModal: React.FC<X32FullConsoleModalProps> = ({
   isOpen,
   onClose,
@@ -755,6 +801,9 @@ export const X32FullConsoleModal: React.FC<X32FullConsoleModalProps> = ({
   const [channelLinks, setChannelLinks] = useState<Record<string, boolean>>({});
   const [channelDelays, setChannelDelays] = useState<Record<string, number>>({});
 
+  const [showFxRack, setShowFxRack] = useState<boolean>(false);
+  const [fxSlots, setFxSlots] = useState<FxSlotState[]>(() => buildInitialFxSlots());
+  const scnFileInputRef = useRef<HTMLInputElement | null>(null);
   const eqSvgRef = useRef<SVGSVGElement | null>(null);
 
   const emitOsc = useCallback(
@@ -764,6 +813,75 @@ export const X32FullConsoleModal: React.FC<X32FullConsoleModalProps> = ({
     },
     [onSendX32Command]
   );
+
+  const handleImportScn = useCallback(
+    async (e: React.ChangeEvent<HTMLInputElement>) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+      try {
+        const text = await file.text();
+        const nameUpdates: Record<string, string> = {};
+        const faderUpdates: Record<string, number> = {};
+        for (const rawLine of text.split(/\r?\n/)) {
+          const line = rawLine.trim();
+          const nameMatch = line.match(/^\/ch\/(\d{2})\/config\/name\s+"?([^"\r\n]+)"?$/);
+          if (nameMatch) {
+            nameUpdates[`ch-${nameMatch[1]}`] = nameMatch[2].trim();
+            continue;
+          }
+          const faderMatch = line.match(/^\/ch\/(\d{2})\/mix\/fader\s+([+-]?\d*\.?\d+)$/);
+          if (faderMatch) {
+            const rawVal = parseFloat(faderMatch[2]);
+            if (!Number.isNaN(rawVal)) {
+              const db = rawVal >= 0 && rawVal <= 1 ? normalizedToFaderDb(rawVal) : Math.max(-90, Math.min(10, rawVal));
+              faderUpdates[`ch-${faderMatch[1]}`] = Math.round(db * 10) / 10;
+            }
+          }
+        }
+        const updateCount = Object.keys(nameUpdates).length + Object.keys(faderUpdates).length;
+        if (updateCount > 0) {
+          setChannels((prev) =>
+            prev.map((ch) => {
+              const nextName = nameUpdates[ch.id];
+              const nextFader = faderUpdates[ch.id];
+              if (nextName === undefined && nextFader === undefined) return ch;
+              return {
+                ...ch,
+                name: nextName !== undefined ? nextName : ch.name,
+                faderDb: nextFader !== undefined ? nextFader : ch.faderDb,
+              };
+            })
+          );
+          setLastOsc(`Imported .scn (${updateCount} channel parameters)`);
+        } else {
+          setLastOsc("Imported .scn (no /ch/NN parameters found)");
+        }
+      } finally {
+        e.target.value = "";
+      }
+    },
+    []
+  );
+
+  const handleExportScn = useCallback(() => {
+    const ch1to32 = channels.filter((ch) => ch.oscPrefix.startsWith("/ch/"));
+    const lines: string[] = ['#2.1# "OneRing_X32_Scene" "" %000000000 1'];
+    for (const ch of ch1to32) {
+      const safeName = ch.name.replace(/"/g, "'");
+      lines.push(`${ch.oscPrefix}/config/name "${safeName}"`);
+      lines.push(`${ch.oscPrefix}/mix/fader ${faderDbToNormalized(ch.faderDb).toFixed(4)}`);
+    }
+    const blob = new Blob([lines.join("\n") + "\n"], { type: "text/plain;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "x32-scene.scn";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    setLastOsc(`Exported .scn (${ch1to32.length} channels)`);
+  }, [channels]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -1024,6 +1142,71 @@ export const X32FullConsoleModal: React.FC<X32FullConsoleModalProps> = ({
           </div>
 
           <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+            {/* FX Racks 1-8 Toggle */}
+            <button
+              type="button"
+              onClick={() => setShowFxRack((prev) => !prev)}
+              style={{
+                height: 32,
+                padding: "0 10px",
+                borderRadius: 7,
+                fontSize: 11,
+                fontWeight: 700,
+                cursor: "pointer",
+                background: showFxRack ? "#7C3AED" : "#161B24",
+                border: `1px solid ${showFxRack ? "#A78BFA" : "#283344"}`,
+                color: showFxRack ? "#FFFFFF" : "#94A3B8",
+              }}
+              title="Toggle 8-Slot FX Rack view"
+            >
+              FX Racks 1–8
+            </button>
+
+            {/* Import / Export .scn */}
+            <input
+              ref={scnFileInputRef}
+              type="file"
+              accept=".scn,.txt"
+              onChange={handleImportScn}
+              style={{ display: "none" }}
+            />
+            <button
+              type="button"
+              onClick={() => scnFileInputRef.current?.click()}
+              style={{
+                height: 32,
+                padding: "0 10px",
+                borderRadius: 7,
+                fontSize: 11,
+                fontWeight: 700,
+                cursor: "pointer",
+                background: "#161B24",
+                border: "1px solid #283344",
+                color: "#CBD5E1",
+              }}
+              title="Import Behringer .scn scene file"
+            >
+              Import .scn
+            </button>
+            <button
+              type="button"
+              onClick={handleExportScn}
+              style={{
+                height: 32,
+                padding: "0 10px",
+                borderRadius: 7,
+                fontSize: 11,
+                fontWeight: 700,
+                cursor: "pointer",
+                background: "#161B24",
+                border: "1px solid #283344",
+                color: "#CBD5E1",
+              }}
+              title="Export current 32 channels as Behringer .scn"
+            >
+              Export .scn
+            </button>
+
             {/* Sends on Fader Toggle & Bus/Mtx Selector */}
             <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
               <button
@@ -1162,7 +1345,160 @@ export const X32FullConsoleModal: React.FC<X32FullConsoleModalProps> = ({
           </div>
         </div>
 
-        {/* Main Console Workspace: Channel Bank (Top) + Selected Channel Detail (Bottom) */}
+        {/* Main Console Workspace: FX Rack View OR Channel Bank + Detail */}
+        {showFxRack ? (
+          <div
+            style={{
+              flex: 1,
+              minHeight: 0,
+              overflowY: "auto",
+              padding: 16,
+              background: "#080B10",
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))",
+              gap: 12,
+              alignContent: "start",
+            }}
+          >
+            {fxSlots.map((fx) => (
+              <div
+                key={`fx-slot-${fx.slot}`}
+                style={{
+                  background: "#10151F",
+                  border: `1px solid ${fx.bypassed ? "#334155" : "#3B82F6"}`,
+                  borderRadius: 10,
+                  padding: 12,
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 10,
+                  opacity: fx.bypassed ? 0.65 : 1,
+                }}
+              >
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+                  <span
+                    style={{
+                      fontSize: 12,
+                      fontWeight: 800,
+                      color: "#E2E8F0",
+                      fontFamily: '"JetBrains Mono", ui-monospace, monospace',
+                    }}
+                  >
+                    FX {fx.slot}
+                  </span>
+                  <select
+                    aria-label={`FX ${fx.slot} Effect Type`}
+                    value={fx.type}
+                    onChange={(e) => {
+                      const nextType = e.target.value as FxEffectType;
+                      setFxSlots((prev) =>
+                        prev.map((s) => (s.slot === fx.slot ? { ...s, type: nextType } : s))
+                      );
+                      emitOsc(`/fx/${fx.slot}/type`, nextType);
+                    }}
+                    style={{
+                      flex: 1,
+                      height: 28,
+                      padding: "0 8px",
+                      borderRadius: 6,
+                      fontSize: 11,
+                      fontWeight: 600,
+                      background: "#161B24",
+                      border: "1px solid #283344",
+                      color: "#E2E8F0",
+                      cursor: "pointer",
+                    }}
+                  >
+                    {FX_EFFECT_TYPES.map((t) => (
+                      <option key={t} value={t}>
+                        {t}
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const nextBypass = !fx.bypassed;
+                      setFxSlots((prev) =>
+                        prev.map((s) => (s.slot === fx.slot ? { ...s, bypassed: nextBypass } : s))
+                      );
+                      emitOsc(`/fx/${fx.slot}/bypass`, nextBypass ? 1 : 0);
+                    }}
+                    style={{
+                      height: 28,
+                      padding: "0 10px",
+                      borderRadius: 6,
+                      fontSize: 10,
+                      fontWeight: 800,
+                      cursor: "pointer",
+                      background: fx.bypassed ? "#991B1B" : "#065F46",
+                      border: `1px solid ${fx.bypassed ? "#EF4444" : "#10B981"}`,
+                      color: "#FFFFFF",
+                    }}
+                  >
+                    {fx.bypassed ? "BYPASSED" : "ACTIVE"}
+                  </button>
+                </div>
+
+                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                  {fx.params.map((val, pIdx) => {
+                    const parNum = String(pIdx + 1).padStart(2, "0");
+                    return (
+                      <div key={`fx-${fx.slot}-par-${parNum}`} style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                        <span
+                          style={{
+                            width: 48,
+                            fontSize: 10,
+                            fontWeight: 700,
+                            color: "#94A3B8",
+                            fontFamily: '"JetBrains Mono", ui-monospace, monospace',
+                          }}
+                        >
+                          Par {parNum}
+                        </span>
+                        <input
+                          type="range"
+                          min={0}
+                          max={1}
+                          step={0.01}
+                          value={val}
+                          onChange={(e) => {
+                            const nextVal = parseFloat(e.target.value);
+                            setFxSlots((prev) =>
+                              prev.map((s) => {
+                                if (s.slot !== fx.slot) return s;
+                                const nextParams: [number, number, number, number] = [...s.params] as [
+                                  number,
+                                  number,
+                                  number,
+                                  number,
+                                ];
+                                nextParams[pIdx] = nextVal;
+                                return { ...s, params: nextParams };
+                              })
+                            );
+                            emitOsc(`/fx/${fx.slot}/par/${parNum}`, nextVal);
+                          }}
+                          style={{ flex: 1, accentColor: "#8B5CF6", cursor: "pointer" }}
+                        />
+                        <span
+                          style={{
+                            width: 34,
+                            textAlign: "right",
+                            fontSize: 10,
+                            color: "#CBD5E1",
+                            fontFamily: '"JetBrains Mono", ui-monospace, monospace',
+                          }}
+                        >
+                          {val.toFixed(2)}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
         <div style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0, overflow: "hidden" }}>
           {/* Bank Channel Strips */}
           <div
@@ -2780,6 +3116,7 @@ export const X32FullConsoleModal: React.FC<X32FullConsoleModalProps> = ({
             )}
           </div>
         </div>
+        )}
       </div>
     </div>
   );

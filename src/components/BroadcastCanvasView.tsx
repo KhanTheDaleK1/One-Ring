@@ -20,7 +20,7 @@ import {
 import type { AppStateSnapshot, SceneSourceItem, SourceFilter, SourceTransform } from "../types";
 import { AddSourceModal } from "./AddSourceModal";
 import { ObsAudioMixerPanel } from "./ObsAudioMixerPanel";
-import { getMediaEngineStatus, startHeadlessMediaDaemon, startDirectFfmpegStream, stopDirectFfmpegStream, type MediaEngineStatus } from "../bridge";
+import { getMediaEngineStatus, startHeadlessMediaDaemon, startDirectFfmpegStream, stopDirectFfmpegStream, startReplayBuffer, saveReplayBuffer, type MediaEngineStatus } from "../bridge";
 import { ProgramCanvasRenderer } from "./ProgramCanvasRenderer";
 import { SourceSettingsModal } from "./SourceSettingsModal";
 import { SourceFiltersModal } from "./SourceFiltersModal";
@@ -680,9 +680,9 @@ export const BroadcastCanvasView: React.FC<BroadcastCanvasViewProps> = ({
                 onClick={() => {
                   if (!replayBufferActive) {
                     setReplayBufferActive(true);
-                    notify("Replay Buffer Started (last 30s armed)");
+                    startReplayBuffer().then(notify).catch((e) => notify(String(e)));
                   } else {
-                    notify("Saved 30s Replay Clip to Recordings!");
+                    saveReplayBuffer().then(notify).catch((e) => notify(String(e)));
                   }
                 }}
                 style={{

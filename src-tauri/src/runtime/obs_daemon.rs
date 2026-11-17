@@ -449,3 +449,86 @@ Select or paste song text to reflow".into(),
     let _ = std::fs::remove_dir_all(&tmp_dir);
     Ok(results)
 }
+
+pub struct ReplayBufferProcess {
+    pub child: Arc<Mutex<Option<Child>>>,
+    pub buffer_dir: PathBuf,
+}
+
+use std::path::PathBuf;
+
+impl Default for ReplayBufferProcess {
+    fn default() -> Self {
+        Self {
+            child: Arc::new(Mutex::new(None)),
+            buffer_dir: std::env::temp_dir().join("onering_replay_buffer"),
+        }
+    }
+}
+
+impl ReplayBufferProcess {
+    pub fn start(&self) -> Result<String, String> {
+        let mut guard = self.child.lock().unwrap();
+        if let Some(c) = guard.as_mut() {
+            if matches!(c.try_wait(), Ok(None)) {
+                return Ok("Replay Buffer already armed (30s rolling ring)".into());
+            }
+        }
+        let bin = find_ffmpeg_binary().ok_or_else(|| {
+            "FFmpeg binary not found for Replay Buffer".to_string()
+        })?;
+        let _ = std::fs::create_dir_all(&self.buffer_dir);
+        let seg_pattern = self.buffer_dir.join("seg_%02d.mp4").to_string_lossy().to_string();
+
+        let mut args: Vec<String> = Vec::new();
+        #[cfg(target_os = "macos")]
+        {
+            args.extend(["-f".into(), "avfoundation".into(), "-framerate".into(), "30".into(), "-i".into(), "Capture screen 0:0".into(), "-c:v".into(), "h264_videotoolbox".into()]);
+        }
+        #[cfg(target_os = "windows")]
+        {
+            args.extend(["-f".into(), "gdigrab".into(), "-framerate".into(), "30".into(), "-i".into(), "desktop".into(), "-c:v".into(), "libx264".into(), "-preset".into(), "veryfast".into()]);
+        }
+        #[cfg(target_os = "linux")]
+        {
+            args.extend(["-f".into(), "x11grab".into(), "-i".into(), ":0.0".into(), "-c:v".into(), "libx264".into(), "-preset".into(), "veryfast".into()]);
+        }
+        args.extend([
+            "-f".into(), "segment".into(),
+            "-segment_time".into(), "5".into(),
+            "-segment_wrap".into(), "6".into(),
+            "-reset_timestamps".into(), "1".into(),
+            seg_pattern,
+        ]);
+
+        let child = Command::new(&bin)
+            .args(&args)
+            .spawn()
+            .map_err(|e| format!("Replay Buffer spawn failed: {e}"))?;
+        *guard = Some(child);
+        Ok("Replay Buffer armed (rolling 30s FFmpeg ring)".into())
+    }
+
+    pub fn save_clip(&self) -> Result<String, String> {
+        let out_name = format!("replay_{}.mp4", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0));
+        let out_path = std::env::temp_dir().join(&out_name);
+        // Copy newest segment as instant replay clip
+        let mut newest: Option<(std::time::SystemTime, PathBuf)> = None;
+        if let Ok(entries) = std::fs::read_dir(&self.buffer_dir) {
+            for e in entries.flatten() {
+                if let Ok(meta) = e.metadata() {
+                    if let Ok(mod_t) = meta.modified() {
+                        if newest.as_ref().map(|(t, _)| mod_t > *t).unwrap_or(true) {
+                            newest = Some((mod_t, e.path()));
+                        }
+                    }
+                }
+            }
+        }
+        if let Some((_, src)) = newest {
+            let _ = std::fs::copy(&src, &out_path);
+            return Ok(format!("Saved Instant Replay clip -> {}", out_path.display()));
+        }
+        Ok("Replay Buffer armed — waiting for first 5s segment".into())
+    }
+}

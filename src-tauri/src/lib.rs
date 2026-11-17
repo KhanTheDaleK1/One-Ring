@@ -638,6 +638,21 @@ fn open_in_browser(url: String) -> Result<(), String> {
 
 
 
+
+#[tauri::command]
+fn start_replay_buffer(
+    replay: State<runtime::obs_daemon::ReplayBufferProcess>,
+) -> Result<String, String> {
+    replay.start()
+}
+
+#[tauri::command]
+fn save_replay_buffer(
+    replay: State<runtime::obs_daemon::ReplayBufferProcess>,
+) -> Result<String, String> {
+    replay.save_clip()
+}
+
 #[tauri::command]
 fn start_direct_ffmpeg_stream(
     rtmp_url: String,
@@ -852,6 +867,7 @@ pub fn run() {
         .manage(ManagedState::default())
         .manage(runtime::obs_daemon::ObsDaemonSupervisor::default())
         .manage(runtime::obs_daemon::FfmpegStreamProcess::default())
+        .manage(runtime::obs_daemon::ReplayBufferProcess::default())
         .setup(|app| {
             let managed = app.state::<ManagedState>();
 
@@ -967,6 +983,8 @@ pub fn run() {
             scan_installed_audio_plugins,
             list_audio_devices,
             start_direct_ffmpeg_stream,
+            start_replay_buffer,
+            save_replay_buffer,
             stop_direct_ffmpeg_stream,
             import_ewsx_schedule,
             list_video_devices,
