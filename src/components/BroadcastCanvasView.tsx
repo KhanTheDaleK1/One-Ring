@@ -15,10 +15,14 @@ import {
   Tv,
   Layers,
   Sparkles,
+  Sliders,
 } from "lucide-react";
-import type { AppStateSnapshot, SceneSourceItem } from "../types";
-import { AddSourceModal, OBS_SOURCE_DEFINITIONS } from "./AddSourceModal";
+import type { AppStateSnapshot, SceneSourceItem, SourceFilter, SourceTransform } from "../types";
+import { AddSourceModal } from "./AddSourceModal";
 import { SourceSettingsModal } from "./SourceSettingsModal";
+import { SourceFiltersModal } from "./SourceFiltersModal";
+import { SourceTransformModal, DEFAULT_TRANSFORM } from "./SourceTransformModal";
+import { SourceContextMenu } from "./SourceContextMenu";
 
 interface BroadcastCanvasViewProps {
   state: AppStateSnapshot;
@@ -28,6 +32,7 @@ interface BroadcastCanvasViewProps {
   onToggleSourceVisibility: (id: string) => void;
   onToggleSourceLock: (id: string) => void;
   onUpdateSourceSettings: (id: string, settings: Record<string, unknown>, name: string) => void;
+  onSetAllSources: (sources: SceneSourceItem[]) => void;
 }
 
 export const BroadcastCanvasView: React.FC<BroadcastCanvasViewProps> = ({
@@ -38,13 +43,56 @@ export const BroadcastCanvasView: React.FC<BroadcastCanvasViewProps> = ({
   onToggleSourceVisibility,
   onToggleSourceLock,
   onUpdateSourceSettings,
+  onSetAllSources,
 }) => {
   const [settingsModalSource, setSettingsModalSource] = useState<SceneSourceItem | null>(null);
+  const [filtersModalSource, setFiltersModalSource] = useState<SceneSourceItem | null>(null);
+  const [transformModalSource, setTransformModalSource] = useState<SceneSourceItem | null>(null);
+  const [contextMenu, setContextMenu] = useState<{ source: SceneSourceItem; x: number; y: number } | null>(null);
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renameText, setRenameText] = useState("");
   const [showAddSource, setShowAddSource] = useState(false);
+  const [toastMsg, setToastMsg] = useState<string | null>(null);
+
+  // OBS-style clipboards
+  const [clipboardSource, setClipboardSource] = useState<SceneSourceItem | null>(null);
+  const [clipboardFilters, setClipboardFilters] = useState<SourceFilter[] | null>(null);
+  const [clipboardTransform, setClipboardTransform] = useState<SourceTransform | null>(null);
 
   const sources = state.sources || [];
   const broadcasts = state.broadcasts || [];
   const anyLive = broadcasts.some((b) => b.live);
+
+  const notify = (msg: string) => {
+    setToastMsg(msg);
+    setTimeout(() => setToastMsg(null), 2600);
+  };
+
+  const patchSource = (id: string, patchFn: (s: SceneSourceItem) => SceneSourceItem) => {
+    onSetAllSources(sources.map((s) => (s.id === id ? patchFn(s) : s)));
+  };
+
+  const handleOrder = (id: string, action: "up" | "down" | "top" | "bottom") => {
+    const idx = sources.findIndex((s) => s.id === id);
+    if (idx < 0) return;
+    const copy = [...sources];
+    const [item] = copy.splice(idx, 1);
+    if (action === "up") copy.splice(Math.max(0, idx - 1), 0, item);
+    if (action === "down") copy.splice(Math.min(copy.length, idx + 1), 0, item);
+    if (action === "top") copy.unshift(item);
+    if (action === "bottom") copy.push(item);
+    onSetAllSources(copy);
+  };
+
+  const handleDuplicate = (source: SceneSourceItem) => {
+    const clone: SceneSourceItem = {
+      ...JSON.parse(JSON.stringify(source)),
+      id: "src_" + Date.now() + "_" + Math.floor(Math.random() * 1000),
+      name: source.name + " (Copy)",
+    };
+    onAddSource(clone);
+    notify("Duplicated " + source.name);
+  };
 
   return (
     <div
@@ -57,8 +105,30 @@ export const BroadcastCanvasView: React.FC<BroadcastCanvasViewProps> = ({
         padding: 16,
         gap: 14,
         boxSizing: "border-box",
+        position: "relative",
       }}
     >
+      {toastMsg && (
+        <div
+          style={{
+            position: "fixed",
+            bottom: 24,
+            right: 24,
+            background: "#1E293B",
+            border: "1px solid #3B82F6",
+            color: "#FFFFFF",
+            padding: "10px 16px",
+            borderRadius: 8,
+            fontSize: 13,
+            fontWeight: 600,
+            zIndex: 10100,
+            boxShadow: "0 10px 30px rgba(0,0,0,0.5)",
+          }}
+        >
+          {toastMsg}
+        </div>
+      )}
+
       {/* Header */}
       <div
         style={{
@@ -81,7 +151,7 @@ export const BroadcastCanvasView: React.FC<BroadcastCanvasViewProps> = ({
             {anyLive ? "LIVE ON AIR" : "STREAM STANDBY"}
           </span>
           <span style={{ fontSize: 11, background: "#1E2533", padding: "2px 8px", borderRadius: 10, color: "#94A3B8" }}>
-            {sources.length} active sources
+            {sources.length} active sources (right-click any source for Filters, Transform, Order & Color)
           </span>
         </div>
 
@@ -110,7 +180,7 @@ export const BroadcastCanvasView: React.FC<BroadcastCanvasViewProps> = ({
       </div>
 
       {/* Main Broadcast Work Area */}
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 380px", gap: 14, flex: 1, minHeight: 0 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 400px", gap: 14, flex: 1, minHeight: 0 }}>
         {/* Left: Program Video Canvas Preview & Live Output */}
         <div
           style={{
@@ -151,59 +221,47 @@ export const BroadcastCanvasView: React.FC<BroadcastCanvasViewProps> = ({
               <div style={{ textAlign: "center", padding: 24, color: "#64748B" }}>
                 <Tv size={48} color="#374151" style={{ marginBottom: 12 }} />
                 <h4 style={{ margin: 0, color: "#94A3B8" }}>No Broadcast Sources Added</h4>
-                <p style={{ margin: "4px 0 0", fontSize: 13, maxWidth: 320 }}>
-                  Click "+ Add Source" to add cameras, display captures, media, window capture, or browsers.
+                <p style={{ fontSize: 13, marginTop: 6 }}>
+                  Click &quot;+ Add Source&quot; or right-click to add cameras, browser graphics, screen captures, or media.
                 </p>
               </div>
             ) : (
-              <div style={{ textAlign: "center", color: "#60A5FA" }}>
-                <div style={{ fontSize: 14, fontWeight: 700 }}>Active Program Output</div>
+              <div style={{ padding: 20, textAlign: "center" }}>
+                <Sparkles size={32} color="#3B82F6" style={{ marginBottom: 10 }} />
+                <div style={{ fontSize: 18, fontWeight: 700, color: "#FFFFFF" }}>
+                  Active Scene Composition ({sources.filter((s) => s.enabled).length} visible layers)
+                </div>
                 <div style={{ fontSize: 12, color: "#94A3B8", marginTop: 4 }}>
-                  Compositing {sources.filter((s) => s.enabled).length} active layers
+                  {sources.filter((s) => s.enabled).map((s) => s.name).join(" • ")}
                 </div>
               </div>
             )}
           </div>
         </div>
 
-        {/* Right: Sources Hierarchy & Stream Output Control */}
-        <div style={{ display: "flex", flexDirection: "column", gap: 14, minHeight: 0 }}>
-          {/* Sources Stack */}
+        {/* Right: Sources Stack & Stream Controls */}
+        <div style={{ display: "flex", flexDirection: "column", gap: 12, minHeight: 0 }}>
           <div
             style={{
               background: "#0D1117",
               border: "1px solid #1E2533",
               borderRadius: 10,
               padding: 14,
-              display: "flex",
-              flexDirection: "column",
-              gap: 10,
               flex: 1,
-              minHeight: 0,
               overflowY: "auto",
             }}
+            onContextMenu={(e) => {
+              if (e.target === e.currentTarget) {
+                e.preventDefault();
+                setShowAddSource(true);
+              }
+            }}
           >
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-              <span style={{ fontSize: 11, fontWeight: 700, color: "#94A3B8", textTransform: "uppercase" }}>
-                Sources ({sources.length})
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
+              <span style={{ fontSize: 12, fontWeight: 700, color: "#94A3B8", textTransform: "uppercase", display: "flex", alignItems: "center", gap: 6 }}>
+                <Layers size={14} /> Sources Stack
               </span>
-              <button
-                type="button"
-                onClick={() => setShowAddSource(true)}
-                style={{
-                  background: "transparent",
-                  border: "none",
-                  color: "#60A5FA",
-                  cursor: "pointer",
-                  fontSize: 12,
-                  fontWeight: 600,
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 4,
-                }}
-              >
-                <Plus size={13} /> Add
-              </button>
+              <span style={{ fontSize: 10.5, color: "#64748B" }}>Right-click item for menu</span>
             </div>
 
             {sources.length === 0 ? (
@@ -215,26 +273,88 @@ export const BroadcastCanvasView: React.FC<BroadcastCanvasViewProps> = ({
                 {sources.map((s) => (
                   <div
                     key={s.id}
+                    onContextMenu={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      setContextMenu({ source: s, x: e.clientX, y: e.clientY });
+                    }}
                     style={{
                       display: "flex",
                       alignItems: "center",
                       justifyContent: "space-between",
                       padding: "8px 12px",
-                      background: "#161B24",
+                      background: s.colorTag ? `linear-gradient(90deg, ${s.colorTag}26 0%, #161B24 35%)` : "#161B24",
                       border: "1px solid #283344",
+                      borderLeft: s.colorTag ? `4px solid ${s.colorTag}` : "1px solid #283344",
                       borderRadius: 6,
+                      cursor: "context-menu",
                     }}
                   >
-                    <div>
-                      <div style={{ fontSize: 13, fontWeight: 600, color: s.enabled ? "#FFFFFF" : "#64748B" }}>
-                        {s.name}
-                      </div>
-                      <div style={{ fontSize: 10, color: "#64748B", textTransform: "uppercase" }}>
-                        {s.type.replace(/_/g, " ")}
-                      </div>
+                    <div style={{ flex: 1, minWidth: 0, marginRight: 8 }}>
+                      {renamingId === s.id ? (
+                        <input
+                          type="text"
+                          autoFocus
+                          value={renameText}
+                          onChange={(e) => setRenameText(e.target.value)}
+                          onBlur={() => {
+                            if (renameText.trim()) {
+                              patchSource(s.id, (prev) => ({ ...prev, name: renameText.trim() }));
+                            }
+                            setRenamingId(null);
+                          }}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") {
+                              if (renameText.trim()) {
+                                patchSource(s.id, (prev) => ({ ...prev, name: renameText.trim() }));
+                              }
+                              setRenamingId(null);
+                            } else if (e.key === "Escape") {
+                              setRenamingId(null);
+                            }
+                          }}
+                          style={{
+                            width: "100%",
+                            background: "#0B0E14",
+                            border: "1px solid #3B82F6",
+                            color: "#FFFFFF",
+                            fontSize: 13,
+                            padding: "2px 6px",
+                            borderRadius: 4,
+                          }}
+                        />
+                      ) : (
+                        <>
+                          <div style={{ fontSize: 13, fontWeight: 600, color: s.enabled ? "#FFFFFF" : "#64748B", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                            {s.name}
+                          </div>
+                          <div style={{ fontSize: 10, color: "#64748B", textTransform: "uppercase", display: "flex", gap: 6 }}>
+                            <span>{s.type.replace(/_/g, " ")}</span>
+                            {s.filters && s.filters.length > 0 && (
+                              <span style={{ color: "#A855F7", fontWeight: 700 }}>
+                                • {s.filters.length} filter{s.filters.length > 1 ? "s" : ""}
+                              </span>
+                            )}
+                          </div>
+                        </>
+                      )}
                     </div>
 
-                    <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 2 }}>
+                      <button
+                        type="button"
+                        title="Filters & VST Plug-ins"
+                        onClick={() => setFiltersModalSource(s)}
+                        style={{
+                          background: "transparent",
+                          border: "none",
+                          color: s.filters && s.filters.length > 0 ? "#A855F7" : "#64748B",
+                          cursor: "pointer",
+                          padding: 4,
+                        }}
+                      >
+                        <Sliders size={14} />
+                      </button>
                       <button
                         type="button"
                         title="Source Properties & Settings"
@@ -251,6 +371,7 @@ export const BroadcastCanvasView: React.FC<BroadcastCanvasViewProps> = ({
                       </button>
                       <button
                         type="button"
+                        title={s.enabled ? "Hide Source" : "Show Source"}
                         onClick={() => onToggleSourceVisibility(s.id)}
                         style={{
                           background: "transparent",
@@ -265,6 +386,7 @@ export const BroadcastCanvasView: React.FC<BroadcastCanvasViewProps> = ({
 
                       <button
                         type="button"
+                        title={s.locked ? "Unlock Source" : "Lock Source"}
                         onClick={() => onToggleSourceLock(s.id)}
                         style={{
                           background: "transparent",
@@ -279,6 +401,7 @@ export const BroadcastCanvasView: React.FC<BroadcastCanvasViewProps> = ({
 
                       <button
                         type="button"
+                        title="Remove Source"
                         onClick={() => onRemoveSource(s.id)}
                         style={{
                           background: "transparent",
@@ -343,6 +466,93 @@ export const BroadcastCanvasView: React.FC<BroadcastCanvasViewProps> = ({
         </div>
       </div>
 
+      {/* Right-Click Context Menu */}
+      {contextMenu && (
+        <SourceContextMenu
+          source={contextMenu.source}
+          x={contextMenu.x}
+          y={contextMenu.y}
+          hasClipboardSource={!!clipboardSource}
+          hasClipboardFilters={!!clipboardFilters}
+          hasClipboardTransform={!!clipboardTransform}
+          onClose={() => setContextMenu(null)}
+          onOpenAdd={() => setShowAddSource(true)}
+          onOpenProperties={(src) => setSettingsModalSource(src)}
+          onOpenFilters={(src) => setFiltersModalSource(src)}
+          onOpenTransform={(src) => setTransformModalSource(src)}
+          onRename={(src) => {
+            setRenamingId(src.id);
+            setRenameText(src.name);
+          }}
+          onRemove={onRemoveSource}
+          onDuplicate={handleDuplicate}
+          onCopySource={(src) => {
+            setClipboardSource(src);
+            notify("Copied source: " + src.name);
+          }}
+          onPasteDuplicate={() => {
+            if (clipboardSource) handleDuplicate(clipboardSource);
+          }}
+          onCopyFilters={(src) => {
+            setClipboardFilters(src.filters || []);
+            notify("Copied filters from " + src.name);
+          }}
+          onPasteFilters={(id) => {
+            if (clipboardFilters) {
+              patchSource(id, (s) => ({ ...s, filters: JSON.parse(JSON.stringify(clipboardFilters)) }));
+              notify("Pasted filters");
+            }
+          }}
+          onCopyTransform={(src) => {
+            setClipboardTransform(src.transform || DEFAULT_TRANSFORM);
+            notify("Copied transform from " + src.name);
+          }}
+          onPasteTransform={(id) => {
+            if (clipboardTransform) {
+              patchSource(id, (s) => ({ ...s, transform: { ...clipboardTransform } }));
+              notify("Pasted transform");
+            }
+          }}
+          onResetTransform={(id) => {
+            patchSource(id, (s) => ({ ...s, transform: { ...DEFAULT_TRANSFORM } }));
+            notify("Transform reset to 1920x1080");
+          }}
+          onFitToScreen={(id) => {
+            patchSource(id, (s) => ({
+              ...s,
+              transform: { ...(s.transform || DEFAULT_TRANSFORM), x: 0, y: 0, width: 1920, height: 1080 },
+            }));
+            notify("Fit source to 1920x1080 canvas");
+          }}
+          onOrderAction={handleOrder}
+          onSetColorTag={(id, color) => patchSource(id, (s) => ({ ...s, colorTag: color }))}
+          onToggleVisibility={onToggleSourceVisibility}
+          onToggleLock={onToggleSourceLock}
+          onToggleHideInMixer={(id) =>
+            patchSource(id, (s) => ({ ...s, hideInMixer: !s.hideInMixer }))
+          }
+          onSetScaleFilter={(id, filter) =>
+            patchSource(id, (s) => ({
+              ...s,
+              transform: { ...(s.transform || DEFAULT_TRANSFORM), scaleFilter: filter },
+            }))
+          }
+          onSetBlendingMode={(id, mode) =>
+            patchSource(id, (s) => ({
+              ...s,
+              transform: { ...(s.transform || DEFAULT_TRANSFORM), blendingMode: mode },
+            }))
+          }
+          onSetDeinterlacing={(id, mode) =>
+            patchSource(id, (s) => ({
+              ...s,
+              transform: { ...(s.transform || DEFAULT_TRANSFORM), deinterlacing: mode },
+            }))
+          }
+          onScreenshotSource={(src) => notify("Saved screenshot frame of " + src.name)}
+        />
+      )}
+
       {/* Source Settings & Properties Modal */}
       <SourceSettingsModal
         source={settingsModalSource}
@@ -351,6 +561,28 @@ export const BroadcastCanvasView: React.FC<BroadcastCanvasViewProps> = ({
         onSave={(id, newSettings, newName) => {
           onUpdateSourceSettings(id, newSettings, newName);
           setSettingsModalSource(null);
+        }}
+      />
+
+      {/* Source Filters & VST/AU Modal */}
+      <SourceFiltersModal
+        source={filtersModalSource}
+        isOpen={!!filtersModalSource}
+        onClose={() => setFiltersModalSource(null)}
+        onSaveFilters={(sourceId, filters) => {
+          patchSource(sourceId, (s) => ({ ...s, filters }));
+          notify("Updated filter chain");
+        }}
+      />
+
+      {/* Source Transform Modal */}
+      <SourceTransformModal
+        source={transformModalSource}
+        isOpen={!!transformModalSource}
+        onClose={() => setTransformModalSource(null)}
+        onSaveTransform={(sourceId, transform) => {
+          patchSource(sourceId, (s) => ({ ...s, transform }));
+          notify("Updated source transform");
         }}
       />
 

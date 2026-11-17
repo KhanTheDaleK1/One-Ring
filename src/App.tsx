@@ -61,9 +61,9 @@ export const App: React.FC = () => {
           // Provide fallback about info even if offline
           setAvailableUpdate({
             current_version: "0.1.6",
-            latest_version: "v0.1.7-alpha",
+            latest_version: "v0.1.8-alpha",
             release_name: "One Ring — Church Production Suite",
-            release_notes: "You are running One Ring v0.1.7-alpha. All systems up to date.",
+            release_notes: "You are running One Ring v0.1.8-alpha. All systems up to date.",
             published_at: new Date().toISOString(),
             html_url: "https://github.com/KhanTheDaleK1/One-Ring",
             download_url: null,
@@ -382,6 +382,9 @@ export const App: React.FC = () => {
               };
             });
           }}
+          onSetAllSources={(updatedSources) => {
+            setState((prev) => (prev ? { ...prev, sources: updatedSources } : prev));
+          }}
           onUpdateSourceSettings={(id, newSettings, newName) => {
             setState((prev) => {
               if (!prev) return prev;
@@ -472,8 +475,8 @@ export const App: React.FC = () => {
             } else {
               setAvailableUpdate({
                 current_version: "0.1.6",
-                latest_version: "v0.1.7-alpha",
-                release_name: "One Ring v0.1.7-alpha",
+                latest_version: "v0.1.8-alpha",
+                release_name: "One Ring v0.1.8-alpha",
                 release_notes: "You are running the latest version. All systems are up to date.",
                 published_at: new Date().toISOString(),
                 html_url: "https://github.com/KhanTheDaleK1/One-Ring/releases",

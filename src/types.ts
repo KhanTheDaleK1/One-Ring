@@ -28,6 +28,28 @@ export interface SourceDefinition {
   defaultSettings: Record<string, unknown>;
 }
 
+
+export interface SourceFilter {
+  id: string;
+  name: string;
+  type: "vst" | "au" | "gain" | "noise_suppress" | "compressor" | "chroma_key" | "color_correction" | "lut" | "crop_pad";
+  enabled: boolean;
+  settings: Record<string, unknown>;
+}
+
+export interface SourceTransform {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  rotation: number;
+  scaleFilter: "disable" | "point" | "bilinear" | "bicubic" | "lanczos" | "area";
+  blendingMode: "normal" | "additive" | "subtract" | "screen" | "multiply" | "lighten" | "darken";
+  deinterlacing: "disable" | "discard" | "retro" | "blend" | "linear" | "yadif";
+  flipH?: boolean;
+  flipV?: boolean;
+}
+
 export interface SceneSourceItem {
   id: string;
   name: string;
@@ -36,6 +58,11 @@ export interface SceneSourceItem {
   locked: boolean;
   volumeDb?: number;
   muted?: boolean;
+  colorTag?: string;
+  hideInMixer?: boolean;
+  groupId?: string;
+  filters?: SourceFilter[];
+  transform?: SourceTransform;
   settings: Record<string, unknown>;
 }
 

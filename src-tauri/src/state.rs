@@ -9,6 +9,16 @@ pub struct SceneSourceItem {
     pub locked: bool,
     pub volume_db: Option<f32>,
     pub muted: Option<bool>,
+    #[serde(default)]
+    pub color_tag: Option<String>,
+    #[serde(default)]
+    pub hide_in_mixer: Option<bool>,
+    #[serde(default)]
+    pub group_id: Option<String>,
+    #[serde(default)]
+    pub filters: Option<Vec<serde_json::Value>>,
+    #[serde(default)]
+    pub transform: Option<serde_json::Value>,
     pub settings: serde_json::Value,
 }
 
