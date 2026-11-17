@@ -13,6 +13,7 @@ import type { AppStateSnapshot, ViewMode } from "./types";
 import { PreflightView } from "./components/PreflightView";
 import { ShowModeView } from "./components/ShowModeView";
 import { SlidesCanvasView } from "./components/SlidesCanvasView";
+import { SecondaryOutputWindow } from "./components/SecondaryOutputWindow";
 import { VideoCanvasView } from "./components/VideoCanvasView";
 import { BroadcastCanvasView } from "./components/BroadcastCanvasView";
 import type { SceneSourceItem } from "./types";
@@ -60,10 +61,10 @@ export const App: React.FC = () => {
         } else {
           // Provide fallback about info even if offline
           setAvailableUpdate({
-            current_version: "0.1.9",
-            latest_version: "v0.1.9-alpha",
+            current_version: "0.1.10",
+            latest_version: "v0.1.10-alpha",
             release_name: "One Ring — Church Production Suite",
-            release_notes: "You are running One Ring v0.1.9-alpha. All systems up to date.",
+            release_notes: "You are running One Ring v0.1.10-alpha. All systems up to date.",
             published_at: new Date().toISOString(),
             html_url: "https://github.com/KhanTheDaleK1/One-Ring",
             download_url: null,
@@ -119,6 +120,22 @@ export const App: React.FC = () => {
       clearInterval(peerTimer);
     };
   }, []);
+
+  const isOutputWindow = typeof window !== "undefined" && new URLSearchParams(window.location.search).has("output");
+
+  useEffect(() => {
+    if (isOutputWindow || !state?.slides) return;
+    try {
+      localStorage.setItem("onering_live_slides_state", JSON.stringify(state.slides));
+      const ch = new BroadcastChannel("onering_display_sync");
+      ch.postMessage({ type: "SLIDES_UPDATE", slides: state.slides });
+      ch.close();
+    } catch {}
+  }, [state?.slides, isOutputWindow]);
+
+  if (isOutputWindow) {
+    return <SecondaryOutputWindow />;
+  }
 
   if (!state) {
     return <div style={{ padding: 32, color: "#9CA3AF" }}>Loading One Ring...</div>;
@@ -528,9 +545,9 @@ export const App: React.FC = () => {
               setAvailableUpdate(info);
             } else {
               setAvailableUpdate({
-                current_version: "0.1.9",
-                latest_version: "v0.1.9-alpha",
-                release_name: "One Ring v0.1.9-alpha",
+                current_version: "0.1.10",
+                latest_version: "v0.1.10-alpha",
+                release_name: "One Ring v0.1.10-alpha",
                 release_notes: "You are running the latest version. All systems are up to date.",
                 published_at: new Date().toISOString(),
                 html_url: "https://github.com/KhanTheDaleK1/One-Ring/releases",

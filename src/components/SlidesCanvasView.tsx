@@ -8,6 +8,7 @@ import {
   Palette,
   Type,
   Sparkles,
+  ExternalLink,
 } from "lucide-react";
 import type { AppStateSnapshot, SlideCue, SlideTheme } from "../types";
 import { LyricImportModal } from "./LyricImportModal";
@@ -131,6 +132,69 @@ export const SlidesCanvasView: React.FC<SlidesCanvasViewProps> = ({
 
         {/* Look/Theme + Clear + Import */}
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <button
+            type="button"
+            onClick={() => window.open(window.location.origin + "/?output=foh", "onering_foh", "popup,width=1280,height=720")}
+            title="Open dedicated fullscreen/second-monitor FOH output window"
+            style={{
+              height: 34,
+              padding: "0 10px",
+              background: "#0F766E",
+              border: "1px solid #14B8A6",
+              color: "#FFFFFF",
+              borderRadius: 6,
+              cursor: "pointer",
+              display: "flex",
+              alignItems: "center",
+              gap: 5,
+              fontSize: 11.5,
+              fontWeight: 700,
+            }}
+          >
+            <ExternalLink size={13} /> FOH Screen
+          </button>
+          <button
+            type="button"
+            onClick={() => window.open(window.location.origin + "/?output=lower_third", "onering_lower", "popup,width=1280,height=720")}
+            title="Open Lower Thirds Overlay Window"
+            style={{
+              height: 34,
+              padding: "0 10px",
+              background: "#4C1D95",
+              border: "1px solid #8B5CF6",
+              color: "#FFFFFF",
+              borderRadius: 6,
+              cursor: "pointer",
+              display: "flex",
+              alignItems: "center",
+              gap: 5,
+              fontSize: 11.5,
+              fontWeight: 700,
+            }}
+          >
+            <ExternalLink size={13} /> Lower 3rds
+          </button>
+          <button
+            type="button"
+            onClick={() => window.open(window.location.origin + "/?output=stage", "onering_stage", "popup,width=1024,height=600")}
+            title="Open Stage Confidence Window"
+            style={{
+              height: 34,
+              padding: "0 10px",
+              background: "#92400E",
+              border: "1px solid #F59E0B",
+              color: "#FFFFFF",
+              borderRadius: 6,
+              cursor: "pointer",
+              display: "flex",
+              alignItems: "center",
+              gap: 5,
+              fontSize: 11.5,
+              fontWeight: 700,
+            }}
+          >
+            <ExternalLink size={13} /> Stage Screen
+          </button>
           <button
             type="button"
             onClick={() => setShowThemeEditor(!showThemeEditor)}

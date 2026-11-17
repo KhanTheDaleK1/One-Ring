@@ -13,8 +13,10 @@
 //! Adapters are transport-only: they own sockets/backoff and emit the typed events in
 //! [`events`]. The cue engine and Tauri commands dispatch through [`AdapterRegistry`].
 
+pub mod dante_adapter;
 pub mod events;
 pub mod health;
+pub mod ndi_adapter;
 pub mod obs_adapter;
 pub mod propresenter_adapter;
 pub mod streamlabs_adapter;
@@ -22,7 +24,9 @@ pub mod x32_adapter;
 
 use crate::protocols::{DeviceCapabilities, DeviceKind};
 use crate::state::SharedState;
+use dante_adapter::{DanteCommand, DanteConfig};
 use events::EventSink;
+use ndi_adapter::{NdiCommand, NdiConfig};
 use obs_adapter::{ObsCommand, ObsConfig};
 use propresenter_adapter::{ProPresenterCommand, ProPresenterConfig};
 use std::sync::Arc;
@@ -37,6 +41,8 @@ pub struct RuntimeConfig {
     pub obs: Option<ObsConfig>,
     pub streamlabs: Option<StreamlabsConfig>,
     pub propresenter: Option<ProPresenterConfig>,
+    pub dante: Option<DanteConfig>,
+    pub ndi: Option<NdiConfig>,
 }
 
 impl RuntimeConfig {
@@ -74,12 +80,20 @@ impl RuntimeConfig {
                 .unwrap_or(50_000),
         ));
 
+        let dante = Some(DanteConfig::default());
+        let ndi = Some(NdiConfig {
+            discovery_host: std::env::var("RING_NDI_HOST").unwrap_or_else(|_| "127.0.0.1".into()),
+            ..NdiConfig::default()
+        });
+
         Self {
             live,
             x32,
             obs,
             streamlabs,
             propresenter,
+            dante,
+            ndi,
         }
     }
 }
@@ -97,6 +111,8 @@ pub enum AdapterCommand {
     Obs(ObsCommand),
     Streamlabs(StreamlabsCommand),
     ProPresenter(ProPresenterCommand),
+    Dante(DanteCommand),
+    Ndi(NdiCommand),
 }
 
 #[derive(Debug, Clone)]
@@ -112,6 +128,8 @@ pub struct AdapterRegistry {
     obs: Option<mpsc::UnboundedSender<ObsCommand>>,
     streamlabs: Option<mpsc::UnboundedSender<StreamlabsCommand>>,
     propresenter: Option<mpsc::UnboundedSender<ProPresenterCommand>>,
+    dante: Option<mpsc::UnboundedSender<DanteCommand>>,
+    ndi: Option<mpsc::UnboundedSender<NdiCommand>>,
     devices: Vec<DeviceStatus>,
 }
 
@@ -127,6 +145,8 @@ impl AdapterRegistry {
             obs: None,
             streamlabs: None,
             propresenter: None,
+            dante: None,
+            ndi: None,
             devices: Vec::new(),
         };
 
@@ -187,6 +207,30 @@ impl AdapterRegistry {
             ));
         }
 
+        if let Some(dante) = &config.dante {
+            let (tx, rx) = mpsc::unbounded_channel();
+            dante_adapter::spawn(dante.clone(), state.clone(), sink.clone(), rx);
+            registry.dante = Some(tx);
+            registry.devices.push(DeviceStatus {
+                id: "dante",
+                kind: DeviceKind::Dante,
+                capabilities: DeviceCapabilities::for_kind(DeviceKind::Dante),
+            });
+            sink.log("[runtime] Dante Conmon/ARC UDP adapter started".into());
+        }
+
+        if let Some(ndi) = &config.ndi {
+            let (tx, rx) = mpsc::unbounded_channel();
+            ndi_adapter::spawn(ndi.clone(), state.clone(), sink.clone(), rx);
+            registry.ndi = Some(tx);
+            registry.devices.push(DeviceStatus {
+                id: "ndi",
+                kind: DeviceKind::Ndi,
+                capabilities: DeviceCapabilities::for_kind(DeviceKind::Ndi),
+            });
+            sink.log(format!("[runtime] NDI 6 Discovery adapter started for {}", ndi.endpoint()));
+        }
+
         registry
     }
 
@@ -214,6 +258,16 @@ impl AdapterRegistry {
                 .unwrap_or(false),
             AdapterCommand::Streamlabs(command) => self
                 .streamlabs
+                .as_ref()
+                .map(|tx| tx.send(command).is_ok())
+                .unwrap_or(false),
+            AdapterCommand::Dante(command) => self
+                .dante
+                .as_ref()
+                .map(|tx| tx.send(command).is_ok())
+                .unwrap_or(false),
+            AdapterCommand::Ndi(command) => self
+                .ndi
                 .as_ref()
                 .map(|tx| tx.send(command).is_ok())
                 .unwrap_or(false),

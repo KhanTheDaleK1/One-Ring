@@ -7,6 +7,8 @@ pub mod updater;
 pub mod peer_discovery;
 
 use runtime::events::{CueProgressEvent, EventSink, HealthEvent, MeterEvent, StatePatch};
+use runtime::dante_adapter::DanteCommand;
+use runtime::ndi_adapter::NdiCommand;
 use runtime::obs_adapter::ObsCommand;
 use runtime::propresenter_adapter::ProPresenterCommand;
 use runtime::x32_adapter::X32Command;
@@ -506,6 +508,13 @@ fn switch_ndi_receiver(
     source_name: String,
     state: State<ManagedState>,
 ) -> AppStateSnapshot {
+    dispatch(
+        &state,
+        AdapterCommand::Ndi(NdiCommand::ControlReceiver {
+            receiver_id: receiver_id.clone(),
+            source_name: source_name.clone(),
+        }),
+    );
     let mut inner = state.inner.lock().unwrap();
     if let Some(rx) = inner.ndi_receivers.iter_mut().find(|r| r.id == receiver_id) {
         rx.subscribed_source = source_name.clone();
@@ -541,6 +550,12 @@ fn auto_heal_ndi_receivers(state: State<ManagedState>) -> AppStateSnapshot {
 
 #[tauri::command]
 fn flash_dante_identify(route_id: String, state: State<ManagedState>) -> AppStateSnapshot {
+    dispatch(
+        &state,
+        AdapterCommand::Dante(DanteCommand::IdentifyDevice {
+            target_ip: route_id.clone(),
+        }),
+    );
     let mut inner = state.inner.lock().unwrap();
     if let Some(route) = inner.dante_routes.iter_mut().find(|r| r.id == route_id) {
         route.identify_flashing = !route.identify_flashing;
