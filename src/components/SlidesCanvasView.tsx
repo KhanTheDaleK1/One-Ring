@@ -11,9 +11,13 @@ import {
   ExternalLink,
   Music,
   Trash2,
+  BookOpen,
+  Clock,
 } from "lucide-react";
 import type { AppStateSnapshot, ServiceSong, SlideCue, SlideTheme } from "../types";
 import { LyricImportModal } from "./LyricImportModal";
+import { BibleLookupModal } from "./BibleLookupModal";
+import { TimersAndAlertsModal } from "./TimersAndAlertsModal";
 
 interface SlidesCanvasViewProps {
   state: AppStateSnapshot;
@@ -57,6 +61,11 @@ export const SlidesCanvasView: React.FC<SlidesCanvasViewProps> = ({
 }) => {
   const [showImportModal, setShowImportModal] = useState(false);
   const [showThemeEditor, setShowThemeEditor] = useState(false);
+  const [showBibleModal, setShowBibleModal] = useState(false);
+  const [showTimersModal, setShowTimersModal] = useState(false);
+  const [stageAlertMsg, setStageAlertMsg] = useState<string>("");
+  const [stageAlertActive, setStageAlertActive] = useState<boolean>(false);
+  const [timerLabel, setTimerLabel] = useState<string>("Countdown Ready");
 
   const slides = state.slides.slides || [];
   const currentSlide = slides.find((s) => s.number === state.slides.currentSlide) || slides[0];
@@ -201,6 +210,48 @@ export const SlidesCanvasView: React.FC<SlidesCanvasViewProps> = ({
           >
             <ExternalLink size={13} /> Stage Screen
           </button>
+          <button
+            type="button"
+            onClick={() => setShowBibleModal(true)}
+            style={{
+              height: 34,
+              padding: "0 12px",
+              background: "#1C222D",
+              border: "1px solid #2E3746",
+              color: "#E2E8F0",
+              borderRadius: 6,
+              cursor: "pointer",
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
+              fontSize: 12,
+              fontWeight: 600,
+            }}
+          >
+            <BookOpen size={13} color="#38BDF8" /> Scripture / Bible
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setShowTimersModal(true)}
+            style={{
+              height: 34,
+              padding: "0 12px",
+              background: stageAlertActive ? "#7F1D1D" : "#1C222D",
+              border: `1px solid ${stageAlertActive ? "#EF4444" : "#2E3746"}`,
+              color: "#FFFFFF",
+              borderRadius: 6,
+              cursor: "pointer",
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
+              fontSize: 12,
+              fontWeight: 600,
+            }}
+          >
+            <Clock size={13} color="#F59E0B" /> Timers & Alerts
+          </button>
+
           <button
             type="button"
             onClick={() => setShowThemeEditor(!showThemeEditor)}
@@ -676,7 +727,7 @@ export const SlidesCanvasView: React.FC<SlidesCanvasViewProps> = ({
           {/* 3. Stage Confidence Display Preview */}
           <div style={previewCardStyle}>
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-              <span style={previewTitleStyle}>3. Stage Confidence Monitor</span>
+              <span style={previewTitleStyle}>3. Stage Confidence ({timerLabel})</span>
               <span style={{ fontSize: 10, color: "#F59E0B", fontWeight: 700 }}>High-Contrast</span>
             </div>
 
@@ -714,6 +765,44 @@ export const SlidesCanvasView: React.FC<SlidesCanvasViewProps> = ({
           </div>
         </div>
       </div>
+
+      {stageAlertActive && stageAlertMsg && (
+        <div
+          style={{
+            position: "fixed",
+            bottom: 20,
+            left: "50%",
+            transform: "translateX(-50%)",
+            background: "#991B1B",
+            border: "1px solid #F87171",
+            color: "#FFFFFF",
+            padding: "8px 18px",
+            borderRadius: 8,
+            fontWeight: 800,
+            fontSize: 13,
+            zIndex: 9999,
+            boxShadow: "0 8px 25px rgba(0,0,0,0.6)",
+          }}
+        >
+          STAGE ALERT TICKER: {stageAlertMsg}
+        </div>
+      )}
+
+      <BibleLookupModal
+        isOpen={showBibleModal}
+        onClose={() => setShowBibleModal(false)}
+        onAddSlides={onImportSong}
+      />
+
+      <TimersAndAlertsModal
+        isOpen={showTimersModal}
+        onClose={() => setShowTimersModal(false)}
+        onBroadcastAlert={(msg, active) => {
+          setStageAlertMsg(msg);
+          setStageAlertActive(active);
+        }}
+        onUpdateTimerLabel={setTimerLabel}
+      />
 
       {/* Lyric Import Modal */}
       <LyricImportModal

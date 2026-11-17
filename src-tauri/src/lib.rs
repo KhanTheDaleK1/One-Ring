@@ -635,6 +635,114 @@ fn open_in_browser(url: String) -> Result<(), String> {
 }
 
 
+
+#[tauri::command]
+fn scan_installed_audio_plugins() -> Vec<runtime::obs_daemon::InstalledAudioPlugin> {
+    runtime::obs_daemon::scan_installed_audio_plugins()
+}
+
+#[tauri::command]
+fn get_media_engine_status(
+    daemon: State<runtime::obs_daemon::ObsDaemonSupervisor>,
+) -> runtime::obs_daemon::MediaEngineStatus {
+    runtime::obs_daemon::probe_media_engine_status(&daemon)
+}
+
+#[tauri::command]
+fn start_headless_media_daemon(
+    daemon: State<runtime::obs_daemon::ObsDaemonSupervisor>,
+) -> Result<String, String> {
+    daemon.start_headless_obs()
+}
+
+#[tauri::command]
+fn route_dante_crosspoint(
+    rx_ip: String,
+    rx_chan_id: u16,
+    tx_chan: String,
+    tx_dev: String,
+    state: State<ManagedState>,
+) -> AppStateSnapshot {
+    dispatch(
+        &state,
+        AdapterCommand::Dante(DanteCommand::RouteCrosspoint {
+            rx_ip: rx_ip.clone(),
+            rx_port: 4440,
+            rx_channel_id: rx_chan_id,
+            tx_channel: tx_chan.clone(),
+            tx_device: tx_dev.clone(),
+        }),
+    );
+    let mut inner = state.inner.lock().unwrap();
+    inner.event_log.insert(
+        0,
+        format!("[dante-arc] Crosspoint ch {} <- {}@{}", rx_chan_id, tx_chan, tx_dev),
+    );
+    inner.clone()
+}
+
+#[tauri::command]
+fn trigger_ndi_ptz(
+    source_id: String,
+    preset_index: Option<u8>,
+    pan: Option<f64>,
+    tilt: Option<f64>,
+    state: State<ManagedState>,
+) -> AppStateSnapshot {
+    if let Some(idx) = preset_index {
+        dispatch(
+            &state,
+            AdapterCommand::Ndi(NdiCommand::RecallPtzPreset {
+                source_id: source_id.clone(),
+                preset_index: idx,
+                speed: 0.75,
+            }),
+        );
+    } else if let (Some(p), Some(t)) = (pan, tilt) {
+        dispatch(
+            &state,
+            AdapterCommand::Ndi(NdiCommand::PanTiltSpeed {
+                source_id: source_id.clone(),
+                pan: p,
+                tilt: t,
+            }),
+        );
+    }
+    state.inner.lock().unwrap().clone()
+}
+
+#[tauri::command]
+fn send_x32_osc(
+    address: String,
+    value: f32,
+    state: State<ManagedState>,
+) -> AppStateSnapshot {
+    if let Some(rest) = address.strip_prefix("/dca/") {
+        if let Some((num_s, leaf)) = rest.split_once('/') {
+            if let Ok(num) = num_s.parse::<u8>() {
+                if leaf == "on" {
+                    dispatch(&state, AdapterCommand::X32(X32Command::SetDcaMute { number: num, muted: value < 0.5 }));
+                } else if leaf == "fader" {
+                    dispatch(&state, AdapterCommand::X32(X32Command::SetDcaLevel { number: num, db: (value - 0.75) * 40.0 }));
+                }
+            }
+        }
+    } else if let Some(rest) = address.strip_prefix("/ch/") {
+        if let Some((ch_s, leaf)) = rest.split_once('/') {
+            if let Ok(ch) = ch_s.parse::<u8>() {
+                if leaf == "mix/fader" {
+                    dispatch(&state, AdapterCommand::X32(X32Command::SetChannelFader { channel: ch, fader: value }));
+                } else if leaf == "mix/on" {
+                    dispatch(&state, AdapterCommand::X32(X32Command::SetChannelMute { channel: ch, muted: value < 0.5 }));
+                }
+            }
+        }
+    }
+    let mut inner = state.inner.lock().unwrap();
+    inner.event_log.insert(0, format!("[x32-osc] {} -> {:.2}", address, value));
+    inner.clone()
+}
+
 #[tauri::command]
 fn list_open_windows() -> Vec<String> {
     let mut windows = Vec::new();
@@ -706,6 +814,7 @@ fn run_preflight_probes(state: State<ManagedState>) -> AppStateSnapshot {
 pub fn run() {
     tauri::Builder::default()
         .manage(ManagedState::default())
+        .manage(runtime::obs_daemon::ObsDaemonSupervisor::default())
         .setup(|app| {
             let managed = app.state::<ManagedState>();
 
@@ -818,6 +927,12 @@ pub fn run() {
             check_update,
             get_discovered_peers,
             list_open_windows,
+            scan_installed_audio_plugins,
+            get_media_engine_status,
+            start_headless_media_daemon,
+            route_dante_crosspoint,
+            trigger_ndi_ptz,
+            send_x32_osc,
             open_in_browser
         ])
         .run(tauri::generate_context!())

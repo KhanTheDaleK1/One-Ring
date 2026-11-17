@@ -1,5 +1,8 @@
 import React, { useState } from "react";
 import type { AppStateSnapshot } from "../types";
+import { X32FullConsoleModal } from "./X32FullConsoleModal";
+import { DanteControllerMatrix } from "./DanteControllerMatrix";
+import { routeDanteCrosspoint, sendX32Osc } from "../bridge";
 
 interface EngineerViewProps {
   state: AppStateSnapshot;
@@ -21,6 +24,7 @@ export const EngineerView: React.FC<EngineerViewProps> = ({
   onFlashDanteIdentify,
 }) => {
   const [tab, setTab] = useState<"broadcast" | "audio" | "dante" | "ndi" | "logs">("broadcast");
+  const [showFullX32, setShowFullX32] = useState(false);
 
   return (
     <div style={{ padding: 20, maxWidth: 1220, margin: "0 auto" }}>
@@ -335,6 +339,21 @@ export const EngineerView: React.FC<EngineerViewProps> = ({
           </div>
         </div>
       )}
+      <DanteControllerMatrix
+        routes={state.danteRoutes}
+        onRoutePatch={(rxIp, rxChanId, txChan, txDev) => {
+          routeDanteCrosspoint(rxIp, rxChanId, txChan, txDev);
+        }}
+        onIdentifyDevice={(deviceIp) => onFlashDanteIdentify(deviceIp)}
+      />
+
+      <X32FullConsoleModal
+        isOpen={showFullX32}
+        onClose={() => setShowFullX32(false)}
+        onSendX32Command={(addr, val) => {
+          if (typeof val === "number") sendX32Osc(addr, val);
+        }}
+      />
     </div>
   );
 };

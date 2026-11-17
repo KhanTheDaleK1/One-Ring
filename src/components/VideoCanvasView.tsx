@@ -12,6 +12,8 @@ import {
   Plus,
 } from "lucide-react";
 import type { AppStateSnapshot } from "../types";
+import { NdiStudioTools } from "./NdiStudioTools";
+import { triggerNdiPtz } from "../bridge";
 
 interface VideoCanvasViewProps {
   state: AppStateSnapshot;
@@ -354,6 +356,13 @@ export const VideoCanvasView: React.FC<VideoCanvasViewProps> = ({
           </div>
         </div>
       </div>
+      <NdiStudioTools
+        sources={state.ndiSources}
+        receivers={state.ndiReceivers}
+        onSwitchReceiver={onSwitchNdiReceiver}
+        onPtzPreset={(sourceId, presetIdx) => triggerNdiPtz(sourceId, presetIdx)}
+        onPanTilt={(sourceId, pan, tilt) => triggerNdiPtz(sourceId, undefined, pan, tilt)}
+      />
     </div>
   );
 };

@@ -290,10 +290,21 @@ mod tests {
     use std::sync::Mutex;
 
     fn fixture() -> (SharedState, Arc<RecordingSink>) {
-        (
-            Arc::new(Mutex::new(default_simulator_state())),
-            Arc::new(RecordingSink::new()),
-        )
+        use crate::state::BroadcastTarget;
+        let mut s = default_simulator_state();
+        for (id, plat) in [("youtube", "YouTube"), ("facebook", "Facebook"), ("record", "Recorder")] {
+            s.broadcasts.push(BroadcastTarget {
+                id: id.into(),
+                platform: plat.into(),
+                live: false,
+                bitrate_kbps: 0,
+                dropped_frames: 0,
+                elapsed_sec: 0,
+                endpoint: "".into(),
+                canvas: "16:9".into(),
+            });
+        }
+        (Arc::new(Mutex::new(s)), Arc::new(RecordingSink::new()))
     }
 
     #[test]

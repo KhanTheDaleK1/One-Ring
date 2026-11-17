@@ -1,4 +1,5 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
+import { scanInstalledAudioPlugins, type InstalledAudioPlugin } from "../bridge";
 import { Sliders, Plus, Trash2, X, Check, Eye, EyeOff, Sparkles, Volume2 } from "lucide-react";
 import type { SceneSourceItem, SourceFilter } from "../types";
 
@@ -34,6 +35,13 @@ export const SourceFiltersModal: React.FC<SourceFiltersModalProps> = ({
     (source.filters && source.filters[0]?.id) || null
   );
   const [addingType, setAddingType] = useState<boolean>(false);
+  const [installedPlugins, setInstalledPlugins] = useState<InstalledAudioPlugin[]>([]);
+
+  useEffect(() => {
+    if (isOpen) {
+      scanInstalledAudioPlugins().then(setInstalledPlugins).catch(() => {});
+    }
+  }, [isOpen]);
 
   const selectedFilter = filters.find((f) => f.id === selectedFilterId) || null;
 
@@ -265,12 +273,24 @@ export const SourceFiltersModal: React.FC<SourceFiltersModalProps> = ({
                   <>
                     <div>
                       <label style={labelStyle}>Plug-in File / Bundle Name</label>
+                      <select
+                        style={{ ...inputStyle, marginBottom: 6 }}
+                        value={(selectedFilter.settings.pluginPath as string) || ""}
+                        onChange={(e) => patchFilterSetting(selectedFilter.id, "pluginPath", e.target.value)}
+                      >
+                        <option value="">-- Select Installed OS Plug-in ({installedPlugins.length} found) --</option>
+                        {installedPlugins.map((pl) => (
+                          <option key={pl.path} value={pl.path}>
+                            [{pl.format}] {pl.name}
+                          </option>
+                        ))}
+                      </select>
                       <input
                         type="text"
                         style={inputStyle}
                         value={(selectedFilter.settings.pluginPath as string) || ""}
                         onChange={(e) => patchFilterSetting(selectedFilter.id, "pluginPath", e.target.value)}
-                        placeholder={selectedFilter.type === "au" ? "AUv3 / FabFilter Pro-Q 3.component" : "C:/Program Files/Common Files/VST3/ValhallaSupermassive.vst3"}
+                        placeholder="Or enter custom VST3 / AU bundle path"
                       />
                     </div>
                     <div>

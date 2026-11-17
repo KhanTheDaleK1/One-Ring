@@ -808,3 +808,70 @@ export async function listOpenWindows(): Promise<string[]> {
   }
   return ["ProPresenter — Main Presentation", "Google Chrome — YouTube Studio", "PowerPoint — Sunday Announcements"];
 }
+
+export interface InstalledAudioPlugin {
+  name: string;
+  format: string;
+  path: string;
+}
+
+export interface MediaEngineStatus {
+  obsBinaryPath?: string | null;
+  ffmpegBinaryPath?: string | null;
+  vstPluginCount: number;
+  auPluginCount: number;
+  daemonRunning: boolean;
+}
+
+export async function scanInstalledAudioPlugins(): Promise<InstalledAudioPlugin[]> {
+  if (isTauri()) {
+    try {
+      return await invokeTauri<InstalledAudioPlugin[]>("scan_installed_audio_plugins");
+    } catch {
+      return [];
+    }
+  }
+  return [
+    { name: "ValhallaSupermassive", format: "VST3", path: "/Library/Audio/Plug-Ins/VST3/ValhallaSupermassive.vst3" },
+    { name: "AUDelay", format: "AU", path: "/Library/Audio/Plug-Ins/Components/AUDelay.component" },
+  ];
+}
+
+export async function getMediaEngineStatus(): Promise<MediaEngineStatus | null> {
+  if (isTauri()) {
+    try {
+      return await invokeTauri<MediaEngineStatus>("get_media_engine_status");
+    } catch {
+      return null;
+    }
+  }
+  return { obsBinaryPath: null, ffmpegBinaryPath: "/opt/homebrew/bin/ffmpeg", vstPluginCount: 1, auPluginCount: 1, daemonRunning: false };
+}
+
+export async function startHeadlessMediaDaemon(): Promise<string> {
+  if (isTauri()) {
+    return invokeTauri<string>("start_headless_media_daemon");
+  }
+  return "Daemon simulated in browser";
+}
+
+export async function routeDanteCrosspoint(rxIp: string, rxChanId: number, txChan: string, txDev: string): Promise<AppStateSnapshot> {
+  if (isTauri()) {
+    return invokeTauri<AppStateSnapshot>("route_dante_crosspoint", { rxIp, rxChanId, txChan, txDev });
+  }
+  return structuredClone(simState);
+}
+
+export async function triggerNdiPtz(sourceId: string, presetIndex?: number, pan?: number, tilt?: number): Promise<AppStateSnapshot> {
+  if (isTauri()) {
+    return invokeTauri<AppStateSnapshot>("trigger_ndi_ptz", { sourceId, presetIndex: presetIndex ?? null, pan: pan ?? null, tilt: tilt ?? null });
+  }
+  return structuredClone(simState);
+}
+
+export async function sendX32Osc(address: string, value: number): Promise<AppStateSnapshot> {
+  if (isTauri()) {
+    return invokeTauri<AppStateSnapshot>("send_x32_osc", { address, value });
+  }
+  return structuredClone(simState);
+}

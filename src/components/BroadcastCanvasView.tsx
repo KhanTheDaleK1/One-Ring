@@ -19,6 +19,8 @@ import {
 } from "lucide-react";
 import type { AppStateSnapshot, SceneSourceItem, SourceFilter, SourceTransform } from "../types";
 import { AddSourceModal } from "./AddSourceModal";
+import { ObsAudioMixerPanel } from "./ObsAudioMixerPanel";
+import { getMediaEngineStatus, startHeadlessMediaDaemon, type MediaEngineStatus } from "../bridge";
 import { ProgramCanvasRenderer } from "./ProgramCanvasRenderer";
 import { SourceSettingsModal } from "./SourceSettingsModal";
 import { SourceFiltersModal } from "./SourceFiltersModal";
@@ -53,6 +55,14 @@ export const BroadcastCanvasView: React.FC<BroadcastCanvasViewProps> = ({
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameText, setRenameText] = useState("");
   const [showAddSource, setShowAddSource] = useState(false);
+  const [studioMode, setStudioMode] = useState(false);
+  const [tBarValue, setTBarValue] = useState(0);
+  const [transitionType, setTransitionType] = useState<"Cut" | "Fade" | "Slide" | "Stinger">("Fade");
+  const [mediaEngine, setMediaEngine] = useState<MediaEngineStatus | null>(null);
+
+  React.useEffect(() => {
+    getMediaEngineStatus().then(setMediaEngine).catch(() => {});
+  }, []);
   const [toastMsg, setToastMsg] = useState<string | null>(null);
 
   // OBS-style clipboards
@@ -159,6 +169,49 @@ export const BroadcastCanvasView: React.FC<BroadcastCanvasViewProps> = ({
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <button
             type="button"
+            onClick={() => {
+              startHeadlessMediaDaemon()
+                .then((msg) => {
+                  notify(msg);
+                  getMediaEngineStatus().then(setMediaEngine);
+                })
+                .catch((err) => notify(String(err)));
+            }}
+            style={{
+              height: 36,
+              padding: "0 12px",
+              background: mediaEngine?.daemonRunning ? "#065F46" : "#1C222D",
+              border: `1px solid ${mediaEngine?.daemonRunning ? "#10B981" : "#334155"}`,
+              color: "#E2E8F0",
+              borderRadius: 6,
+              cursor: "pointer",
+              fontSize: 11.5,
+              fontWeight: 700,
+            }}
+          >
+            {mediaEngine?.daemonRunning ? "● Option 2 Core Active" : "Launch Headless Media Core"}
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setStudioMode(!studioMode)}
+            style={{
+              height: 36,
+              padding: "0 12px",
+              background: studioMode ? "#4C1D95" : "#1C222D",
+              border: `1px solid ${studioMode ? "#A855F7" : "#334155"}`,
+              color: "#FFFFFF",
+              borderRadius: 6,
+              cursor: "pointer",
+              fontSize: 11.5,
+              fontWeight: 700,
+            }}
+          >
+            {studioMode ? "Studio Mode: ON" : "Studio Mode"}
+          </button>
+
+          <button
+            type="button"
             onClick={() => setShowAddSource(true)}
             style={{
               height: 36,
@@ -203,6 +256,40 @@ export const BroadcastCanvasView: React.FC<BroadcastCanvasViewProps> = ({
               Hardware Accelerated
             </span>
           </div>
+
+          {studioMode && (
+            <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 12px", background: "#111827", border: "1px solid #4C1D95", borderRadius: 8 }}>
+              <span style={{ fontSize: 11, fontWeight: 800, color: "#C084FC" }}>STUDIO T-BAR</span>
+              <select
+                value={transitionType}
+                onChange={(e) => setTransitionType(e.target.value as any)}
+                style={{ background: "#0B0E14", border: "1px solid #334155", color: "#FFFFFF", fontSize: 12, padding: "4px 8px", borderRadius: 5 }}
+              >
+                <option value="Cut">Cut (0ms)</option>
+                <option value="Fade">Fade (300ms)</option>
+                <option value="Slide">Slide</option>
+                <option value="Stinger">Stinger</option>
+              </select>
+              <input
+                type="range"
+                min={0}
+                max={100}
+                value={tBarValue}
+                onChange={(e) => setTBarValue(Number(e.target.value))}
+                style={{ flex: 1 }}
+              />
+              <button
+                type="button"
+                onClick={() => {
+                  setTBarValue(0);
+                  notify(`Executed ${transitionType} Transition to Program`);
+                }}
+                style={{ background: "#7C3AED", border: "none", color: "#FFFFFF", padding: "5px 12px", borderRadius: 6, fontSize: 11.5, fontWeight: 700, cursor: "pointer" }}
+              >
+                Transition →
+              </button>
+            </div>
+          )}
 
           <div
             style={{
@@ -448,6 +535,24 @@ export const BroadcastCanvasView: React.FC<BroadcastCanvasViewProps> = ({
           </div>
         </div>
       </div>
+
+      {/* OBS 6-Track Audio Mixer Panel */}
+      <ObsAudioMixerPanel
+        sources={sources}
+        onToggleMute={(id) =>
+          patchSource(id, (s) => ({ ...s, muted: !s.muted }))
+        }
+        onVolumeChange={(id, db) =>
+          patchSource(id, (s) => ({ ...s, volumeDb: db }))
+        }
+        onOpenFilters={(src) => setFiltersModalSource(src)}
+        onUpdateTrackRouting={(id, tracks) =>
+          patchSource(id, (s) => ({
+            ...s,
+            settings: { ...s.settings, audioTracks: tracks },
+          }))
+        }
+      />
 
       {/* Right-Click Context Menu */}
       {contextMenu && (

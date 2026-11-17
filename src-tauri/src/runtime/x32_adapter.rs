@@ -478,7 +478,22 @@ mod tests {
     use std::sync::Mutex;
 
     fn fixture() -> (SharedState, Arc<RecordingSink>) {
-        let state = Arc::new(Mutex::new(default_simulator_state()));
+        use crate::state::DcaChannel;
+        let mut s = default_simulator_state();
+        s.dcas.push(DcaChannel {
+            id: "dca1".into(),
+            number: 1,
+            name: "Pastor".into(),
+            muted: false,
+            level_db: 0.0,
+            min_db: -3.0,
+            max_db: 3.0,
+            guard_mute: false,
+            signal_db: -40.0,
+            signal_present: false,
+            dante_tx_channel: "Ch 01".into(),
+        });
+        let state = Arc::new(Mutex::new(s));
         let sink = Arc::new(RecordingSink::new());
         (state, sink)
     }
