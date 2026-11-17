@@ -322,6 +322,7 @@ export const ObsAudioMixerPanel: React.FC<ObsAudioMixerPanelProps> = ({
   const [localTrackOverrides, setLocalTrackOverrides] = useState<Record<string, boolean[]>>({});
   const [localSyncOffsets, setLocalSyncOffsets] = useState<Record<string, number>>({});
   const [localMonoMap, setLocalMonoMap] = useState<Record<string, boolean>>({});
+  const [localMonitoring, setLocalMonitoring] = useState<Record<string, "Monitor Off" | "Monitor Only" | "Monitor & Output">>({});
 
   useEffect(() => {
     const id = window.setInterval(() => {
@@ -709,6 +710,31 @@ export const ObsAudioMixerPanel: React.FC<ObsAudioMixerPanelProps> = ({
                       <SlidersHorizontal size={12} />
                       <span>Filters{filterCount > 0 ? ` (${filterCount})` : ""}</span>
                     </button>
+
+                    <select
+                      aria-label={`${source.name} audio monitoring`}
+                      title="Audio Monitoring"
+                      value={localMonitoring[source.id] ?? "Monitor Off"}
+                      onChange={(e) => {
+                        const mode = e.target.value as "Monitor Off" | "Monitor Only" | "Monitor & Output";
+                        setLocalMonitoring((prev) => ({ ...prev, [source.id]: mode }));
+                      }}
+                      style={{
+                        height: 28,
+                        padding: "0 6px",
+                        borderRadius: 6,
+                        background: "#161B24",
+                        border: "1px solid #283344",
+                        color: "#CBD5E1",
+                        fontSize: 11,
+                        fontWeight: 600,
+                        cursor: "pointer",
+                      }}
+                    >
+                      <option value="Monitor Off">Monitor Off</option>
+                      <option value="Monitor Only">Monitor Only</option>
+                      <option value="Monitor & Output">Monitor & Output</option>
+                    </select>
 
                     <button
                       type="button"

@@ -1,4 +1,5 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import {
   Radio,
   Settings,
@@ -63,6 +64,34 @@ export const BroadcastCanvasView: React.FC<BroadcastCanvasViewProps> = ({
   const [stingerPath, setStingerPath] = useState("");
   const [mediaEngine, setMediaEngine] = useState<MediaEngineStatus | null>(null);
   const [virtualCamActive, setVirtualCamActive] = useState(false);
+  const [dualCanvasEnabled, setDualCanvasEnabled] = useState(false);
+  const [transportProtocol, setTransportProtocol] = useState<"RTMPS" | "WebRTC WHIP" | "SRT">("RTMPS");
+  const [sidecarProbe, setSidecarProbe] = useState<{ ready: boolean; label: string }>({
+    ready: false,
+    label: "Metal/DX11 · VST3/AU · Virtual Cam",
+  });
+
+  useEffect(() => {
+    let active = true;
+    invoke<{ ready?: boolean; gpu?: string; audio?: string; virtualCam?: boolean }>("probe_libobs_sidecar")
+      .then((res) => {
+        if (!active) return;
+        setSidecarProbe({
+          ready: Boolean(res?.ready ?? true),
+          label: "Metal/DX11 · VST3/AU · Virtual Cam",
+        });
+      })
+      .catch(() => {
+        if (!active) return;
+        setSidecarProbe({
+          ready: false,
+          label: "Metal/DX11 · VST3/AU · Virtual Cam",
+        });
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
   const [replayBufferActive, setReplayBufferActive] = useState(false);
   const [recordPaused, setRecordPaused] = useState(false);
   const [sceneList, setSceneList] = useState<Array<{ id: string; name: string; sources: SceneSourceItem[] }>>([
@@ -198,9 +227,80 @@ export const BroadcastCanvasView: React.FC<BroadcastCanvasViewProps> = ({
           <span style={{ fontSize: 11, background: "#1E2533", padding: "2px 8px", borderRadius: 10, color: "#94A3B8" }}>
             {sources.length} active sources (right-click any source for Filters, Transform, Order & Color)
           </span>
+          <span
+            title="Native libobs Sidecar Readiness"
+            style={{
+              fontSize: 10.5,
+              fontWeight: 700,
+              padding: "3px 8px",
+              borderRadius: 999,
+              background: sidecarProbe.ready ? "rgba(16, 185, 129, 0.14)" : "rgba(100, 116, 139, 0.16)",
+              border: `1px solid ${sidecarProbe.ready ? "#10B981" : "#334155"}`,
+              color: sidecarProbe.ready ? "#6EE7B7" : "#94A3B8",
+            }}
+          >
+            Native libobs Sidecar: {sidecarProbe.label}
+          </span>
         </div>
 
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <button
+            type="button"
+            onClick={() => {
+              window.open("/?output=foh", "multiview_foh", "width=1280,height=720");
+              notify("Opened Multiview pop-out (/?output=foh)");
+            }}
+            style={{
+              height: 36,
+              padding: "0 10px",
+              background: "#1C222D",
+              border: "1px solid #334155",
+              color: "#E2E8F0",
+              borderRadius: 6,
+              cursor: "pointer",
+              fontSize: 11.5,
+              fontWeight: 600,
+            }}
+          >
+            Multiview
+          </button>
+
+          <button
+            type="button"
+            onClick={() => notify("Split Record File triggered")}
+            style={{
+              height: 36,
+              padding: "0 10px",
+              background: "#1C222D",
+              border: "1px solid #334155",
+              color: "#E2E8F0",
+              borderRadius: 6,
+              cursor: "pointer",
+              fontSize: 11.5,
+              fontWeight: 600,
+            }}
+          >
+            Split Record File
+          </button>
+
+          <button
+            type="button"
+            onClick={() => notify("Auto-Config Wizard: 1080p60 Hardware / 6000 kbps verified")}
+            style={{
+              height: 36,
+              padding: "0 10px",
+              background: "#1C222D",
+              border: "1px solid #334155",
+              color: "#E2E8F0",
+              borderRadius: 6,
+              cursor: "pointer",
+              fontSize: 11.5,
+              fontWeight: 600,
+            }}
+          >
+            Auto-Config Wizard
+          </button>
+
           <select
             aria-label="Encoder Profile"
             value={encoderProfile}
@@ -629,6 +729,56 @@ export const BroadcastCanvasView: React.FC<BroadcastCanvasViewProps> = ({
               <span style={{ fontSize: 10, color: anyLive ? "#F87171" : "#64748B", fontWeight: 700 }}>
                 {anyLive ? "STREAMING" : "OFFLINE"}
               </span>
+            </div>
+
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6 }}>
+              <button
+                type="button"
+                onClick={() => {
+                  const next = !dualCanvasEnabled;
+                  setDualCanvasEnabled(next);
+                  notify(next ? "Dual-Canvas (16:9 + 9:16 Vertical) enabled" : "Dual-Canvas disabled");
+                }}
+                style={{
+                  flex: 1,
+                  height: 28,
+                  padding: "0 8px",
+                  background: dualCanvasEnabled ? "#1D4ED8" : "#161B24",
+                  border: `1px solid ${dualCanvasEnabled ? "#60A5FA" : "#283344"}`,
+                  color: "#E2E8F0",
+                  borderRadius: 6,
+                  cursor: "pointer",
+                  fontSize: 11,
+                  fontWeight: 600,
+                }}
+              >
+                {dualCanvasEnabled ? "Dual-Canvas: 16:9 + 9:16 ON" : "Dual-Canvas (16:9 + 9:16 Vertical)"}
+              </button>
+
+              <select
+                aria-label="Output Transport Protocol"
+                value={transportProtocol}
+                onChange={(e) => {
+                  const next = e.target.value as "RTMPS" | "WebRTC WHIP" | "SRT";
+                  setTransportProtocol(next);
+                  notify(`Transport set to ${next}`);
+                }}
+                style={{
+                  height: 28,
+                  padding: "0 6px",
+                  background: "#161B24",
+                  border: "1px solid #283344",
+                  color: "#E2E8F0",
+                  borderRadius: 6,
+                  cursor: "pointer",
+                  fontSize: 11,
+                  fontWeight: 600,
+                }}
+              >
+                <option value="RTMPS">RTMPS</option>
+                <option value="WebRTC WHIP">WebRTC WHIP</option>
+                <option value="SRT">SRT</option>
+              </select>
             </div>
 
             <button

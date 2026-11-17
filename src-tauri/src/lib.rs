@@ -693,6 +693,26 @@ fn scan_installed_audio_plugins() -> Vec<runtime::obs_daemon::InstalledAudioPlug
 }
 
 
+
+#[tauri::command]
+fn dispatch_obs_worker_command(
+    cmd: runtime::obs_worker_ipc::ObsWorkerCommand,
+    state: State<ManagedState>,
+) -> String {
+    let serialized = serde_json::to_string(&cmd).unwrap_or_default();
+    let mut inner = state.inner.lock().unwrap();
+    inner.event_log.insert(0, format!("[obs-worker-ipc] {}", serialized));
+    serialized
+}
+
+#[tauri::command]
+fn split_recording_file(state: State<ManagedState>) -> AppStateSnapshot {
+    dispatch(&state, AdapterCommand::Obs(ObsCommand::CreateRecordChapter("Split Segment".into())));
+    let mut inner = state.inner.lock().unwrap();
+    inner.event_log.insert(0, "[obs] SplitRecordFile triggered".into());
+    inner.clone()
+}
+
 #[tauri::command]
 fn probe_libobs_sidecar() -> runtime::obs_worker_ipc::LibObsCapabilities {
     runtime::obs_worker_ipc::probe_libobs_capabilities()
@@ -996,6 +1016,8 @@ pub fn run() {
             list_video_devices,
             get_media_engine_status,
             probe_libobs_sidecar,
+            dispatch_obs_worker_command,
+            split_recording_file,
             start_headless_media_daemon,
             route_dante_crosspoint,
             trigger_ndi_ptz,

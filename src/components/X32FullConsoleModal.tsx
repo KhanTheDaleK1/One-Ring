@@ -803,6 +803,15 @@ export const X32FullConsoleModal: React.FC<X32FullConsoleModalProps> = ({
 
   const [showFxRack, setShowFxRack] = useState<boolean>(false);
   const [fxSlots, setFxSlots] = useState<FxSlotState[]>(() => buildInitialFxSlots());
+  const [cueIndex, setCueIndex] = useState<number>(1);
+  const [snippetIndex, setSnippetIndex] = useState<number>(1);
+  const [dcaSpillFilter, setDcaSpillFilter] = useState<'all' | 1 | 2 | 3 | 4>('all');
+  const [automixGroups, setAutomixGroups] = useState<Record<string, 'Off' | 'X' | 'Y'>>({});
+  const [xliveState, setXliveState] = useState<'STOP' | 'PLAY' | 'REC'>('STOP');
+  const [talkbackA, setTalkbackA] = useState<boolean>(false);
+  const [talkbackB, setTalkbackB] = useState<boolean>(false);
+  const [oscMode, setOscMode] = useState<'off' | '1kHz' | 'pink'>('off');
+  const [clockSource, setClockSource] = useState<'48kHz Internal' | 'AES50' | 'Card'>('48kHz Internal');
   const scnFileInputRef = useRef<HTMLInputElement | null>(null);
   const eqSvgRef = useRef<SVGSVGElement | null>(null);
 
@@ -916,10 +925,11 @@ export const X32FullConsoleModal: React.FC<X32FullConsoleModalProps> = ({
     return () => window.clearInterval(timer);
   }, [isOpen, rtaEnabled]);
 
-  const bankChannels = useMemo(
-    () => channels.filter((c) => c.bank === activeBank),
-    [channels, activeBank]
-  );
+  const bankChannels = useMemo(() => {
+    const base = channels.filter((c) => c.bank === activeBank);
+    if (dcaSpillFilter === 'all') return base;
+    return base.filter((_, idx) => (idx % 4) + 1 === dcaSpillFilter);
+  }, [channels, activeBank, dcaSpillFilter]);
 
   const selectedChannel = useMemo(
     () => channels.find((c) => c.id === selectedId) || bankChannels[0] || channels[0],
@@ -1301,6 +1311,136 @@ export const X32FullConsoleModal: React.FC<X32FullConsoleModalProps> = ({
               ))}
             </div>
 
+            {/* A4: Cue / Snippet Recall */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 4, background: '#0B0F17', border: '1px solid #1E2533', borderRadius: 7, padding: '2px 6px' }}>
+              <button
+                type="button"
+                onClick={() => {
+                  const next = Math.max(0, cueIndex - 1);
+                  setCueIndex(next);
+                  emitOsc('/-action/goscene', next);
+                }}
+                style={{ height: 26, padding: '0 7px', borderRadius: 5, fontSize: 11, fontWeight: 700, cursor: 'pointer', background: '#161B24', border: '1px solid #283344', color: '#CBD5E1' }}
+              >
+                Prev Cue
+              </button>
+              <span style={{ fontSize: 11, fontWeight: 700, color: '#94A3B8', minWidth: 34, textAlign: 'center' }}>#{cueIndex}</span>
+              <button
+                type="button"
+                onClick={() => {
+                  const next = cueIndex + 1;
+                  setCueIndex(next);
+                  emitOsc('/-action/goscene', next);
+                }}
+                style={{ height: 26, padding: '0 7px', borderRadius: 5, fontSize: 11, fontWeight: 700, cursor: 'pointer', background: '#161B24', border: '1px solid #283344', color: '#CBD5E1' }}
+              >
+                Next Cue
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  emitOsc('/-action/gosnippet', snippetIndex);
+                  setSnippetIndex((s) => (s >= 16 ? 1 : s + 1));
+                }}
+                style={{ height: 26, padding: '0 8px', borderRadius: 5, fontSize: 11, fontWeight: 700, cursor: 'pointer', background: '#1E293B', border: '1px solid #38BDF8', color: '#7DD3FC' }}
+              >
+                Recall Snippet #{snippetIndex}
+              </button>
+            </div>
+
+            {/* A5: X-LIVE Recorder + Talkback / Oscillator */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 4, background: '#0B0F17', border: '1px solid #1E2533', borderRadius: 7, padding: '2px 6px' }}>
+              {(['REC', 'PLAY', 'STOP'] as const).map((mode) => {
+                const active = xliveState === mode;
+                return (
+                  <button
+                    key={mode}
+                    type="button"
+                    onClick={() => {
+                      setXliveState(mode);
+                      emitOsc('/-stat/urec/state', mode === 'REC' ? 2 : mode === 'PLAY' ? 1 : 0);
+                    }}
+                    style={{
+                      height: 26,
+                      padding: '0 7px',
+                      borderRadius: 5,
+                      fontSize: 10,
+                      fontWeight: 800,
+                      cursor: 'pointer',
+                      background: active ? (mode === 'REC' ? '#991B1B' : mode === 'PLAY' ? '#065F46' : '#334155') : '#161B24',
+                      border: `1px solid ${active ? (mode === 'REC' ? '#EF4444' : mode === 'PLAY' ? '#10B981' : '#64748B') : '#283344'}`,
+                      color: active ? '#FFFFFF' : '#94A3B8',
+                    }}
+                  >
+                    {mode}
+                  </button>
+                );
+              })}
+              <button
+                type="button"
+                onClick={() => {
+                  const next = !talkbackA;
+                  setTalkbackA(next);
+                  emitOsc('/config/talk/A/on', next ? 1 : 0);
+                }}
+                style={{
+                  height: 26,
+                  padding: '0 7px',
+                  borderRadius: 5,
+                  fontSize: 10,
+                  fontWeight: 700,
+                  cursor: 'pointer',
+                  background: talkbackA ? '#1D4ED8' : '#161B24',
+                  border: `1px solid ${talkbackA ? '#60A5FA' : '#283344'}`,
+                  color: talkbackA ? '#FFFFFF' : '#94A3B8',
+                }}
+              >
+                TB A
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const next = !talkbackB;
+                  setTalkbackB(next);
+                  emitOsc('/config/talk/B/on', next ? 1 : 0);
+                }}
+                style={{
+                  height: 26,
+                  padding: '0 7px',
+                  borderRadius: 5,
+                  fontSize: 10,
+                  fontWeight: 700,
+                  cursor: 'pointer',
+                  background: talkbackB ? '#1D4ED8' : '#161B24',
+                  border: `1px solid ${talkbackB ? '#60A5FA' : '#283344'}`,
+                  color: talkbackB ? '#FFFFFF' : '#94A3B8',
+                }}
+              >
+                TB B
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const next = oscMode === 'off' ? '1kHz' : oscMode === '1kHz' ? 'pink' : 'off';
+                  setOscMode(next);
+                  emitOsc('/config/osc/on', next === 'off' ? 0 : 1);
+                }}
+                style={{
+                  height: 26,
+                  padding: '0 7px',
+                  borderRadius: 5,
+                  fontSize: 10,
+                  fontWeight: 700,
+                  cursor: 'pointer',
+                  background: oscMode !== 'off' ? '#7C2D12' : '#161B24',
+                  border: `1px solid ${oscMode !== 'off' ? '#F97316' : '#283344'}`,
+                  color: oscMode !== 'off' ? '#FED7AA' : '#94A3B8',
+                }}
+              >
+                Osc: {oscMode === 'off' ? 'Off' : oscMode === '1kHz' ? '1kHz' : 'Pink'}
+              </button>
+            </div>
+
             <button
               type="button"
               onClick={clearAllSolos}
@@ -1500,6 +1640,33 @@ export const X32FullConsoleModal: React.FC<X32FullConsoleModalProps> = ({
           </div>
         ) : (
         <div style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0, overflow: "hidden" }}>
+          {/* A5: DCA Spill Filter Pills */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 12px', background: '#0B0F17', borderBottom: '1px solid #1E2533' }}>
+            <span style={{ fontSize: 10, fontWeight: 700, color: '#64748B', textTransform: 'uppercase', letterSpacing: '0.06em' }}>DCA Spill:</span>
+            {(['all', 1, 2, 3, 4] as const).map((pill) => {
+              const active = dcaSpillFilter === pill;
+              return (
+                <button
+                  key={String(pill)}
+                  type="button"
+                  onClick={() => setDcaSpillFilter(pill)}
+                  style={{
+                    height: 22,
+                    padding: '0 9px',
+                    borderRadius: 999,
+                    fontSize: 11,
+                    fontWeight: 700,
+                    cursor: 'pointer',
+                    background: active ? '#1E3A8A' : '#161B24',
+                    border: `1px solid ${active ? '#3B82F6' : '#283344'}`,
+                    color: active ? '#DBEAFE' : '#94A3B8',
+                  }}
+                >
+                  {pill === 'all' ? 'All' : `DCA ${pill}`}
+                </button>
+              );
+            })}
+          </div>
           {/* Bank Channel Strips */}
           <div
             style={{
@@ -2053,6 +2220,90 @@ export const X32FullConsoleModal: React.FC<X32FullConsoleModalProps> = ({
                 </div>
 
                 {/* Quick Channel Strip Summary Controls */}
+                {/* A5: Automix (Off, X, Y) & A6: Channel Preset Library */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginLeft: 8 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 2, background: '#0B0F17', border: '1px solid #1E2533', borderRadius: 6, padding: 2 }}>
+                    <span style={{ fontSize: 10, fontWeight: 700, color: '#64748B', padding: '0 4px' }}>Automix</span>
+                    {(['Off', 'X', 'Y'] as const).map((grp) => {
+                      const current = automixGroups[selectedChannel.id] ?? 'Off';
+                      const active = current === grp;
+                      return (
+                        <button
+                          key={grp}
+                          type="button"
+                          onClick={() => {
+                            setAutomixGroups((prev) => ({ ...prev, [selectedChannel.id]: grp }));
+                            emitOsc(`${selectedChannel.oscPrefix}/automix/group`, grp === 'Off' ? 0 : grp === 'X' ? 1 : 2);
+                          }}
+                          style={{
+                            height: 22,
+                            padding: '0 7px',
+                            borderRadius: 4,
+                            fontSize: 10,
+                            fontWeight: 700,
+                            cursor: 'pointer',
+                            background: active ? '#0F766E' : 'transparent',
+                            border: 'none',
+                            color: active ? '#CCFBF1' : '#94A3B8',
+                          }}
+                        >
+                          {grp}
+                        </button>
+                      );
+                    })}
+                  </div>
+                  <select
+                    aria-label="Channel Preset Library"
+                    defaultValue=""
+                    onChange={(e) => {
+                      const preset = e.target.value;
+                      if (!preset) return;
+                      const presets: Record<string, { hpfOn: boolean; hpfFreqHz: number; eqOn: boolean; gains: [number, number, number, number]; compOn: boolean; thresholdDb: number; ratio: number }> = {
+                        'Lead Vocal': { hpfOn: true, hpfFreqHz: 110, eqOn: true, gains: [-2, 1.5, 3, 2], compOn: true, thresholdDb: -18, ratio: 3.5 },
+                        'Acoustic Guitar': { hpfOn: true, hpfFreqHz: 90, eqOn: true, gains: [-1.5, -2, 2, 3], compOn: true, thresholdDb: -16, ratio: 3 },
+                        'Pastor Lav': { hpfOn: true, hpfFreqHz: 140, eqOn: true, gains: [-3, -2.5, 3.5, 1.5], compOn: true, thresholdDb: -20, ratio: 4 },
+                        'Kick Drum': { hpfOn: true, hpfFreqHz: 35, eqOn: true, gains: [4, -4, 3, 1], compOn: true, thresholdDb: -14, ratio: 4.5 },
+                        'Reset Flat': { hpfOn: false, hpfFreqHz: 80, eqOn: false, gains: [0, 0, 0, 0], compOn: false, thresholdDb: -12, ratio: 2 },
+                      };
+                      const p = presets[preset];
+                      if (!p) return;
+                      patchChannel(selectedChannel.id, (prev) => ({
+                        ...prev,
+                        hpfOn: p.hpfOn,
+                        hpfFreqHz: p.hpfFreqHz,
+                        eqOn: p.eqOn,
+                        eqBands: [
+                          { ...prev.eqBands[0], gain: p.gains[0] },
+                          { ...prev.eqBands[1], gain: p.gains[1] },
+                          { ...prev.eqBands[2], gain: p.gains[2] },
+                          { ...prev.eqBands[3], gain: p.gains[3] },
+                        ],
+                        comp: { ...prev.comp, on: p.compOn, thresholdDb: p.thresholdDb, ratio: p.ratio },
+                      }));
+                      emitOsc(`${selectedChannel.oscPrefix}/preamp/hpf`, p.hpfOn ? 1 : 0);
+                      emitOsc(`${selectedChannel.oscPrefix}/eq/on`, p.eqOn ? 1 : 0);
+                      emitOsc(`${selectedChannel.oscPrefix}/dyn/on`, p.compOn ? 1 : 0);
+                      e.target.value = '';
+                    }}
+                    style={{
+                      height: 28,
+                      padding: '0 8px',
+                      borderRadius: 6,
+                      fontSize: 11,
+                      fontWeight: 600,
+                      background: '#161B24',
+                      border: '1px solid #283344',
+                      color: '#CBD5E1',
+                    }}
+                  >
+                    <option value="">Preset Library…</option>
+                    <option value="Lead Vocal">Lead Vocal</option>
+                    <option value="Acoustic Guitar">Acoustic Guitar</option>
+                    <option value="Pastor Lav">Pastor Lav</option>
+                    <option value="Kick Drum">Kick Drum</option>
+                    <option value="Reset Flat">Reset Flat</option>
+                  </select>
+                </div>
                 <div style={{ display: "flex", alignItems: "center", gap: 8, marginLeft: 8 }}>
                   <button
                     type="button"
@@ -3117,6 +3368,54 @@ export const X32FullConsoleModal: React.FC<X32FullConsoleModalProps> = ({
           </div>
         </div>
         )}
+        {/* A6: AES50-A/B & Clock Status Footer */}
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            padding: '6px 14px',
+            background: '#080B10',
+            borderTop: '1px solid #1E2533',
+            fontSize: 11,
+            color: '#94A3B8',
+            flexShrink: 0,
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+            <span><strong style={{ color: '#34D399' }}>AES50-A:</strong> Connected (48ch @ 48kHz)</span>
+            <span><strong style={{ color: '#34D399' }}>AES50-B:</strong> Link Ready</span>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <span style={{ color: '#64748B', fontWeight: 700 }}>Clock:</span>
+            {(['48kHz Internal', 'AES50', 'Card'] as const).map((src) => {
+              const active = clockSource === src;
+              return (
+                <button
+                  key={src}
+                  type="button"
+                  onClick={() => {
+                    setClockSource(src);
+                    emitOsc('/config/sync', src === '48kHz Internal' ? 0 : src === 'AES50' ? 1 : 2);
+                  }}
+                  style={{
+                    height: 22,
+                    padding: '0 8px',
+                    borderRadius: 5,
+                    fontSize: 10,
+                    fontWeight: 700,
+                    cursor: 'pointer',
+                    background: active ? '#065F46' : '#161B24',
+                    border: `1px solid ${active ? '#10B981' : '#283344'}`,
+                    color: active ? '#D1FAE5' : '#94A3B8',
+                  }}
+                >
+                  {src}
+                </button>
+              );
+            })}
+          </div>
+        </div>
       </div>
     </div>
   );
