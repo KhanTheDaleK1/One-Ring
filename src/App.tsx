@@ -12,6 +12,8 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { AppStateSnapshot, ViewMode } from "./types";
 import { PreflightView } from "./components/PreflightView";
 import { ShowModeView } from "./components/ShowModeView";
+import { SlidesCanvasView } from "./components/SlidesCanvasView";
+import { VideoCanvasView } from "./components/VideoCanvasView";
 import { EngineerView } from "./components/EngineerView";
 import { SettingsView } from "./components/SettingsView";
 import { ShowNameModal } from "./components/ShowNameModal";
@@ -52,10 +54,10 @@ export const App: React.FC = () => {
         } else {
           // Provide fallback about info even if offline
           setAvailableUpdate({
-            current_version: "0.1.3",
-            latest_version: "v0.1.3-alpha",
+            current_version: "0.1.4",
+            latest_version: "v0.1.4-alpha",
             release_name: "One Ring — Church Production Suite",
-            release_notes: "You are running One Ring v0.1.3-alpha. All systems up to date.",
+            release_notes: "You are running One Ring v0.1.4-alpha. All systems up to date.",
             published_at: new Date().toISOString(),
             html_url: "https://github.com/KhanTheDaleK1/One-Ring",
             download_url: null,
@@ -284,30 +286,36 @@ export const App: React.FC = () => {
       )}
 
       {mode === "video" && (
-        <ShowModeView
+        <VideoCanvasView
           state={state}
-          onTriggerCue={(idx) => bridge.triggerCue(idx).then(setState)}
-          onUndoCue={() => bridge.undoLastCue().then(setState)}
-          onToggleDcaMute={(id) => bridge.toggleDcaMute(id).then(setState)}
-          onNudgeDca={(id, delta) => bridge.nudgeDcaLevel(id, delta).then(setState)}
           onRecallCamera={(id) => bridge.recallCameraPreset(id).then(setState)}
-          onSlideAction={(act) => bridge.triggerSlideAction(act).then(setState)}
-          onSelectSlide={(slideNumber) => bridge.goToSlide(slideNumber).then(setState)}
-          onBroadcastToggle={(id, live) => bridge.setBroadcastState(id, live).then(setState)}
+          onSwitchNdiReceiver={(rxId, src) => bridge.switchNdiReceiver(rxId, src).then(setState)}
         />
       )}
 
       {mode === "slides" && (
-        <ShowModeView
+        <SlidesCanvasView
           state={state}
-          onTriggerCue={(idx) => bridge.triggerCue(idx).then(setState)}
-          onUndoCue={() => bridge.undoLastCue().then(setState)}
-          onToggleDcaMute={(id) => bridge.toggleDcaMute(id).then(setState)}
-          onNudgeDca={(id, delta) => bridge.nudgeDcaLevel(id, delta).then(setState)}
-          onRecallCamera={(id) => bridge.recallCameraPreset(id).then(setState)}
-          onSlideAction={(act) => bridge.triggerSlideAction(act).then(setState)}
           onSelectSlide={(slideNumber) => bridge.goToSlide(slideNumber).then(setState)}
-          onBroadcastToggle={(id, live) => bridge.setBroadcastState(id, live).then(setState)}
+          onSlideAction={(act) => bridge.triggerSlideAction(act).then(setState)}
+          onImportSong={(title, importedSlides) => {
+            setState((prev) => {
+              if (!prev) return prev;
+              return {
+                ...prev,
+                slides: {
+                  ...prev.slides,
+                  presentationName: title,
+                  currentSlide: 1,
+                  totalSlides: importedSlides.length,
+                  currentText: importedSlides[0]?.text || "",
+                  nextText: importedSlides[1]?.text || "",
+                  cleared: false,
+                  slides: importedSlides,
+                },
+              };
+            });
+          }}
         />
       )}
 
@@ -373,9 +381,9 @@ export const App: React.FC = () => {
               setAvailableUpdate(info);
             } else {
               setAvailableUpdate({
-                current_version: "0.1.3",
-                latest_version: "v0.1.3-alpha",
-                release_name: "One Ring v0.1.3-alpha",
+                current_version: "0.1.4",
+                latest_version: "v0.1.4-alpha",
+                release_name: "One Ring v0.1.4-alpha",
                 release_notes: "You are running the latest version. All systems are up to date.",
                 published_at: new Date().toISOString(),
                 html_url: "https://github.com/KhanTheDaleK1/One-Ring/releases",
