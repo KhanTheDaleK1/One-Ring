@@ -1,7 +1,10 @@
+
+use peer_discovery::{PeerRegistry, DiscoveredPeer};
 pub mod protocols;
 mod runtime;
 mod state;
 pub mod updater;
+pub mod peer_discovery;
 
 use runtime::events::{CueProgressEvent, EventSink, HealthEvent, MeterEvent, StatePatch};
 use runtime::obs_adapter::ObsCommand;
@@ -616,6 +619,12 @@ fn open_in_browser(url: String) -> Result<(), String> {
     Ok(())
 }
 
+
+#[tauri::command]
+fn get_discovered_peers(registry: State<PeerRegistry>) -> Vec<DiscoveredPeer> {
+    registry.list()
+}
+
 #[tauri::command]
 async fn check_update() -> Result<Option<updater::UpdateInfo>, String> {
     tokio::task::spawn_blocking(updater::check_for_updates)
@@ -642,6 +651,19 @@ pub fn run() {
         .setup(|app| {
             let managed = app.state::<ManagedState>();
 
+            let peer_reg = PeerRegistry::default();
+            app.manage(peer_reg.clone());
+            let hostname = gethostname::gethostname().to_string_lossy().to_string();
+            let my_id = format!("{}-{}", hostname, std::process::id());
+            peer_discovery::start_peer_discovery(
+                my_id,
+                hostname,
+                "Main Sanctuary".to_string(),
+                env!("CARGO_PKG_VERSION").to_string(),
+                peer_reg,
+            );
+
+
             // Build custom macOS Application Menu with "About One Ring" and "Check for Updates..."
             #[cfg(target_os = "macos")]
             {
@@ -656,6 +678,7 @@ pub fn run() {
                     &[
                         &about,
                         &check_update,
+            get_discovered_peers,
                         &PredefinedMenuItem::separator(app)?,
                         &PredefinedMenuItem::services(app, None)?,
                         &PredefinedMenuItem::separator(app)?,
@@ -736,6 +759,7 @@ pub fn run() {
             export_show_file,
             import_show_file,
             check_update,
+            get_discovered_peers,
             open_in_browser
         ])
         .run(tauri::generate_context!())

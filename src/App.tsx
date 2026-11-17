@@ -17,6 +17,8 @@ import { VideoCanvasView } from "./components/VideoCanvasView";
 import { EngineerView } from "./components/EngineerView";
 import { SettingsView } from "./components/SettingsView";
 import { ShowNameModal } from "./components/ShowNameModal";
+import { PairingPrompt, type DiscoveredPeerInfo } from "./components/PairingPrompt";
+import { getDiscoveredPeers } from "./bridge";
 import { WelcomeTour } from "./components/WelcomeTour";
 import { UpdateModal } from "./components/UpdateModal";
 import { checkForUpdate } from "./bridge";
@@ -27,6 +29,8 @@ export const App: React.FC = () => {
   const [mode, setMode] = useState<ViewMode>("mixing");
   const [availableUpdate, setAvailableUpdate] = useState<UpdateInfo | null>(null);
   const [isEditingShowName, setIsEditingShowName] = useState(false);
+  const [discoveredPeer, setDiscoveredPeer] = useState<DiscoveredPeerInfo | null>(null);
+  const [dismissedPeers, setDismissedPeers] = useState<Set<string>>(new Set());
   const [showWelcomeTour, setShowWelcomeTour] = useState(() => {
     return localStorage.getItem("onering_tour_completed") !== "true";
   });
@@ -54,10 +58,10 @@ export const App: React.FC = () => {
         } else {
           // Provide fallback about info even if offline
           setAvailableUpdate({
-            current_version: "0.1.4",
-            latest_version: "v0.1.4-alpha",
+            current_version: "0.1.5",
+            latest_version: "v0.1.5-alpha",
             release_name: "One Ring — Church Production Suite",
-            release_notes: "You are running One Ring v0.1.4-alpha. All systems up to date.",
+            release_notes: "You are running One Ring v0.1.5-alpha. All systems up to date.",
             published_at: new Date().toISOString(),
             html_url: "https://github.com/KhanTheDaleK1/One-Ring",
             download_url: null,
@@ -70,6 +74,18 @@ export const App: React.FC = () => {
         else unlistenMenu = unsub;
       });
     }
+
+    
+    // Poll for nearby One Ring instances on the local network (UDP broadcast)
+    const peerTimer = setInterval(async () => {
+      const peers = await getDiscoveredPeers();
+      if (!disposed && peers && peers.length > 0) {
+        const unhandled = peers.find((p) => !dismissedPeers.has(p.instanceId));
+        if (unhandled) {
+          setDiscoveredPeer(unhandled);
+        }
+      }
+    }, 2500);
 
     bridge.getAppState().then((snapshot) => {
       if (disposed) return;
@@ -98,6 +114,7 @@ export const App: React.FC = () => {
       disposed = true;
       unlisten?.();
       unlistenMenu?.();
+      clearInterval(peerTimer);
     };
   }, []);
 
@@ -358,6 +375,31 @@ export const App: React.FC = () => {
         }}
       />
 
+      {discoveredPeer && (
+        <PairingPrompt
+          peer={discoveredPeer}
+          onPair={(p) => {
+            // Pair stations: set hub address to peer's IP
+            if (state) {
+              const updated = {
+                ...state.settings,
+                sync: {
+                  ...state.settings.sync,
+                  hubAddress: `ws://${p.ipAddress}:${p.wsSyncPort}`,
+                  lanDiscoveryEnabled: true,
+                },
+              };
+              bridge.saveSettings(updated).then(setState);
+            }
+            setDiscoveredPeer(null);
+          }}
+          onDismiss={() => {
+            setDismissedPeers((prev) => new Set(prev).add(discoveredPeer.instanceId));
+            setDiscoveredPeer(null);
+          }}
+        />
+      )}
+
       <ShowNameModal
         currentName={state.serviceName || "Untitled Show"}
         isOpen={isEditingShowName}
@@ -381,9 +423,9 @@ export const App: React.FC = () => {
               setAvailableUpdate(info);
             } else {
               setAvailableUpdate({
-                current_version: "0.1.4",
-                latest_version: "v0.1.4-alpha",
-                release_name: "One Ring v0.1.4-alpha",
+                current_version: "0.1.5",
+                latest_version: "v0.1.5-alpha",
+                release_name: "One Ring v0.1.5-alpha",
                 release_notes: "You are running the latest version. All systems are up to date.",
                 published_at: new Date().toISOString(),
                 html_url: "https://github.com/KhanTheDaleK1/One-Ring/releases",

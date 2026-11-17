@@ -742,7 +742,7 @@ export async function checkForUpdate(): Promise<UpdateInfo | null> {
       const releases = await resp.json();
       if (!releases || releases.length === 0) return null;
       const latest = releases[0];
-      const currentVersion = "0.1.4";
+      const currentVersion = "0.1.5";
       const latestTag: string = latest.tag_name || "";
       const updateAvailable = latestTag.replace(/^v/, "") !== currentVersion.replace(/^v/, "");
       return {
@@ -774,4 +774,25 @@ export async function openUrl(url: string): Promise<void> {
     }
   }
   window.open(url, "_blank");
+}
+
+
+export interface DiscoveredPeer {
+  instanceId: string;
+  stationName: string;
+  canvasTitle: string;
+  ipAddress: string;
+  wsSyncPort: number;
+  version: string;
+}
+
+export async function getDiscoveredPeers(): Promise<DiscoveredPeer[]> {
+  if (isTauri()) {
+    try {
+      return await invokeTauri<DiscoveredPeer[]>("get_discovered_peers");
+    } catch {
+      return [];
+    }
+  }
+  return [];
 }
