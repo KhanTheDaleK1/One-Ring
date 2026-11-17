@@ -637,6 +637,31 @@ fn open_in_browser(url: String) -> Result<(), String> {
 
 
 
+
+#[tauri::command]
+fn start_direct_ffmpeg_stream(
+    rtmp_url: String,
+    record_path: Option<String>,
+    ffmpeg: State<runtime::obs_daemon::FfmpegStreamProcess>,
+) -> Result<String, String> {
+    ffmpeg.start_stream(&rtmp_url, record_path.as_deref())
+}
+
+#[tauri::command]
+fn stop_direct_ffmpeg_stream(
+    ffmpeg: State<runtime::obs_daemon::FfmpegStreamProcess>,
+) -> String {
+    ffmpeg.stop();
+    "Stopped standalone FFmpeg encoder".into()
+}
+
+#[tauri::command]
+fn import_ewsx_schedule(
+    file_path: String,
+) -> Result<Vec<runtime::obs_daemon::ImportedSongPayload>, String> {
+    runtime::obs_daemon::parse_easyworship_ewsx(&file_path)
+}
+
 #[tauri::command]
 fn list_audio_devices() -> Vec<runtime::obs_daemon::HostMediaDevice> {
     runtime::obs_daemon::list_host_audio_devices()
@@ -826,6 +851,7 @@ pub fn run() {
     tauri::Builder::default()
         .manage(ManagedState::default())
         .manage(runtime::obs_daemon::ObsDaemonSupervisor::default())
+        .manage(runtime::obs_daemon::FfmpegStreamProcess::default())
         .setup(|app| {
             let managed = app.state::<ManagedState>();
 
@@ -940,6 +966,9 @@ pub fn run() {
             list_open_windows,
             scan_installed_audio_plugins,
             list_audio_devices,
+            start_direct_ffmpeg_stream,
+            stop_direct_ffmpeg_stream,
+            import_ewsx_schedule,
             list_video_devices,
             get_media_engine_status,
             start_headless_media_daemon,

@@ -13,6 +13,7 @@ import {
   Trash2,
   BookOpen,
   Clock,
+  Upload,
 } from "lucide-react";
 import type { AppStateSnapshot, ServiceSong, SlideCue, SlideTheme } from "../types";
 import { LyricImportModal } from "./LyricImportModal";
@@ -66,6 +67,50 @@ export const SlidesCanvasView: React.FC<SlidesCanvasViewProps> = ({
   const [stageAlertMsg, setStageAlertMsg] = useState<string>("");
   const [stageAlertActive, setStageAlertActive] = useState<boolean>(false);
   const [timerLabel, setTimerLabel] = useState<string>("Countdown Ready");
+  const fileImportRef = React.useRef<HTMLInputElement | null>(null);
+
+  const handleFileImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const text = await file.text();
+    const baseName = file.name.replace(/\.[^.]+$/, "");
+    // Clean ChordPro bracket chords like [G], [C/E], [Am7] and parse sections
+    const cleanLines = text
+      .replace(/\[(?!(Verse|Chorus|Bridge|Pre-Chorus|Tag|Intro|Outro|Ending))[^\]]+\]/gi, "")
+      .split(/\r?\n/)
+      .map((l) => l.trim())
+      .filter((l) => l.length > 0 && !l.startsWith("{"));
+
+    const slidesOut: SlideCue[] = [];
+    let buf: string[] = [];
+    let num = 1;
+    let sec = "Verse 1";
+    for (const line of cleanLines) {
+      const m = line.match(/^\[(.*)\]$/) || line.match(/^(Verse\s*\d*|Chorus|Bridge|Tag|Intro|Outro):?$/i);
+      if (m) {
+        if (buf.length > 0) {
+          slidesOut.push({ id: `file-${num}`, number: num, section: sec, title: `${sec} - ${num}`, text: buf.join("\n"), kind: "lyrics" });
+          num++;
+          buf = [];
+        }
+        sec = (m[1] || m[0]).replace(/[:\[\]]/g, "").trim();
+        continue;
+      }
+      buf.push(line);
+      if (buf.length >= 2) {
+        slidesOut.push({ id: `file-${num}`, number: num, section: sec, title: `${sec} - ${num}`, text: buf.join("\n"), kind: "lyrics" });
+        num++;
+        buf = [];
+      }
+    }
+    if (buf.length > 0) {
+      slidesOut.push({ id: `file-${num}`, number: num, section: sec, title: `${sec} - ${num}`, text: buf.join("\n"), kind: "lyrics" });
+    }
+    if (slidesOut.length > 0) {
+      onImportSong(baseName, slidesOut);
+    }
+    e.target.value = "";
+  };
 
   const slides = state.slides.slides || [];
   const currentSlide = slides.find((s) => s.number === state.slides.currentSlide) || slides[0];
@@ -444,9 +489,37 @@ export const SlidesCanvasView: React.FC<SlidesCanvasViewProps> = ({
             <span style={{ fontSize: 11, fontWeight: 700, color: "#94A3B8", textTransform: "uppercase", display: "flex", alignItems: "center", gap: 6 }}>
               <Music size={13} color="#60A5FA" /> Service Songs
             </span>
-            <button
-              type="button"
-              onClick={() => setShowImportModal(true)}
+            <input
+              ref={fileImportRef}
+              type="file"
+              accept=".txt,.cho,.chordpro,.usr,.pro,.ewsx"
+              onChange={handleFileImport}
+              style={{ display: "none" }}
+            />
+            <div style={{ display: "flex", gap: 4 }}>
+              <button
+                type="button"
+                onClick={() => fileImportRef.current?.click()}
+                title="Import .txt, ChordPro, ProPresenter, or EasyWorship file"
+                style={{
+                  background: "#1E293B",
+                  border: "1px solid #334155",
+                  color: "#CBD5E1",
+                  borderRadius: 5,
+                  padding: "3px 6px",
+                  fontSize: 10.5,
+                  fontWeight: 700,
+                  cursor: "pointer",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 3,
+                }}
+              >
+                <Upload size={11} /> File
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowImportModal(true)}
               title="Add another song to this service"
               style={{
                 background: "#1E293B",
@@ -463,7 +536,8 @@ export const SlidesCanvasView: React.FC<SlidesCanvasViewProps> = ({
               }}
             >
               <Plus size={12} /> Add
-            </button>
+              </button>
+            </div>
           </div>
 
           <div style={{ display: "flex", flexDirection: "column", gap: 6, flex: 1, overflowY: "auto" }}>

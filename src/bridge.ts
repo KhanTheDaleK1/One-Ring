@@ -903,3 +903,17 @@ export async function listHostMediaDevices(): Promise<HostMediaDevice[]> {
   }
   return results;
 }
+
+export async function startDirectFfmpegStream(rtmpUrl: string, recordPath?: string): Promise<string> {
+  if (isTauri()) {
+    return invokeTauri<string>("start_direct_ffmpeg_stream", { rtmpUrl, recordPath: recordPath ?? null });
+  }
+  return "Direct FFmpeg RTMP/MP4 encoder started (browser mode simulated)";
+}
+
+export async function stopDirectFfmpegStream(): Promise<string> {
+  if (isTauri()) {
+    return invokeTauri<string>("stop_direct_ffmpeg_stream");
+  }
+  return "Direct FFmpeg stopped";
+}

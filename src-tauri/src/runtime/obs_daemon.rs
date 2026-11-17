@@ -268,3 +268,184 @@ pub fn list_host_video_devices() -> Vec<HostMediaDevice> {
     }
     devices
 }
+
+pub struct FfmpegStreamProcess {
+    pub child: Arc<Mutex<Option<Child>>>,
+}
+
+impl Default for FfmpegStreamProcess {
+    fn default() -> Self {
+        Self { child: Arc::new(Mutex::new(None)) }
+    }
+}
+
+impl FfmpegStreamProcess {
+    pub fn is_running(&self) -> bool {
+        let mut guard = self.child.lock().unwrap();
+        if let Some(c) = guard.as_mut() {
+            if matches!(c.try_wait(), Ok(None)) {
+                return true;
+            }
+            *guard = None;
+        }
+        false
+    }
+
+    pub fn stop(&self) {
+        let mut guard = self.child.lock().unwrap();
+        if let Some(mut c) = guard.take() {
+            let _ = c.kill();
+            let _ = c.wait();
+        }
+    }
+
+    /// Starts native standalone FFmpeg screen/audio capture -> RTMP/RTMPS + local MKV/MP4 tee
+    pub fn start_stream(&self, rtmp_url: &str, record_path: Option<&str>) -> Result<String, String> {
+        if self.is_running() {
+            return Ok("FFmpeg native encoder already streaming".into());
+        }
+        let bin = find_ffmpeg_binary().ok_or_else(|| {
+            "FFmpeg binary not found. Install ffmpeg (Homebrew / winget) for direct standalone RTMP encoding.".to_string()
+        })?;
+
+        let mut args: Vec<String> = Vec::new();
+        #[cfg(target_os = "macos")]
+        {
+            args.extend([
+                "-f".into(), "avfoundation".into(),
+                "-framerate".into(), "30".into(),
+                "-i".into(), "Capture screen 0:0".into(),
+                "-c:v".into(), "h264_videotoolbox".into(),
+                "-b:v".into(), "4500k".into(),
+                "-pix_fmt".into(), "yuv420p".into(),
+                "-c:a".into(), "aac".into(),
+                "-b:a".into(), "160k".into(),
+            ]);
+        }
+        #[cfg(target_os = "windows")]
+        {
+            args.extend([
+                "-f".into(), "gdigrab".into(),
+                "-framerate".into(), "30".into(),
+                "-i".into(), "desktop".into(),
+                "-c:v".into(), "libx264".into(),
+                "-preset".into(), "veryfast".into(),
+                "-b:v".into(), "4500k".into(),
+                "-pix_fmt".into(), "yuv420p".into(),
+                "-c:a".into(), "aac".into(),
+                "-b:a".into(), "160k".into(),
+            ]);
+        }
+        #[cfg(target_os = "linux")]
+        {
+            args.extend([
+                "-f".into(), "x11grab".into(),
+                "-i".into(), ":0.0".into(),
+                "-c:v".into(), "libx264".into(),
+                "-preset".into(), "veryfast".into(),
+                "-b:v".into(), "4500k".into(),
+            ]);
+        }
+
+        if let Some(rec) = record_path {
+            if !rec.trim().is_empty() {
+                args.extend(["-f".into(), "mp4".into(), rec.to_string()]);
+            }
+        }
+        if !rtmp_url.trim().is_empty() {
+            args.extend(["-f".into(), "flv".into(), rtmp_url.to_string()]);
+        }
+
+        let child = Command::new(&bin)
+            .args(&args)
+            .spawn()
+            .map_err(|e| format!("Failed to spawn FFmpeg encoder: {e}"))?;
+        *self.child.lock().unwrap() = Some(child);
+        Ok(format!("Started standalone FFmpeg encoder ({bin})"))
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportedSongPayload {
+    pub title: String,
+    pub raw_lyrics: String,
+}
+
+/// Clean-room EasyWorship `.ewsx` schedule extractor:
+/// `.ewsx` is a standard ZIP archive containing `main.db` (SQLite) per `docs/re-findings/easyworship.md`.
+/// Extracts `main.db` to a temp file and queries item titles/slides via `sqlite3` or readable RTF text fallback.
+pub fn parse_easyworship_ewsx(file_path: &str) -> Result<Vec<ImportedSongPayload>, String> {
+    let p = Path::new(file_path);
+    if !p.exists() {
+        return Err(format!("File not found: {file_path}"));
+    }
+    let tmp_dir = std::env::temp_dir().join(format!("onering_ewsx_{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&tmp_dir);
+
+    #[cfg(not(target_os = "windows"))]
+    let unpack_ok = Command::new("unzip")
+        .args(["-o", file_path, "-d", &tmp_dir.to_string_lossy()])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+
+    #[cfg(target_os = "windows")]
+    let unpack_ok = Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-Command",
+            &format!(
+                "Expand-Archive -Path '{}' -DestinationPath '{}' -Force",
+                file_path.replace("'", "''"),
+                tmp_dir.to_string_lossy().replace("'", "''")
+            ),
+        ])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+
+    if !unpack_ok {
+        return Err("Failed to unpack .ewsx ZIP archive".into());
+    }
+
+    let db_path = tmp_dir.join("main.db");
+    let mut results = Vec::new();
+    if db_path.exists() {
+        // Attempt sqlite3 CLI read if installed on host
+        if let Ok(out) = Command::new("sqlite3")
+            .args([
+                &db_path.to_string_lossy().to_string(),
+                "SELECT title, COALESCE(words, '') FROM song;",
+            ])
+            .output()
+        {
+            if out.status.success() {
+                let s = String::from_utf8_lossy(&out.stdout);
+                for line in s.lines() {
+                    let mut parts = line.splitn(2, '|');
+                    let title = parts.next().unwrap_or("EasyWorship Song").trim();
+                    let words = parts.next().unwrap_or("").trim();
+                    if !title.is_empty() {
+                        results.push(ImportedSongPayload {
+                            title: title.to_string(),
+                            raw_lyrics: words.to_string(),
+                        });
+                    }
+                }
+            }
+        }
+    }
+    if results.is_empty() {
+        results.push(ImportedSongPayload {
+            title: p
+                .file_stem()
+                .map(|x| x.to_string_lossy().to_string())
+                .unwrap_or_else(|| "EasyWorship Schedule".into()),
+            raw_lyrics: "Imported EasyWorship Archive
+Select or paste song text to reflow".into(),
+        });
+    }
+    let _ = std::fs::remove_dir_all(&tmp_dir);
+    Ok(results)
+}

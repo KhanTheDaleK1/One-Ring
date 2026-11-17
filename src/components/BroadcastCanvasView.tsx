@@ -20,7 +20,7 @@ import {
 import type { AppStateSnapshot, SceneSourceItem, SourceFilter, SourceTransform } from "../types";
 import { AddSourceModal } from "./AddSourceModal";
 import { ObsAudioMixerPanel } from "./ObsAudioMixerPanel";
-import { getMediaEngineStatus, startHeadlessMediaDaemon, type MediaEngineStatus } from "../bridge";
+import { getMediaEngineStatus, startHeadlessMediaDaemon, startDirectFfmpegStream, stopDirectFfmpegStream, type MediaEngineStatus } from "../bridge";
 import { ProgramCanvasRenderer } from "./ProgramCanvasRenderer";
 import { SourceSettingsModal } from "./SourceSettingsModal";
 import { SourceFiltersModal } from "./SourceFiltersModal";
@@ -62,6 +62,34 @@ export const BroadcastCanvasView: React.FC<BroadcastCanvasViewProps> = ({
   const [virtualCamActive, setVirtualCamActive] = useState(false);
   const [replayBufferActive, setReplayBufferActive] = useState(false);
   const [recordPaused, setRecordPaused] = useState(false);
+  const [sceneList, setSceneList] = useState<Array<{ id: string; name: string; sources: SceneSourceItem[] }>>([
+    { id: "scene_1", name: "Main Broadcast Scene", sources: state.sources || [] },
+    { id: "scene_2", name: "Worship Lyrics + Camera", sources: [] },
+    { id: "scene_3", name: "Sermon Fullscreen Cam", sources: [] },
+  ]);
+  const [activeSceneId, setActiveSceneId] = useState("scene_1");
+
+  const handleSelectScene = (sceneId: string) => {
+    setSceneList((prev) =>
+      prev.map((sc) => (sc.id === activeSceneId ? { ...sc, sources } : sc))
+    );
+    const target = sceneList.find((sc) => sc.id === sceneId);
+    if (target) {
+      setActiveSceneId(sceneId);
+      onSetAllSources(target.sources);
+    }
+  };
+
+  const handleAddScene = () => {
+    const num = sceneList.length + 1;
+    const newScene = { id: "scene_" + Date.now(), name: `Scene ${num}`, sources: [] };
+    setSceneList((prev) =>
+      prev.map((sc) => (sc.id === activeSceneId ? { ...sc, sources } : sc)).concat(newScene)
+    );
+    setActiveSceneId(newScene.id);
+    onSetAllSources([]);
+    notify(`Created ${newScene.name}`);
+  };
 
   React.useEffect(() => {
     getMediaEngineStatus().then(setMediaEngine).catch(() => {});
@@ -312,8 +340,53 @@ export const BroadcastCanvasView: React.FC<BroadcastCanvasViewProps> = ({
           </div>
         </div>
 
-        {/* Right: Sources Stack & Stream Controls */}
+        {/* Right: OBS Scenes, Sources Stack & Stream Controls */}
         <div style={{ display: "flex", flexDirection: "column", gap: 12, minHeight: 0 }}>
+          {/* OBS Scenes Switcher Dock */}
+          <div style={{ background: "#0D1117", border: "1px solid #1E2533", borderRadius: 10, padding: 12 }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+              <span style={{ fontSize: 11, fontWeight: 700, color: "#94A3B8", textTransform: "uppercase" }}>
+                OBS Scenes
+              </span>
+              <button
+                type="button"
+                onClick={handleAddScene}
+                style={{ background: "#1E293B", border: "1px solid #334155", color: "#93C5FD", borderRadius: 4, padding: "2px 8px", fontSize: 10.5, fontWeight: 700, cursor: "pointer" }}
+              >
+                + Scene
+              </button>
+            </div>
+            <div style={{ display: "grid", gap: 4, maxHeight: 110, overflowY: "auto" }}>
+              {sceneList.map((sc) => {
+                const isAct = sc.id === activeSceneId;
+                return (
+                  <button
+                    key={sc.id}
+                    type="button"
+                    onClick={() => handleSelectScene(sc.id)}
+                    style={{
+                      textAlign: "left",
+                      padding: "6px 10px",
+                      borderRadius: 6,
+                      background: isAct ? "#1E3A8A" : "#161B24",
+                      border: `1px solid ${isAct ? "#3B82F6" : "#283344"}`,
+                      color: isAct ? "#FFFFFF" : "#CBD5E1",
+                      fontSize: 12,
+                      fontWeight: isAct ? 700 : 500,
+                      cursor: "pointer",
+                      display: "flex",
+                      justifyContent: "space-between",
+                    }}
+                  >
+                    <span>{sc.name}</span>
+                    <span style={{ fontSize: 10, color: "#94A3B8" }}>
+                      {isAct ? sources.length : sc.sources.length} src
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
           <div
             style={{
               background: "#0D1117",
@@ -516,7 +589,18 @@ export const BroadcastCanvasView: React.FC<BroadcastCanvasViewProps> = ({
 
             <button
               type="button"
-              onClick={() => onBroadcastToggle("all", !anyLive)}
+              onClick={() => {
+                onBroadcastToggle("all", !anyLive);
+                if (!anyLive) {
+                  const dest = state.settings?.broadcast?.destinations?.find((d) => d.enabled);
+                  const rtmpUrl = dest ? `${dest.rtmpUrl.replace(/\/$/, "")}/${dest.streamKey}` : "";
+                  startDirectFfmpegStream(rtmpUrl, state.settings?.broadcast?.recordingPath ? `${state.settings.broadcast.recordingPath}/recording_${Date.now()}.mp4` : undefined)
+                    .then((m) => notify(m))
+                    .catch(() => {});
+                } else {
+                  stopDirectFfmpegStream().then((m) => notify(m)).catch(() => {});
+                }
+              }}
               style={{
                 height: 42,
                 background: anyLive ? "#7F1D1D" : "#059669",
