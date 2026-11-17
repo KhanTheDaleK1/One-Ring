@@ -220,7 +220,7 @@ export const BroadcastCanvasView: React.FC<BroadcastCanvasViewProps> = ({
               fontWeight: 700,
             }}
           >
-            {mediaEngine?.daemonRunning ? "● Option 2 Core Active" : "Launch Headless Media Core"}
+            {mediaEngine?.daemonRunning ? "● Media Engine Active" : "Start Media Engine"}
           </button>
 
           <button

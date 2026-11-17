@@ -31,11 +31,11 @@ export const EngineerView: React.FC<EngineerViewProps> = ({
       <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 16 }}>
         {(
           [
-            ["broadcast", "OBS 33 / SLOBS Dual-Canvas & Chapters"],
-            ["audio", "X32 Mixer & Beltpack Fault Sim"],
-            ["dante", "Dante ARC RXSTATUS & Conmon :8751"],
-            ["ndi", "NDI 6 Receiver Matrix (:5959)"],
-            ["logs", "Unified Protocol & Cue Event Log"],
+            ["broadcast", "Stream & Recording Outputs"],
+            ["audio", "X32 Console & Mic Safety"],
+            ["dante", "Dante Audio Matrix"],
+            ["ndi", "NDI Video Matrix"],
+            ["logs", "Activity Log"],
           ] as const
         ).map(([id, label]) => (
           <button
