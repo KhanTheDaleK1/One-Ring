@@ -51,6 +51,8 @@ export const BroadcastCanvasView: React.FC<BroadcastCanvasViewProps> = ({
   const [settingsModalSource, setSettingsModalSource] = useState<SceneSourceItem | null>(null);
   const [filtersModalSource, setFiltersModalSource] = useState<SceneSourceItem | null>(null);
   const [transformModalSource, setTransformModalSource] = useState<SceneSourceItem | null>(null);
+  const [selectedSourceId, setSelectedSourceId] = useState<string | null>(null);
+  const [encoderProfile, setEncoderProfile] = useState<"1080p60 Hardware" | "1080p30 Church Stream" | "720p30 Low Bandwidth">("1080p60 Hardware");
   const [contextMenu, setContextMenu] = useState<{ source: SceneSourceItem; x: number; y: number } | null>(null);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameText, setRenameText] = useState("");
@@ -198,6 +200,31 @@ export const BroadcastCanvasView: React.FC<BroadcastCanvasViewProps> = ({
         </div>
 
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <select
+            aria-label="Encoder Profile"
+            value={encoderProfile}
+            onChange={(e) => {
+              const next = e.target.value as "1080p60 Hardware" | "1080p30 Church Stream" | "720p30 Low Bandwidth";
+              setEncoderProfile(next);
+              notify(`Encoder profile: ${next}`);
+            }}
+            style={{
+              height: 36,
+              padding: "0 10px",
+              background: "#1C222D",
+              border: "1px solid #334155",
+              color: "#E2E8F0",
+              borderRadius: 6,
+              cursor: "pointer",
+              fontSize: 11.5,
+              fontWeight: 600,
+            }}
+          >
+            <option value="1080p60 Hardware">1080p60 Hardware</option>
+            <option value="1080p30 Church Stream">1080p30 Church Stream</option>
+            <option value="720p30 Low Bandwidth">720p30 Low Bandwidth</option>
+          </select>
+
           <button
             type="button"
             onClick={() => {
@@ -336,7 +363,14 @@ export const BroadcastCanvasView: React.FC<BroadcastCanvasViewProps> = ({
               overflow: "hidden",
             }}
           >
-            <ProgramCanvasRenderer sources={sources} />
+            <ProgramCanvasRenderer
+              sources={sources}
+              selectedSourceId={selectedSourceId}
+              onSelectSource={setSelectedSourceId}
+              onUpdateTransform={(sourceId, transform) => {
+                patchSource(sourceId, (s) => ({ ...s, transform }));
+              }}
+            />
           </div>
         </div>
 

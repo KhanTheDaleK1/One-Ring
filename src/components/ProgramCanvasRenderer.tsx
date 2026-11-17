@@ -1,10 +1,37 @@
 import React, { useEffect, useRef, useState } from "react";
 import { Monitor, Video, Tv } from "lucide-react";
-import type { SceneSourceItem } from "../types";
+import type { SceneSourceItem, SourceTransform } from "../types";
 
 interface ProgramCanvasRendererProps {
   sources: SceneSourceItem[];
+  selectedSourceId?: string | null;
+  onSelectSource?: (id: string | null) => void;
+  onUpdateTransform?: (id: string, transform: SourceTransform) => void;
 }
+
+const DEFAULT_TRANSFORM: SourceTransform = {
+  x: 0,
+  y: 0,
+  width: 1920,
+  height: 1080,
+  rotation: 0,
+  scaleFilter: "bilinear",
+  blendingMode: "normal",
+  deinterlacing: "disable",
+};
+
+type ResizeHandle = "nw" | "n" | "ne" | "e" | "se" | "s" | "sw" | "w";
+
+const HANDLE_POSITIONS: Array<{ id: ResizeHandle; style: React.CSSProperties; cursor: string }> = [
+  { id: "nw", cursor: "nwse-resize", style: { top: -5, left: -5 } },
+  { id: "n", cursor: "ns-resize", style: { top: -5, left: "50%", transform: "translateX(-50%)" } },
+  { id: "ne", cursor: "nesw-resize", style: { top: -5, right: -5 } },
+  { id: "e", cursor: "ew-resize", style: { top: "50%", right: -5, transform: "translateY(-50%)" } },
+  { id: "se", cursor: "nwse-resize", style: { bottom: -5, right: -5 } },
+  { id: "s", cursor: "ns-resize", style: { bottom: -5, left: "50%", transform: "translateX(-50%)" } },
+  { id: "sw", cursor: "nesw-resize", style: { bottom: -5, left: -5 } },
+  { id: "w", cursor: "ew-resize", style: { top: "50%", left: -5, transform: "translateY(-50%)" } },
+];
 
 const LiveCameraLayer: React.FC<{ source: SceneSourceItem }> = ({ source }) => {
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -60,7 +87,8 @@ const LiveDisplayOrWindowLayer: React.FC<{ source: SceneSourceItem }> = ({ sourc
   const [stream, setStream] = useState<MediaStream | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const startCapture = async () => {
+  const startCapture = async (e: React.MouseEvent) => {
+    e.stopPropagation();
     setError(null);
     try {
       const s = await navigator.mediaDevices.getDisplayMedia({
@@ -122,7 +150,89 @@ const LiveDisplayOrWindowLayer: React.FC<{ source: SceneSourceItem }> = ({ sourc
   );
 };
 
-export const ProgramCanvasRenderer: React.FC<ProgramCanvasRendererProps> = ({ sources }) => {
+export const ProgramCanvasRenderer: React.FC<ProgramCanvasRendererProps> = ({
+  sources,
+  selectedSourceId,
+  onSelectSource,
+  onUpdateTransform,
+}) => {
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const [dragState, setDragState] = useState<{
+    mode: "move" | "resize";
+    handle?: ResizeHandle;
+    sourceId: string;
+    startX: number;
+    startY: number;
+    initialTransform: SourceTransform;
+  } | null>(null);
+
+  useEffect(() => {
+    if (!dragState || !onUpdateTransform) return;
+
+    const handlePointerMove = (e: PointerEvent) => {
+      const container = containerRef.current;
+      if (!container) return;
+      const rect = container.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) return;
+
+      const dxCanvas = ((e.clientX - dragState.startX) / rect.width) * 1920;
+      const dyCanvas = ((e.clientY - dragState.startY) / rect.height) * 1080;
+      const init = dragState.initialTransform;
+
+      if (dragState.mode === "move") {
+        onUpdateTransform(dragState.sourceId, {
+          ...init,
+          x: Math.round(init.x + dxCanvas),
+          y: Math.round(init.y + dyCanvas),
+        });
+        return;
+      }
+
+      const handle = dragState.handle!;
+      let nextX = init.x;
+      let nextY = init.y;
+      let nextW = init.width;
+      let nextH = init.height;
+      const minSize = 40;
+
+      if (handle.includes("e")) {
+        nextW = Math.max(minSize, init.width + dxCanvas);
+      }
+      if (handle.includes("s")) {
+        nextH = Math.max(minSize, init.height + dyCanvas);
+      }
+      if (handle.includes("w")) {
+        const clampedDx = Math.min(dxCanvas, init.width - minSize);
+        nextX = init.x + clampedDx;
+        nextW = init.width - clampedDx;
+      }
+      if (handle.includes("n")) {
+        const clampedDy = Math.min(dyCanvas, init.height - minSize);
+        nextY = init.y + clampedDy;
+        nextH = init.height - clampedDy;
+      }
+
+      onUpdateTransform(dragState.sourceId, {
+        ...init,
+        x: Math.round(nextX),
+        y: Math.round(nextY),
+        width: Math.round(nextW),
+        height: Math.round(nextH),
+      });
+    };
+
+    const handlePointerUp = () => {
+      setDragState(null);
+    };
+
+    window.addEventListener("pointermove", handlePointerMove);
+    window.addEventListener("pointerup", handlePointerUp);
+    return () => {
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", handlePointerUp);
+    };
+  }, [dragState, onUpdateTransform]);
+
   const visibleSources = [...sources].filter((s) => s.enabled).reverse();
 
   if (sources.length === 0) {
@@ -138,88 +248,76 @@ export const ProgramCanvasRenderer: React.FC<ProgramCanvasRendererProps> = ({ so
   }
 
   return (
-    <div style={{ position: "relative", width: "100%", height: "100%", background: "#000000", overflow: "hidden" }}>
+    <div
+      ref={containerRef}
+      onPointerDown={() => onSelectSource?.(null)}
+      style={{ position: "relative", width: "100%", height: "100%", background: "#000000", overflow: "hidden", userSelect: "none" }}
+    >
       {visibleSources.map((s) => {
-        const tr = s.transform;
-        const style: React.CSSProperties = {
+        const tr: SourceTransform = { ...DEFAULT_TRANSFORM, ...s.transform };
+        const isSelected = selectedSourceId === s.id;
+
+        const layerStyle: React.CSSProperties = {
           position: "absolute",
-          inset: 0,
-          mixBlendMode: (tr?.blendingMode === "additive" ? "screen" : tr?.blendingMode || "normal") as any,
-          transform: tr?.rotation ? `rotate(${tr.rotation}deg)` : undefined,
+          left: `${(tr.x / 1920) * 100}%`,
+          top: `${(tr.y / 1080) * 100}%`,
+          width: `${(tr.width / 1920) * 100}%`,
+          height: `${(tr.height / 1080) * 100}%`,
+          mixBlendMode: (tr.blendingMode === "additive" ? "screen" : tr.blendingMode || "normal") as any,
+          transform: tr.rotation ? `rotate(${tr.rotation}deg)` : undefined,
+          cursor: onUpdateTransform && !s.locked ? "move" : onSelectSource ? "pointer" : "default",
+          outline: isSelected ? "2px solid #3B82F6" : undefined,
+          outlineOffset: isSelected ? -1 : undefined,
+          boxSizing: "border-box",
         };
 
+        let content: React.ReactNode = null;
         if (s.type === "video_capture_device") {
-          return (
-            <div key={s.id} style={style}>
-              <LiveCameraLayer source={s} />
-            </div>
+          content = <LiveCameraLayer source={s} />;
+        } else if (s.type === "window_capture" || s.type === "display_capture") {
+          content = <LiveDisplayOrWindowLayer source={s} />;
+        } else if (s.type === "browser" && s.settings?.url) {
+          content = (
+            <iframe
+              src={String(s.settings.url)}
+              title={s.name}
+              style={{ width: "100%", height: "100%", border: "none", pointerEvents: "none" }}
+            />
           );
-        }
-
-        if (s.type === "window_capture" || s.type === "display_capture") {
-          return (
-            <div key={s.id} style={style}>
-              <LiveDisplayOrWindowLayer source={s} />
-            </div>
-          );
-        }
-
-        if (s.type === "browser" && s.settings?.url) {
-          return (
-            <div key={s.id} style={style}>
-              <iframe
-                src={String(s.settings.url)}
-                title={s.name}
-                style={{ width: "100%", height: "100%", border: "none", pointerEvents: "none" }}
-              />
-            </div>
-          );
-        }
-
-        if (s.type === "color") {
-          return (
+        } else if (s.type === "color") {
+          content = (
             <div
-              key={s.id}
               style={{
-                ...style,
+                width: "100%",
+                height: "100%",
                 background: String(s.settings?.color || "#1E3A8A"),
               }}
             />
           );
-        }
-
-        if (s.type === "image" && s.settings?.file) {
-          return (
-            <div key={s.id} style={style}>
-              <img
-                src={String(s.settings.file)}
-                alt={s.name}
-                style={{ width: "100%", height: "100%", objectFit: "contain" }}
-              />
-            </div>
+        } else if (s.type === "image" && s.settings?.file) {
+          content = (
+            <img
+              src={String(s.settings.file)}
+              alt={s.name}
+              style={{ width: "100%", height: "100%", objectFit: "contain", pointerEvents: "none" }}
+            />
           );
-        }
-
-        if (s.type === "media" && s.settings?.file) {
-          return (
-            <div key={s.id} style={style}>
-              <video
-                src={String(s.settings.file)}
-                autoPlay
-                loop={Boolean(s.settings?.loop ?? true)}
-                muted
-                style={{ width: "100%", height: "100%", objectFit: "contain" }}
-              />
-            </div>
+        } else if (s.type === "media" && s.settings?.file) {
+          content = (
+            <video
+              src={String(s.settings.file)}
+              autoPlay
+              loop={Boolean(s.settings?.loop ?? true)}
+              muted
+              style={{ width: "100%", height: "100%", objectFit: "contain", pointerEvents: "none" }}
+            />
           );
-        }
-
-        if (s.type === "text") {
-          return (
+        } else if (s.type === "text") {
+          content = (
             <div
-              key={s.id}
               style={{
-                ...style,
+                width: "100%",
+                height: "100%",
                 display: "flex",
                 alignItems: "center",
                 justifyContent: "center",
@@ -230,6 +328,7 @@ export const ProgramCanvasRenderer: React.FC<ProgramCanvasRendererProps> = ({ so
                 padding: 24,
                 textAlign: "center",
                 whiteSpace: "pre-line",
+                boxSizing: "border-box",
               }}
             >
               {String(s.settings?.text || s.name)}
@@ -237,7 +336,59 @@ export const ProgramCanvasRenderer: React.FC<ProgramCanvasRendererProps> = ({ so
           );
         }
 
-        return null;
+        if (!content) return null;
+
+        return (
+          <div
+            key={s.id}
+            style={layerStyle}
+            onPointerDown={(e) => {
+              e.stopPropagation();
+              onSelectSource?.(s.id);
+              if (onUpdateTransform && !s.locked) {
+                setDragState({
+                  mode: "move",
+                  sourceId: s.id,
+                  startX: e.clientX,
+                  startY: e.clientY,
+                  initialTransform: tr,
+                });
+              }
+            }}
+          >
+            {content}
+            {isSelected &&
+              HANDLE_POSITIONS.map((h) => (
+                <div
+                  key={h.id}
+                  onPointerDown={(e) => {
+                    e.stopPropagation();
+                    if (onUpdateTransform && !s.locked) {
+                      setDragState({
+                        mode: "resize",
+                        handle: h.id,
+                        sourceId: s.id,
+                        startX: e.clientX,
+                        startY: e.clientY,
+                        initialTransform: tr,
+                      });
+                    }
+                  }}
+                  style={{
+                    position: "absolute",
+                    width: 10,
+                    height: 10,
+                    background: "#3B82F6",
+                    border: "1.5px solid #FFFFFF",
+                    borderRadius: 2,
+                    cursor: h.cursor,
+                    zIndex: 20,
+                    ...h.style,
+                  }}
+                />
+              ))}
+          </div>
+        );
       })}
     </div>
   );

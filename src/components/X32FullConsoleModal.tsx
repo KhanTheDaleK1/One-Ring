@@ -746,6 +746,14 @@ export const X32FullConsoleModal: React.FC<X32FullConsoleModalProps> = ({
   const [editingNameVal, setEditingNameVal] = useState<string>("");
   const [lastOsc, setLastOsc] = useState<string>("Connected to X32 OSC :10023 (Ready)");
   const [draggingBandIdx, setDraggingBandIdx] = useState<number | null>(null);
+  const [sendsOnFader, setSendsOnFader] = useState<boolean>(false);
+  const [sofTarget, setSofTarget] = useState<string>("bus-01");
+  const [sendLevels, setSendLevels] = useState<Record<string, Record<string, number>>>({});
+  const [muteGroups, setMuteGroups] = useState<boolean[]>([false, false, false, false, false, false]);
+  const [rtaEnabled, setRtaEnabled] = useState<boolean>(true);
+  const [rtaBars, setRtaBars] = useState<number[]>(() => Array.from({ length: 100 }, (_, i) => 0.15 + 0.25 * Math.sin(i * 0.18)));
+  const [channelLinks, setChannelLinks] = useState<Record<string, boolean>>({});
+  const [channelDelays, setChannelDelays] = useState<Record<string, number>>({});
 
   const eqSvgRef = useRef<SVGSVGElement | null>(null);
 
@@ -769,6 +777,26 @@ export const X32FullConsoleModal: React.FC<X32FullConsoleModalProps> = ({
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [isOpen, onClose]);
+
+  useEffect(() => {
+    if (!isOpen || !rtaEnabled) return;
+    let phase = 0;
+    const timer = window.setInterval(() => {
+      phase += 0.25;
+      setRtaBars((prev) =>
+        prev.map((v, i) => {
+          const target =
+            0.12 +
+            0.28 * Math.exp(-Math.pow((i - 28) / 18, 2)) +
+            0.22 * Math.exp(-Math.pow((i - 62) / 14, 2)) +
+            0.14 * Math.abs(Math.sin(phase + i * 0.23)) +
+            0.08 * Math.random();
+          return Math.max(0.04, Math.min(0.92, v * 0.55 + target * 0.45));
+        })
+      );
+    }, 110);
+    return () => window.clearInterval(timer);
+  }, [isOpen, rtaEnabled]);
 
   const bankChannels = useMemo(
     () => channels.filter((c) => c.bank === activeBank),
@@ -995,7 +1023,101 @@ export const X32FullConsoleModal: React.FC<X32FullConsoleModalProps> = ({
             })}
           </div>
 
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+            {/* Sends on Fader Toggle & Bus/Mtx Selector */}
+            <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+              <button
+                type="button"
+                onClick={() => setSendsOnFader((prev) => !prev)}
+                style={{
+                  height: 32,
+                  padding: "0 10px",
+                  borderRadius: 7,
+                  fontSize: 11,
+                  fontWeight: 700,
+                  cursor: "pointer",
+                  background: sendsOnFader ? "#0284C7" : "#161B24",
+                  border: `1px solid ${sendsOnFader ? "#38BDF8" : "#283344"}`,
+                  color: sendsOnFader ? "#FFFFFF" : "#94A3B8",
+                }}
+                title="Toggle Sends on Fader mode"
+              >
+                Sends on Fader
+              </button>
+              <select
+                aria-label="Sends on Fader Target"
+                value={sofTarget}
+                onChange={(e) => setSofTarget(e.target.value)}
+                style={{
+                  height: 32,
+                  padding: "0 8px",
+                  borderRadius: 7,
+                  fontSize: 11,
+                  fontWeight: 700,
+                  background: "#161B24",
+                  border: `1px solid ${sendsOnFader ? "#38BDF8" : "#283344"}`,
+                  color: "#E2E8F0",
+                  cursor: "pointer",
+                }}
+              >
+                {Array.from({ length: 16 }, (_, idx) => {
+                  const num = String(idx + 1).padStart(2, "0");
+                  return (
+                    <option key={`bus-${num}`} value={`bus-${num}`}>
+                      Bus {idx + 1}
+                    </option>
+                  );
+                })}
+                {Array.from({ length: 6 }, (_, idx) => {
+                  const num = String(idx + 1).padStart(2, "0");
+                  return (
+                    <option key={`mtx-${num}`} value={`mtx-${num}`}>
+                      Mtx {idx + 1}
+                    </option>
+                  );
+                })}
+              </select>
+            </div>
+
+            {/* Mute Groups (MG 1-6) */}
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 3,
+                padding: "2px 4px",
+                borderRadius: 7,
+                background: "#0B0E15",
+                border: "1px solid #1E2533",
+              }}
+            >
+              {muteGroups.map((active, idx) => (
+                <button
+                  key={`mg-${idx + 1}`}
+                  type="button"
+                  onClick={() => {
+                    const next = !active;
+                    setMuteGroups((prev) => prev.map((m, i) => (i === idx ? next : m)));
+                    emitOsc(`/config/mute/${idx + 1}`, next ? 1 : 0);
+                  }}
+                  style={{
+                    height: 26,
+                    padding: "0 7px",
+                    borderRadius: 5,
+                    fontSize: 10,
+                    fontWeight: 800,
+                    cursor: "pointer",
+                    background: active ? "#991B1B" : "#161B24",
+                    border: `1px solid ${active ? "#EF4444" : "#283344"}`,
+                    color: active ? "#FCA5A5" : "#94A3B8",
+                  }}
+                  title={`Toggle Mute Group ${idx + 1}`}
+                >
+                  MG {idx + 1}
+                </button>
+              ))}
+            </div>
+
             <button
               type="button"
               onClick={clearAllSolos}
@@ -1305,13 +1427,27 @@ export const X32FullConsoleModal: React.FC<X32FullConsoleModalProps> = ({
                     }}
                   >
                     <VerticalFader
-                      valueDb={ch.faderDb}
+                      valueDb={sendsOnFader ? (sendLevels[ch.id]?.[sofTarget] ?? -70) : ch.faderDb}
                       muted={ch.mute}
-                      accentColor={colDef.border}
+                      accentColor={sendsOnFader ? "#38BDF8" : colDef.border}
                       height={128}
                       onChange={(db) => {
-                        patchChannel(ch.id, (prev) => ({ ...prev, faderDb: db }));
-                        emitOsc(`${ch.oscPrefix}/mix/fader`, db);
+                        if (sendsOnFader) {
+                          setSendLevels((prev) => ({
+                            ...prev,
+                            [ch.id]: {
+                              ...(prev[ch.id] ?? {}),
+                              [sofTarget]: db,
+                            },
+                          }));
+                          const targetCode = sofTarget.startsWith("mtx-")
+                            ? `mtx/${sofTarget.slice(4)}`
+                            : sofTarget.slice(4);
+                          emitOsc(`${ch.oscPrefix}/mix/${targetCode}/level`, db);
+                        } else {
+                          patchChannel(ch.id, (prev) => ({ ...prev, faderDb: db }));
+                          emitOsc(`${ch.oscPrefix}/mix/fader`, db);
+                        }
                       }}
                     />
                     {/* Signal Meter */}
@@ -1346,11 +1482,11 @@ export const X32FullConsoleModal: React.FC<X32FullConsoleModalProps> = ({
                       textAlign: "center",
                       fontSize: 10,
                       fontWeight: 700,
-                      color: ch.mute ? "#F87171" : "#E2E8F0",
+                      color: sendsOnFader ? "#38BDF8" : ch.mute ? "#F87171" : "#E2E8F0",
                       fontFamily: '"JetBrains Mono", ui-monospace, monospace',
                     }}
                   >
-                    {formatDb(ch.faderDb)}
+                    {formatDb(sendsOnFader ? (sendLevels[ch.id]?.[sofTarget] ?? -70) : ch.faderDb)}
                   </div>
 
                   {/* Scribble Strip Name & Color Picker */}
@@ -1610,6 +1746,68 @@ export const X32FullConsoleModal: React.FC<X32FullConsoleModalProps> = ({
                   <button
                     type="button"
                     onClick={() => {
+                      const next = !channelLinks[selectedChannel.id];
+                      setChannelLinks((prev) => ({ ...prev, [selectedChannel.id]: next }));
+                      emitOsc(`${selectedChannel.oscPrefix}/config/link`, next ? 1 : 0);
+                    }}
+                    style={{
+                      height: 28,
+                      padding: "0 9px",
+                      borderRadius: 6,
+                      fontSize: 11,
+                      fontWeight: 700,
+                      cursor: "pointer",
+                      background: channelLinks[selectedChannel.id] ? "#0369A1" : "#161B24",
+                      border: `1px solid ${channelLinks[selectedChannel.id] ? "#38BDF8" : "#283344"}`,
+                      color: channelLinks[selectedChannel.id] ? "#E0F2FE" : "#94A3B8",
+                    }}
+                    title="Toggle Channel Link"
+                  >
+                    {channelLinks[selectedChannel.id] ? "LINKED" : "LINK"}
+                  </button>
+                  <div
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 6,
+                      height: 28,
+                      padding: "0 8px",
+                      borderRadius: 6,
+                      background: "#161B24",
+                      border: "1px solid #283344",
+                    }}
+                  >
+                    <span style={{ fontSize: 10, fontWeight: 700, color: "#94A3B8" }}>DLY</span>
+                    <input
+                      type="range"
+                      aria-label="Channel Delay ms"
+                      min={0}
+                      max={500}
+                      step={1}
+                      value={channelDelays[selectedChannel.id] ?? 0}
+                      onChange={(e) => {
+                        const ms = Number(e.target.value);
+                        setChannelDelays((prev) => ({ ...prev, [selectedChannel.id]: ms }));
+                        emitOsc(`${selectedChannel.oscPrefix}/preamp/delay`, ms);
+                      }}
+                      style={{ width: 68, accentColor: "#38BDF8", cursor: "pointer" }}
+                    />
+                    <span
+                      style={{
+                        fontSize: 10,
+                        fontWeight: 700,
+                        color: (channelDelays[selectedChannel.id] ?? 0) > 0 ? "#38BDF8" : "#64748B",
+                        fontFamily: '"JetBrains Mono", ui-monospace, monospace',
+                        minWidth: 36,
+                        textAlign: "right",
+                      }}
+                    >
+                      {channelDelays[selectedChannel.id] ?? 0}ms
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
                       const next = !selectedChannel.solo;
                       patchChannel(selectedChannel.id, (prev) => ({ ...prev, solo: next }));
                       emitOsc(`${selectedChannel.oscPrefix}/mix/solo`, next ? 1 : 0);
@@ -1744,6 +1942,22 @@ export const X32FullConsoleModal: React.FC<X32FullConsoleModalProps> = ({
                       >
                         {selectedChannel.eqOn ? "EQ ACTIVE" : "BYPASSED"}
                       </button>
+                      <button
+                        type="button"
+                        onClick={() => setRtaEnabled((prev) => !prev)}
+                        style={{
+                          fontSize: 10,
+                          fontWeight: 800,
+                          padding: "2px 8px",
+                          borderRadius: 5,
+                          cursor: "pointer",
+                          background: rtaEnabled ? "#1E3A8A" : "#1E2533",
+                          border: `1px solid ${rtaEnabled ? "#3B82F6" : "#334155"}`,
+                          color: rtaEnabled ? "#93C5FD" : "#94A3B8",
+                        }}
+                      >
+                        100-Band RTA
+                      </button>
                     </div>
                     <button
                       type="button"
@@ -1789,6 +2003,29 @@ export const X32FullConsoleModal: React.FC<X32FullConsoleModalProps> = ({
                       onPointerCancel={() => setDraggingBandIdx(null)}
                       style={{ width: "100%", height: "auto", display: "block", touchAction: "none" }}
                     >
+                      {/* 100-Band RTA FFT Spectrum Overlay */}
+                      {rtaEnabled && (
+                        <g opacity={0.28}>
+                          {rtaBars.map((val, idx) => {
+                            const plotW = svgW - padL - padR;
+                            const plotH = svgH - padT - padB;
+                            const barW = plotW / 100;
+                            const h = Math.max(2, val * plotH);
+                            return (
+                              <rect
+                                key={idx}
+                                x={padL + idx * barW + 0.5}
+                                y={svgH - padB - h}
+                                width={Math.max(1, barW - 1.2)}
+                                height={h}
+                                rx={1}
+                                fill="#38BDF8"
+                              />
+                            );
+                          })}
+                        </g>
+                      )}
+
                       {/* dB Horizontal Grid */}
                       {[-15, -10, -5, 0, 5, 10, 15].map((db) => {
                         const y = dbToY(db);
