@@ -14,6 +14,8 @@ import { PreflightView } from "./components/PreflightView";
 import { ShowModeView } from "./components/ShowModeView";
 import { SlidesCanvasView } from "./components/SlidesCanvasView";
 import { VideoCanvasView } from "./components/VideoCanvasView";
+import { BroadcastCanvasView } from "./components/BroadcastCanvasView";
+import type { SceneSourceItem } from "./types";
 import { EngineerView } from "./components/EngineerView";
 import { SettingsView } from "./components/SettingsView";
 import { ShowNameModal } from "./components/ShowNameModal";
@@ -58,10 +60,10 @@ export const App: React.FC = () => {
         } else {
           // Provide fallback about info even if offline
           setAvailableUpdate({
-            current_version: "0.1.5",
-            latest_version: "v0.1.5-alpha",
+            current_version: "0.1.6",
+            latest_version: "v0.1.6-alpha",
             release_name: "One Ring — Church Production Suite",
-            release_notes: "You are running One Ring v0.1.5-alpha. All systems up to date.",
+            release_notes: "You are running One Ring v0.1.6-alpha. All systems up to date.",
             published_at: new Date().toISOString(),
             html_url: "https://github.com/KhanTheDaleK1/One-Ring",
             download_url: null,
@@ -337,14 +339,49 @@ export const App: React.FC = () => {
       )}
 
       {mode === "broadcast" && (
-        <EngineerView
+        <BroadcastCanvasView
           state={state}
           onBroadcastToggle={(id, live) => bridge.setBroadcastState(id, live).then(setState)}
-          onToggleDcaMute={(id) => bridge.toggleDcaMute(id).then(setState)}
-          onToggleBeltpackFault={() => bridge.toggleBeltpackFault().then(setState)}
-          onSwitchNdiReceiver={(rxId, src) => bridge.switchNdiReceiver(rxId, src).then(setState)}
-          onAutoHealNdi={() => bridge.autoHealNdiReceivers().then(setState)}
-          onFlashDanteIdentify={(routeId) => bridge.flashDanteIdentify(routeId).then(setState)}
+          onAddSource={(source) => {
+            setState((prev) => {
+              if (!prev) return prev;
+              return {
+                ...prev,
+                sources: [...(prev.sources || []), source],
+              };
+            });
+          }}
+          onRemoveSource={(id) => {
+            setState((prev) => {
+              if (!prev) return prev;
+              return {
+                ...prev,
+                sources: (prev.sources || []).filter((s) => s.id !== id),
+              };
+            });
+          }}
+          onToggleSourceVisibility={(id) => {
+            setState((prev) => {
+              if (!prev) return prev;
+              return {
+                ...prev,
+                sources: (prev.sources || []).map((s) =>
+                  s.id === id ? { ...s, enabled: !s.enabled } : s
+                ),
+              };
+            });
+          }}
+          onToggleSourceLock={(id) => {
+            setState((prev) => {
+              if (!prev) return prev;
+              return {
+                ...prev,
+                sources: (prev.sources || []).map((s) =>
+                  s.id === id ? { ...s, locked: !s.locked } : s
+                ),
+              };
+            });
+          }}
         />
       )}
 
@@ -423,9 +460,9 @@ export const App: React.FC = () => {
               setAvailableUpdate(info);
             } else {
               setAvailableUpdate({
-                current_version: "0.1.5",
-                latest_version: "v0.1.5-alpha",
-                release_name: "One Ring v0.1.5-alpha",
+                current_version: "0.1.6",
+                latest_version: "v0.1.6-alpha",
+                release_name: "One Ring v0.1.6-alpha",
                 release_notes: "You are running the latest version. All systems are up to date.",
                 published_at: new Date().toISOString(),
                 html_url: "https://github.com/KhanTheDaleK1/One-Ring/releases",

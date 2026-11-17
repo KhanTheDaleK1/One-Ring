@@ -1,4 +1,18 @@
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SceneSourceItem {
+    pub id: String,
+    pub name: String,
+    pub r#type: String,
+    pub enabled: bool,
+    pub locked: bool,
+    pub volume_db: Option<f32>,
+    pub muted: Option<bool>,
+    pub settings: serde_json::Value,
+}
+
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum CanvasId {
@@ -466,6 +480,8 @@ pub struct ShowFile {
     pub canvases: Vec<BroadcastCanvas>,
     pub broadcasts: Vec<BroadcastTarget>,
     pub record_chapters: Vec<String>,
+    #[serde(default)]
+    pub sources: Vec<SceneSourceItem>,
     pub dante_routes: Vec<DanteRoute>,
     pub ndi_receivers: Vec<NdiReceiver>,
     pub ndi_sources: Vec<String>,
@@ -495,6 +511,7 @@ pub struct AppStateSnapshot {
     pub canvases: Vec<BroadcastCanvas>,
     pub broadcasts: Vec<BroadcastTarget>,
     pub record_chapters: Vec<String>,
+    pub sources: Vec<SceneSourceItem>,
     pub dante_clock: String,
     pub dante_routes: Vec<DanteRoute>,
     pub ndi_receivers: Vec<NdiReceiver>,
@@ -756,6 +773,7 @@ impl AppStateSnapshot {
             canvases: self.canvases.clone(),
             broadcasts: self.broadcasts.clone(),
             record_chapters: self.record_chapters.clone(),
+            sources: self.sources.clone(),
             dante_routes: self.dante_routes.clone(),
             ndi_receivers: self.ndi_receivers.clone(),
             ndi_sources: self.ndi_sources.clone(),
@@ -776,6 +794,7 @@ impl AppStateSnapshot {
         self.canvases = show.canvases;
         self.broadcasts = show.broadcasts;
         self.record_chapters = show.record_chapters;
+        self.sources = show.sources;
         self.dante_routes = show.dante_routes;
         self.ndi_receivers = show.ndi_receivers;
         self.ndi_sources = show.ndi_sources;
@@ -1028,6 +1047,7 @@ pub fn default_simulator_state() -> AppStateSnapshot {
         canvases: Vec::new(),
         broadcasts: Vec::new(),
         record_chapters: Vec::new(),
+        sources: Vec::new(),
         dante_clock: String::new(),
         dante_routes: Vec::new(),
         ndi_receivers: Vec::new(),

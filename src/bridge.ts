@@ -461,6 +461,7 @@ const initialSimState = (): AppStateSnapshot => ({
   canvases: [],
   broadcasts: [],
   recordChapters: [],
+  sources: [],
   danteClock: "",
   danteRoutes: [],
   ndiReceivers: [],
@@ -742,7 +743,7 @@ export async function checkForUpdate(): Promise<UpdateInfo | null> {
       const releases = await resp.json();
       if (!releases || releases.length === 0) return null;
       const latest = releases[0];
-      const currentVersion = "0.1.5";
+      const currentVersion = "0.1.6";
       const latestTag: string = latest.tag_name || "";
       const updateAvailable = latestTag.replace(/^v/, "") !== currentVersion.replace(/^v/, "");
       return {

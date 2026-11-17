@@ -1,3 +1,44 @@
+
+// ---------------------------------------------------------------------------------------------
+// Source Pipeline — Mirrors OBS Source Registry & Scene Graph
+// ---------------------------------------------------------------------------------------------
+
+export type SourceType =
+  | "app_audio_capture"
+  | "audio_input_capture"
+  | "audio_output_capture"
+  | "browser"
+  | "color"
+  | "display_capture"
+  | "game_capture"
+  | "image"
+  | "image_slide_show"
+  | "media"
+  | "scene"
+  | "text"
+  | "video_capture_device"
+  | "window_capture"
+  | "group";
+
+export interface SourceDefinition {
+  type: SourceType;
+  label: string;
+  category: "audio" | "video" | "graphic" | "utility";
+  description: string;
+  defaultSettings: Record<string, unknown>;
+}
+
+export interface SceneSourceItem {
+  id: string;
+  name: string;
+  type: SourceType;
+  enabled: boolean;
+  locked: boolean;
+  volumeDb?: number;
+  muted?: boolean;
+  settings: Record<string, unknown>;
+}
+
 export type CanvasId = "mixing" | "video" | "slides" | "broadcast" | "master";
 
 export type ViewMode = CanvasId | "settings";
@@ -293,6 +334,7 @@ export interface RingShowFile {
   canvases: BroadcastCanvas[];
   broadcasts: BroadcastTarget[];
   recordChapters: string[];
+  sources: SceneSourceItem[];
   danteRoutes: DanteRoute[];
   ndiReceivers: NdiReceiver[];
   ndiSources: string[];
@@ -320,6 +362,7 @@ export interface AppStateSnapshot {
   canvases: BroadcastCanvas[];
   broadcasts: BroadcastTarget[];
   recordChapters: string[];
+  sources: SceneSourceItem[];
   danteClock: string;
   danteRoutes: DanteRoute[];
   ndiReceivers: NdiReceiver[];
