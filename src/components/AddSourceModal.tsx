@@ -217,6 +217,8 @@ export const AddSourceModal: React.FC<AddSourceModalProps> = ({
         style={{
           width: "100%",
           maxWidth: 820,
+          maxHeight: "88vh",
+          overflow: "hidden",
           background: "#121721",
           border: "1px solid #2E3748",
           borderRadius: 14,
@@ -294,10 +296,11 @@ export const AddSourceModal: React.FC<AddSourceModalProps> = ({
         </div>
 
         {/* Source Grid & Details View */}
-        <div style={{ display: "grid", gridTemplateColumns: "1.4fr 1fr", gap: 14, minHeight: 320, maxHeight: 420 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "1.4fr 1fr", gap: 14, flex: 1, minHeight: 0, overflow: "hidden" }}>
           {/* Source List */}
           <div
             style={{
+              minHeight: 0,
               overflowY: "auto",
               background: "#0B0E14",
               border: "1px solid #1E2533",
