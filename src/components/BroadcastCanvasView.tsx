@@ -60,6 +60,7 @@ export const BroadcastCanvasView: React.FC<BroadcastCanvasViewProps> = ({
   const [studioMode, setStudioMode] = useState(false);
   const [tBarValue, setTBarValue] = useState(0);
   const [transitionType, setTransitionType] = useState<"Cut" | "Fade" | "Slide" | "Stinger">("Fade");
+  const [stingerPath, setStingerPath] = useState("");
   const [mediaEngine, setMediaEngine] = useState<MediaEngineStatus | null>(null);
   const [virtualCamActive, setVirtualCamActive] = useState(false);
   const [replayBufferActive, setReplayBufferActive] = useState(false);
@@ -328,6 +329,15 @@ export const BroadcastCanvasView: React.FC<BroadcastCanvasViewProps> = ({
                 <option value="Slide">Slide</option>
                 <option value="Stinger">Stinger</option>
               </select>
+              {transitionType === "Stinger" && (
+                <input
+                  type="text"
+                  value={stingerPath}
+                  onChange={(e) => setStingerPath(e.target.value)}
+                  placeholder="Stinger .webm / .mov path"
+                  style={{ width: 160, background: "#0B0E14", border: "1px solid #334155", color: "#FFFFFF", fontSize: 11, padding: "4px 8px", borderRadius: 5 }}
+                />
+              )}
               <input
                 type="range"
                 min={0}

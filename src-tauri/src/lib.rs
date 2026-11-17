@@ -692,6 +692,12 @@ fn scan_installed_audio_plugins() -> Vec<runtime::obs_daemon::InstalledAudioPlug
     runtime::obs_daemon::scan_installed_audio_plugins()
 }
 
+
+#[tauri::command]
+fn probe_libobs_sidecar() -> runtime::obs_worker_ipc::LibObsCapabilities {
+    runtime::obs_worker_ipc::probe_libobs_capabilities()
+}
+
 #[tauri::command]
 fn get_media_engine_status(
     daemon: State<runtime::obs_daemon::ObsDaemonSupervisor>,
@@ -989,6 +995,7 @@ pub fn run() {
             import_ewsx_schedule,
             list_video_devices,
             get_media_engine_status,
+            probe_libobs_sidecar,
             start_headless_media_daemon,
             route_dante_crosspoint,
             trigger_ndi_ptz,

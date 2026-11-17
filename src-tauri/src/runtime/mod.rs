@@ -19,6 +19,7 @@ pub mod health;
 pub mod ndi_adapter;
 pub mod obs_adapter;
 pub mod obs_daemon;
+pub mod obs_worker_ipc;
 pub mod propresenter_adapter;
 pub mod streamlabs_adapter;
 pub mod x32_adapter;
