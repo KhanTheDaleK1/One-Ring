@@ -19,6 +19,7 @@ import {
 } from "lucide-react";
 import type { AppStateSnapshot, SceneSourceItem, SourceFilter, SourceTransform } from "../types";
 import { AddSourceModal } from "./AddSourceModal";
+import { ProgramCanvasRenderer } from "./ProgramCanvasRenderer";
 import { SourceSettingsModal } from "./SourceSettingsModal";
 import { SourceFiltersModal } from "./SourceFiltersModal";
 import { SourceTransformModal, DEFAULT_TRANSFORM } from "./SourceTransformModal";
@@ -217,25 +218,7 @@ export const BroadcastCanvasView: React.FC<BroadcastCanvasViewProps> = ({
               overflow: "hidden",
             }}
           >
-            {sources.length === 0 ? (
-              <div style={{ textAlign: "center", padding: 24, color: "#64748B" }}>
-                <Tv size={48} color="#374151" style={{ marginBottom: 12 }} />
-                <h4 style={{ margin: 0, color: "#94A3B8" }}>No Broadcast Sources Added</h4>
-                <p style={{ fontSize: 13, marginTop: 6 }}>
-                  Click &quot;+ Add Source&quot; or right-click to add cameras, browser graphics, screen captures, or media.
-                </p>
-              </div>
-            ) : (
-              <div style={{ padding: 20, textAlign: "center" }}>
-                <Sparkles size={32} color="#3B82F6" style={{ marginBottom: 10 }} />
-                <div style={{ fontSize: 18, fontWeight: 700, color: "#FFFFFF" }}>
-                  Active Scene Composition ({sources.filter((s) => s.enabled).length} visible layers)
-                </div>
-                <div style={{ fontSize: 12, color: "#94A3B8", marginTop: 4 }}>
-                  {sources.filter((s) => s.enabled).map((s) => s.name).join(" • ")}
-                </div>
-              </div>
-            )}
+            <ProgramCanvasRenderer sources={sources} />
           </div>
         </div>
 
