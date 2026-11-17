@@ -193,6 +193,13 @@ export interface SlideTheme {
   lowerThirdPosition: "bottom" | "lower-bar";
 }
 
+
+export interface ServiceSong {
+  id: string;
+  title: string;
+  slides: SlideCue[];
+}
+
 export interface SlideState {
   app: string;
   playlistName: string;
@@ -210,6 +217,8 @@ export interface SlideState {
    * this is absent.
    */
   slides?: SlideCue[];
+  songs?: ServiceSong[];
+  activeSongId?: string;
   theme?: SlideTheme;
 }
 

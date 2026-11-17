@@ -61,10 +61,10 @@ export const App: React.FC = () => {
         } else {
           // Provide fallback about info even if offline
           setAvailableUpdate({
-            current_version: "0.1.10",
-            latest_version: "v0.1.10-alpha",
+            current_version: "0.1.11",
+            latest_version: "v0.1.11-alpha",
             release_name: "One Ring — Church Production Suite",
-            release_notes: "You are running One Ring v0.1.10-alpha. All systems up to date.",
+            release_notes: "You are running One Ring v0.1.11-alpha. All systems up to date.",
             published_at: new Date().toISOString(),
             html_url: "https://github.com/KhanTheDaleK1/One-Ring",
             download_url: null,
@@ -92,6 +92,18 @@ export const App: React.FC = () => {
 
     bridge.getAppState().then((snapshot) => {
       if (disposed) return;
+      try {
+        const savedRaw = localStorage.getItem("onering_workspace_autosave_v1");
+        if (savedRaw) {
+          const saved = JSON.parse(savedRaw);
+          if (saved.slides && (!snapshot.slides.slides || snapshot.slides.slides.length === 0)) {
+            snapshot.slides = { ...snapshot.slides, ...saved.slides };
+          }
+          if (Array.isArray(saved.sources) && saved.sources.length > 0 && (!snapshot.sources || snapshot.sources.length === 0)) {
+            snapshot.sources = saved.sources;
+          }
+        }
+      } catch {}
       setState(snapshot);
 
       // Live mode hydrates once, then only listens for pushed patches. The simulator keeps
@@ -127,6 +139,10 @@ export const App: React.FC = () => {
     if (isOutputWindow || !state?.slides) return;
     try {
       localStorage.setItem("onering_live_slides_state", JSON.stringify(state.slides));
+      localStorage.setItem(
+        "onering_workspace_autosave_v1",
+        JSON.stringify({ slides: state.slides, sources: state.sources })
+      );
       const ch = new BroadcastChannel("onering_display_sync");
       ch.postMessage({ type: "SLIDES_UPDATE", slides: state.slides });
       ch.close();
@@ -386,17 +402,65 @@ export const App: React.FC = () => {
           onImportSong={(title, importedSlides) => {
             setState((prev) => {
               if (!prev) return prev;
+              const songId = "song_" + Date.now();
+              const existingSongs = prev.slides.songs || [];
+              const newSong = { id: songId, title, slides: importedSlides };
               return {
                 ...prev,
                 slides: {
                   ...prev.slides,
                   presentationName: title,
+                  activeSongId: songId,
+                  songs: [...existingSongs, newSong],
                   currentSlide: 1,
                   totalSlides: importedSlides.length,
                   currentText: importedSlides[0]?.text || "",
                   nextText: importedSlides[1]?.text || "",
                   cleared: false,
                   slides: importedSlides,
+                },
+              };
+            });
+          }}
+          onSelectSong={(songId) => {
+            setState((prev) => {
+              if (!prev) return prev;
+              const song = (prev.slides.songs || []).find((s) => s.id === songId);
+              if (!song) return prev;
+              return {
+                ...prev,
+                slides: {
+                  ...prev.slides,
+                  presentationName: song.title,
+                  activeSongId: song.id,
+                  currentSlide: 1,
+                  totalSlides: song.slides.length,
+                  currentText: song.slides[0]?.text || "",
+                  nextText: song.slides[1]?.text || "",
+                  cleared: false,
+                  slides: song.slides,
+                },
+              };
+            });
+          }}
+          onRemoveSong={(songId) => {
+            setState((prev) => {
+              if (!prev) return prev;
+              const remaining = (prev.slides.songs || []).filter((s) => s.id !== songId);
+              const nextActive =
+                prev.slides.activeSongId === songId ? remaining[0] : remaining.find((s) => s.id === prev.slides.activeSongId);
+              return {
+                ...prev,
+                slides: {
+                  ...prev.slides,
+                  songs: remaining,
+                  activeSongId: nextActive?.id,
+                  presentationName: nextActive?.title || "Untitled Presentation",
+                  slides: nextActive?.slides || [],
+                  currentSlide: 1,
+                  totalSlides: nextActive?.slides.length || 0,
+                  currentText: nextActive?.slides[0]?.text || "",
+                  nextText: nextActive?.slides[1]?.text || "",
                 },
               };
             });
@@ -545,9 +609,9 @@ export const App: React.FC = () => {
               setAvailableUpdate(info);
             } else {
               setAvailableUpdate({
-                current_version: "0.1.10",
-                latest_version: "v0.1.10-alpha",
-                release_name: "One Ring v0.1.10-alpha",
+                current_version: "0.1.11",
+                latest_version: "v0.1.11-alpha",
+                release_name: "One Ring v0.1.11-alpha",
                 release_notes: "You are running the latest version. All systems are up to date.",
                 published_at: new Date().toISOString(),
                 html_url: "https://github.com/KhanTheDaleK1/One-Ring/releases",

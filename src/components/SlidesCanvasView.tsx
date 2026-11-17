@@ -9,8 +9,10 @@ import {
   Type,
   Sparkles,
   ExternalLink,
+  Music,
+  Trash2,
 } from "lucide-react";
-import type { AppStateSnapshot, SlideCue, SlideTheme } from "../types";
+import type { AppStateSnapshot, ServiceSong, SlideCue, SlideTheme } from "../types";
 import { LyricImportModal } from "./LyricImportModal";
 
 interface SlidesCanvasViewProps {
@@ -19,6 +21,8 @@ interface SlidesCanvasViewProps {
   onSlideAction: (action: "prev" | "next" | "clear") => void;
   onImportSong: (songTitle: string, slides: SlideCue[]) => void;
   onUpdateTheme: (theme: SlideTheme) => void;
+  onSelectSong: (songId: string) => void;
+  onRemoveSong: (songId: string) => void;
 }
 
 const DEFAULT_THEME: SlideTheme = {
@@ -48,6 +52,8 @@ export const SlidesCanvasView: React.FC<SlidesCanvasViewProps> = ({
   onSlideAction,
   onImportSong,
   onUpdateTheme,
+  onSelectSong,
+  onRemoveSong,
 }) => {
   const [showImportModal, setShowImportModal] = useState(false);
   const [showThemeEditor, setShowThemeEditor] = useState(false);
@@ -369,8 +375,100 @@ export const SlidesCanvasView: React.FC<SlidesCanvasViewProps> = ({
         </div>
       )}
 
-      {/* Main Presentation Surface */}
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 380px", gap: 14, flex: 1 }}>
+      {/* Main Presentation Surface (3-Column: Service Songs | Slide Deck | 3-Screen Outputs) */}
+      <div style={{ display: "grid", gridTemplateColumns: "230px 1fr 360px", gap: 14, flex: 1 }}>
+        {/* Left Sidebar: Service Songs / Playlist */}
+        <div
+          style={{
+            background: "#0D1117",
+            border: "1px solid #1E2533",
+            borderRadius: 10,
+            padding: 12,
+            display: "flex",
+            flexDirection: "column",
+            gap: 10,
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+            <span style={{ fontSize: 11, fontWeight: 700, color: "#94A3B8", textTransform: "uppercase", display: "flex", alignItems: "center", gap: 6 }}>
+              <Music size={13} color="#60A5FA" /> Service Songs
+            </span>
+            <button
+              type="button"
+              onClick={() => setShowImportModal(true)}
+              title="Add another song to this service"
+              style={{
+                background: "#1E293B",
+                border: "1px solid #334155",
+                color: "#93C5FD",
+                borderRadius: 5,
+                padding: "3px 8px",
+                fontSize: 11,
+                fontWeight: 700,
+                cursor: "pointer",
+                display: "flex",
+                alignItems: "center",
+                gap: 4,
+              }}
+            >
+              <Plus size={12} /> Add
+            </button>
+          </div>
+
+          <div style={{ display: "flex", flexDirection: "column", gap: 6, flex: 1, overflowY: "auto" }}>
+            {(state.slides.songs || []).length === 0 ? (
+              <div style={{ padding: 16, textAlign: "center", color: "#64748B", fontSize: 12, border: "1px dashed #1E293B", borderRadius: 8 }}>
+                No songs in this service yet. Click <strong>+ Add</strong> to paste lyrics.
+              </div>
+            ) : (
+              (state.slides.songs || []).map((song: ServiceSong, idx: number) => {
+                const isActive = song.id === state.slides.activeSongId;
+                return (
+                  <div
+                    key={song.id}
+                    onClick={() => onSelectSong(song.id)}
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                      padding: "8px 10px",
+                      borderRadius: 7,
+                      cursor: "pointer",
+                      background: isActive ? "#1E3A8A" : "#121721",
+                      border: isActive ? "1px solid #60A5FA" : "1px solid #1E2533",
+                    }}
+                  >
+                    <div style={{ minWidth: 0, flex: 1 }}>
+                      <div style={{ fontSize: 12.5, fontWeight: 700, color: isActive ? "#FFFFFF" : "#E2E8F0", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                        {idx + 1}. {song.title}
+                      </div>
+                      <div style={{ fontSize: 10, color: isActive ? "#BFDBFE" : "#64748B" }}>
+                        {song.slides.length} slides
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      title="Remove song from service"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onRemoveSong(song.id);
+                      }}
+                      style={{
+                        background: "transparent",
+                        border: "none",
+                        color: "#64748B",
+                        cursor: "pointer",
+                        padding: 4,
+                      }}
+                    >
+                      <Trash2 size={13} />
+                    </button>
+                  </div>
+                );
+              })
+            )}
+          </div>
+        </div>
         {/* Left: Slide Grid / Deck */}
         <div
           style={{
