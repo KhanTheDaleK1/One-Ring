@@ -653,7 +653,7 @@ pub fn run() {
 
             let peer_reg = PeerRegistry::default();
             app.manage(peer_reg.clone());
-            let hostname = gethostname::gethostname().to_string_lossy().to_string();
+            let hostname = std::env::var("COMPUTERNAME").or_else(|_| std::env::var("HOSTNAME")).unwrap_or_else(|_| "OneRingStation".to_string());
             let my_id = format!("{}-{}", hostname, std::process::id());
             peer_discovery::start_peer_discovery(
                 my_id,
