@@ -1,6 +1,7 @@
 import React, { useState } from "react";
 import {
   Radio,
+  Settings,
   Plus,
   Play,
   Square,
@@ -17,6 +18,7 @@ import {
 } from "lucide-react";
 import type { AppStateSnapshot, SceneSourceItem } from "../types";
 import { AddSourceModal, OBS_SOURCE_DEFINITIONS } from "./AddSourceModal";
+import { SourceSettingsModal } from "./SourceSettingsModal";
 
 interface BroadcastCanvasViewProps {
   state: AppStateSnapshot;
@@ -25,6 +27,7 @@ interface BroadcastCanvasViewProps {
   onRemoveSource: (id: string) => void;
   onToggleSourceVisibility: (id: string) => void;
   onToggleSourceLock: (id: string) => void;
+  onUpdateSourceSettings: (id: string, settings: Record<string, unknown>, name: string) => void;
 }
 
 export const BroadcastCanvasView: React.FC<BroadcastCanvasViewProps> = ({
@@ -34,7 +37,9 @@ export const BroadcastCanvasView: React.FC<BroadcastCanvasViewProps> = ({
   onRemoveSource,
   onToggleSourceVisibility,
   onToggleSourceLock,
+  onUpdateSourceSettings,
 }) => {
+  const [settingsModalSource, setSettingsModalSource] = useState<SceneSourceItem | null>(null);
   const [showAddSource, setShowAddSource] = useState(false);
 
   const sources = state.sources || [];
@@ -232,6 +237,20 @@ export const BroadcastCanvasView: React.FC<BroadcastCanvasViewProps> = ({
                     <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
                       <button
                         type="button"
+                        title="Source Properties & Settings"
+                        onClick={() => setSettingsModalSource(s)}
+                        style={{
+                          background: "transparent",
+                          border: "none",
+                          color: "#94A3B8",
+                          cursor: "pointer",
+                          padding: 4,
+                        }}
+                      >
+                        <Settings size={15} />
+                      </button>
+                      <button
+                        type="button"
                         onClick={() => onToggleSourceVisibility(s.id)}
                         style={{
                           background: "transparent",
@@ -324,11 +343,25 @@ export const BroadcastCanvasView: React.FC<BroadcastCanvasViewProps> = ({
         </div>
       </div>
 
+      {/* Source Settings & Properties Modal */}
+      <SourceSettingsModal
+        source={settingsModalSource}
+        isOpen={!!settingsModalSource}
+        onClose={() => setSettingsModalSource(null)}
+        onSave={(id, newSettings, newName) => {
+          onUpdateSourceSettings(id, newSettings, newName);
+          setSettingsModalSource(null);
+        }}
+      />
+
       {/* Add Source Modal */}
       <AddSourceModal
         isOpen={showAddSource}
         onClose={() => setShowAddSource(false)}
-        onAddSource={onAddSource}
+        onAddSource={(source) => {
+          onAddSource(source);
+          setSettingsModalSource(source);
+        }}
       />
     </div>
   );
