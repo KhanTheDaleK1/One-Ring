@@ -204,6 +204,73 @@ export const ObsAudioMixerPanel: React.FC<ObsAudioMixerPanelProps> = ({
   const [tick, setTick] = useState(0);
   const [showHiddenSources, setShowHiddenSources] = useState(false);
   const [showAdvancedModal, setShowAdvancedModal] = useState(false);
+  const [liveAudioActive, setLiveAudioActive] = useState(false);
+  const [liveMicDb, setLiveMicDb] = useState<number>(-60);
+  const [liveSystemDb, setLiveSystemDb] = useState<number>(-60);
+  const audioCtxRef = React.useRef<AudioContext | null>(null);
+  const micStreamRef = React.useRef<MediaStream | null>(null);
+  const sysStreamRef = React.useRef<MediaStream | null>(null);
+
+  const enableLivePcMicCapture = async () => {
+    try {
+      const ctx = audioCtxRef.current || new AudioContext();
+      audioCtxRef.current = ctx;
+      if (ctx.state === "suspended") await ctx.resume();
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      micStreamRef.current = stream;
+      const src = ctx.createMediaStreamSource(stream);
+      const analyser = ctx.createAnalyser();
+      analyser.fftSize = 512;
+      src.connect(analyser);
+      const buf = new Float32Array(analyser.fftSize);
+      setLiveAudioActive(true);
+
+      const poll = () => {
+        if (!micStreamRef.current) return;
+        analyser.getFloatTimeDomainData(buf);
+        let peak = 0;
+        for (let i = 0; i < buf.length; i++) {
+          const abs = Math.abs(buf[i]);
+          if (abs > peak) peak = abs;
+        }
+        const db = peak > 0.0001 ? Math.max(-60, Math.min(0, 20 * Math.log10(peak))) : -60;
+        setLiveMicDb(db);
+        requestAnimationFrame(poll);
+      };
+      requestAnimationFrame(poll);
+    } catch {}
+  };
+
+  const enableLiveSystemAudioCapture = async () => {
+    try {
+      const ctx = audioCtxRef.current || new AudioContext();
+      audioCtxRef.current = ctx;
+      if (ctx.state === "suspended") await ctx.resume();
+      const stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
+      sysStreamRef.current = stream;
+      if (stream.getAudioTracks().length > 0) {
+        const src = ctx.createMediaStreamSource(stream);
+        const analyser = ctx.createAnalyser();
+        analyser.fftSize = 512;
+        src.connect(analyser);
+        const buf = new Float32Array(analyser.fftSize);
+        const poll = () => {
+          if (!sysStreamRef.current) return;
+          analyser.getFloatTimeDomainData(buf);
+          let peak = 0;
+          for (let i = 0; i < buf.length; i++) {
+            const abs = Math.abs(buf[i]);
+            if (abs > peak) peak = abs;
+          }
+          const db = peak > 0.0001 ? Math.max(-60, Math.min(0, 20 * Math.log10(peak))) : -60;
+          setLiveSystemDb(db);
+          requestAnimationFrame(poll);
+        };
+        requestAnimationFrame(poll);
+      }
+      setLiveAudioActive(true);
+    } catch {}
+  };
   const [viewMode, setViewMode] = useState<"mixer" | "matrix">("mixer");
   const [localTrackOverrides, setLocalTrackOverrides] = useState<Record<string, boolean[]>>({});
   const [localSyncOffsets, setLocalSyncOffsets] = useState<Record<string, number>>({});

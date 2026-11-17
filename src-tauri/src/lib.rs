@@ -636,6 +636,17 @@ fn open_in_browser(url: String) -> Result<(), String> {
 
 
 
+
+#[tauri::command]
+fn list_audio_devices() -> Vec<runtime::obs_daemon::HostMediaDevice> {
+    runtime::obs_daemon::list_host_audio_devices()
+}
+
+#[tauri::command]
+fn list_video_devices() -> Vec<runtime::obs_daemon::HostMediaDevice> {
+    runtime::obs_daemon::list_host_video_devices()
+}
+
 #[tauri::command]
 fn scan_installed_audio_plugins() -> Vec<runtime::obs_daemon::InstalledAudioPlugin> {
     runtime::obs_daemon::scan_installed_audio_plugins()
@@ -928,6 +939,8 @@ pub fn run() {
             get_discovered_peers,
             list_open_windows,
             scan_installed_audio_plugins,
+            list_audio_devices,
+            list_video_devices,
             get_media_engine_status,
             start_headless_media_daemon,
             route_dante_crosspoint,

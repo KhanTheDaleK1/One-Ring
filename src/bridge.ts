@@ -875,3 +875,31 @@ export async function sendX32Osc(address: string, value: number): Promise<AppSta
   }
   return structuredClone(simState);
 }
+
+export interface HostMediaDevice {
+  name: string;
+  kind: "audio_input" | "audio_output" | "video_input";
+}
+
+export async function listHostMediaDevices(): Promise<HostMediaDevice[]> {
+  let results: HostMediaDevice[] = [];
+  if (isTauri()) {
+    try {
+      const [aud, vid] = await Promise.all([
+        invokeTauri<HostMediaDevice[]>("list_audio_devices"),
+        invokeTauri<HostMediaDevice[]>("list_video_devices"),
+      ]);
+      results = [...aud, ...vid];
+    } catch {}
+  }
+  if (results.length === 0 && typeof navigator !== "undefined" && navigator.mediaDevices?.enumerateDevices) {
+    try {
+      const devs = await navigator.mediaDevices.enumerateDevices();
+      results = devs.map((d) => ({
+        name: d.label || `${d.kind} (${d.deviceId.slice(0, 6)})`,
+        kind: d.kind === "videoinput" ? "video_input" : d.kind === "audiooutput" ? "audio_output" : "audio_input",
+      }));
+    } catch {}
+  }
+  return results;
+}

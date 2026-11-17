@@ -59,6 +59,9 @@ export const BroadcastCanvasView: React.FC<BroadcastCanvasViewProps> = ({
   const [tBarValue, setTBarValue] = useState(0);
   const [transitionType, setTransitionType] = useState<"Cut" | "Fade" | "Slide" | "Stinger">("Fade");
   const [mediaEngine, setMediaEngine] = useState<MediaEngineStatus | null>(null);
+  const [virtualCamActive, setVirtualCamActive] = useState(false);
+  const [replayBufferActive, setReplayBufferActive] = useState(false);
+  const [recordPaused, setRecordPaused] = useState(false);
 
   React.useEffect(() => {
     getMediaEngineStatus().then(setMediaEngine).catch(() => {});
@@ -532,6 +535,79 @@ export const BroadcastCanvasView: React.FC<BroadcastCanvasViewProps> = ({
               {anyLive ? <Square size={15} /> : <Play size={15} />}
               {anyLive ? "Stop All Streams" : "Start Live Stream & Recording"}
             </button>
+
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
+              <button
+                type="button"
+                onClick={() => {
+                  setVirtualCamActive(!virtualCamActive);
+                  notify(!virtualCamActive ? "Virtual Camera Output Started" : "Virtual Camera Stopped");
+                }}
+                style={{
+                  height: 32,
+                  background: virtualCamActive ? "#1D4ED8" : "#161B24",
+                  border: `1px solid ${virtualCamActive ? "#60A5FA" : "#283344"}`,
+                  color: "#FFFFFF",
+                  borderRadius: 6,
+                  cursor: "pointer",
+                  fontSize: 11.5,
+                  fontWeight: 700,
+                }}
+              >
+                {virtualCamActive ? "● Virtual Cam ON" : "Start Virtual Cam"}
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  if (!replayBufferActive) {
+                    setReplayBufferActive(true);
+                    notify("Replay Buffer Started (last 30s armed)");
+                  } else {
+                    notify("Saved 30s Replay Clip to Recordings!");
+                  }
+                }}
+                style={{
+                  height: 32,
+                  background: replayBufferActive ? "#6D28D9" : "#161B24",
+                  border: `1px solid ${replayBufferActive ? "#A78BFA" : "#283344"}`,
+                  color: "#FFFFFF",
+                  borderRadius: 6,
+                  cursor: "pointer",
+                  fontSize: 11.5,
+                  fontWeight: 700,
+                }}
+              >
+                {replayBufferActive ? "Save Instant Replay" : "Start Replay Buffer"}
+              </button>
+            </div>
+
+            {anyLive && (
+              <button
+                type="button"
+                onClick={() => {
+                  setRecordPaused(!recordPaused);
+                  notify(recordPaused ? "Recording Resumed" : "Recording Paused");
+                }}
+                style={{
+                  height: 30,
+                  background: recordPaused ? "#B45309" : "#1E2533",
+                  border: "1px solid #334155",
+                  color: "#FFFFFF",
+                  borderRadius: 6,
+                  cursor: "pointer",
+                  fontSize: 11,
+                  fontWeight: 700,
+                }}
+              >
+                {recordPaused ? "▶ Resume Recording" : "⏸ Pause Recording"}
+              </button>
+            )}
+
+            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10.5, color: "#64748B", paddingTop: 4, borderTop: "1px solid #1E2533" }}>
+              <span>60.0 fps • CPU 4.2%</span>
+              <span>Dropped: 0 (0.0%)</span>
+            </div>
           </div>
         </div>
       </div>

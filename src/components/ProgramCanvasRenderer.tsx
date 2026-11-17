@@ -65,7 +65,7 @@ const LiveDisplayOrWindowLayer: React.FC<{ source: SceneSourceItem }> = ({ sourc
     try {
       const s = await navigator.mediaDevices.getDisplayMedia({
         video: true,
-        audio: false,
+        audio: true,
       });
       setStream(s);
     } catch (err: any) {

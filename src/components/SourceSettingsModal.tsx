@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { listOpenWindows } from "../bridge";
+import { listOpenWindows, listHostMediaDevices, type HostMediaDevice } from "../bridge";
 import {
   Settings,
   X,
@@ -35,6 +35,13 @@ export const SourceSettingsModal: React.FC<SourceSettingsModalProps> = ({
   const [name, setName] = useState(source.name);
   const [openWindows, setOpenWindows] = useState<string[]>([]);
   const [loadingWindows, setLoadingWindows] = useState(false);
+  const [hardwareDevices, setHardwareDevices] = useState<HostMediaDevice[]>([]);
+
+  useEffect(() => {
+    if (isOpen) {
+      listHostMediaDevices().then(setHardwareDevices).catch(() => {});
+    }
+  }, [isOpen]);
 
   const refreshWindows = () => {
     setLoadingWindows(true);
@@ -61,14 +68,17 @@ export const SourceSettingsModal: React.FC<SourceSettingsModalProps> = ({
         return (
           <>
             <div>
-              <label style={labelStyle}>Capture Device</label>
-              <input
-                type="text"
+              <label style={labelStyle}>Capture Device (Detected OS Cameras)</label>
+              <select
                 style={inputStyle}
                 value={settings.device || ""}
                 onChange={(e) => patchSetting("device", e.target.value)}
-                placeholder="e.g. Cam Link 4K, FaceTime HD Camera, DeckLink"
-              />
+              >
+                <option value="">Default System Camera</option>
+                {hardwareDevices.filter((d) => d.kind === "video_input").map((d) => (
+                  <option key={d.name} value={d.name}>{d.name}</option>
+                ))}
+              </select>
             </div>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
               <div>
@@ -330,14 +340,25 @@ export const SourceSettingsModal: React.FC<SourceSettingsModalProps> = ({
         return (
           <>
             <div>
-              <label style={labelStyle}>Audio Device</label>
-              <input
-                type="text"
+              <label style={labelStyle}>
+                {source.type === "audio_output_capture" ? "PC / Mac Output Loopback Device" : "Audio Input Device (Mic / Interface)"}
+              </label>
+              <select
                 style={inputStyle}
                 value={settings.device || "default"}
                 onChange={(e) => patchSetting("device", e.target.value)}
-                placeholder="default (System Default Audio)"
-              />
+              >
+                <option value="default">Default System Audio Device</option>
+                {hardwareDevices
+                  .filter((d) =>
+                    source.type === "audio_output_capture"
+                      ? d.kind === "audio_output"
+                      : d.kind === "audio_input"
+                  )
+                  .map((d) => (
+                    <option key={d.name} value={d.name}>{d.name}</option>
+                  ))}
+              </select>
             </div>
           </>
         );

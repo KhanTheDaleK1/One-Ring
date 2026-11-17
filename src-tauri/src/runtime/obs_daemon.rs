@@ -170,3 +170,101 @@ pub fn probe_media_engine_status(supervisor: &ObsDaemonSupervisor) -> MediaEngin
         daemon_running: supervisor.is_running(),
     }
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HostMediaDevice {
+    pub name: String,
+    pub kind: String, // "audio_input" | "audio_output" | "video_input"
+}
+
+pub fn list_host_audio_devices() -> Vec<HostMediaDevice> {
+    let mut devices = Vec::new();
+    #[cfg(target_os = "macos")]
+    {
+        if let Ok(out) = Command::new("system_profiler").args(["SPAudioDataType", "-json"]).output() {
+            if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&out.stdout) {
+                if let Some(arr) = v.get("SPAudioDataType").and_then(|x| x.as_array()) {
+                    for cat in arr {
+                        if let Some(items) = cat.get("_items").and_then(|x| x.as_array()) {
+                            for item in items {
+                                if let Some(name) = item.get("_name").and_then(|x| x.as_str()) {
+                                    let is_in = item.get("coreaudio_device_input").and_then(|x| x.as_u64()).unwrap_or(0) > 0;
+                                    let is_out = item.get("coreaudio_device_output").and_then(|x| x.as_u64()).unwrap_or(0) > 0;
+                                    if is_in {
+                                        devices.push(HostMediaDevice { name: name.to_string(), kind: "audio_input".into() });
+                                    }
+                                    if is_out {
+                                        devices.push(HostMediaDevice { name: name.to_string(), kind: "audio_output".into() });
+                                    }
+                                    if !is_in && !is_out {
+                                        devices.push(HostMediaDevice { name: name.to_string(), kind: "audio_input".into() });
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(out) = Command::new("powershell")
+            .args([
+                "-NoProfile",
+                "-Command",
+                r#"Get-CimInstance Win32_SoundDevice | ForEach-Object { $_.Name }"#,
+            ])
+            .output()
+        {
+            let s = String::from_utf8_lossy(&out.stdout);
+            for line in s.lines() {
+                let name = line.trim();
+                if !name.is_empty() {
+                    devices.push(HostMediaDevice { name: name.to_string(), kind: "audio_input".into() });
+                    devices.push(HostMediaDevice { name: format!("{name} (Loopback Output)"), kind: "audio_output".into() });
+                }
+            }
+        }
+    }
+    devices
+}
+
+pub fn list_host_video_devices() -> Vec<HostMediaDevice> {
+    let mut devices = Vec::new();
+    #[cfg(target_os = "macos")]
+    {
+        if let Ok(out) = Command::new("system_profiler").args(["SPCameraDataType", "-json"]).output() {
+            if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&out.stdout) {
+                if let Some(arr) = v.get("SPCameraDataType").and_then(|x| x.as_array()) {
+                    for item in arr {
+                        if let Some(name) = item.get("_name").and_then(|x| x.as_str()) {
+                            devices.push(HostMediaDevice { name: name.to_string(), kind: "video_input".into() });
+                        }
+                    }
+                }
+            }
+        }
+    }
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(out) = Command::new("powershell")
+            .args([
+                "-NoProfile",
+                "-Command",
+                r#"Get-CimInstance Win32_PnPEntity | Where-Object { $_.PNPClass -eq 'Camera' -or $_.PNPClass -eq 'Image' } | ForEach-Object { $_.Name }"#,
+            ])
+            .output()
+        {
+            let s = String::from_utf8_lossy(&out.stdout);
+            for line in s.lines() {
+                let name = line.trim();
+                if !name.is_empty() {
+                    devices.push(HostMediaDevice { name: name.to_string(), kind: "video_input".into() });
+                }
+            }
+        }
+    }
+    devices
+}
