@@ -60,10 +60,10 @@ export const App: React.FC = () => {
         } else {
           // Provide fallback about info even if offline
           setAvailableUpdate({
-            current_version: "0.1.6",
-            latest_version: "v0.1.8-alpha",
+            current_version: "0.1.9",
+            latest_version: "v0.1.9-alpha",
             release_name: "One Ring — Church Production Suite",
-            release_notes: "You are running One Ring v0.1.8-alpha. All systems up to date.",
+            release_notes: "You are running One Ring v0.1.9-alpha. All systems up to date.",
             published_at: new Date().toISOString(),
             html_url: "https://github.com/KhanTheDaleK1/One-Ring",
             download_url: null,
@@ -315,8 +315,57 @@ export const App: React.FC = () => {
       {mode === "slides" && (
         <SlidesCanvasView
           state={state}
-          onSelectSlide={(slideNumber) => bridge.goToSlide(slideNumber).then(setState)}
-          onSlideAction={(act) => bridge.triggerSlideAction(act).then(setState)}
+          onSelectSlide={(slideNumber) => {
+            setState((prev) => {
+              if (!prev) return prev;
+              const arr = prev.slides.slides || [];
+              if (arr.length > 0) {
+                const idx = Math.max(0, Math.min(arr.length - 1, slideNumber - 1));
+                return {
+                  ...prev,
+                  slides: {
+                    ...prev.slides,
+                    currentSlide: idx + 1,
+                    totalSlides: arr.length,
+                    currentText: arr[idx]?.text || "",
+                    nextText: arr[idx + 1]?.text || "",
+                    cleared: false,
+                  },
+                };
+              }
+              bridge.goToSlide(slideNumber).then(setState);
+              return prev;
+            });
+          }}
+          onSlideAction={(act) => {
+            setState((prev) => {
+              if (!prev) return prev;
+              const arr = prev.slides.slides || [];
+              if (arr.length > 0) {
+                if (act === "clear") {
+                  return { ...prev, slides: { ...prev.slides, cleared: !prev.slides.cleared } };
+                }
+                const curr = prev.slides.currentSlide || 1;
+                const nextNum =
+                  act === "next"
+                    ? Math.min(arr.length, curr + 1)
+                    : Math.max(1, curr - 1);
+                return {
+                  ...prev,
+                  slides: {
+                    ...prev.slides,
+                    currentSlide: nextNum,
+                    totalSlides: arr.length,
+                    currentText: arr[nextNum - 1]?.text || "",
+                    nextText: arr[nextNum]?.text || "",
+                    cleared: false,
+                  },
+                };
+              }
+              bridge.triggerSlideAction(act).then(setState);
+              return prev;
+            });
+          }}
           onImportSong={(title, importedSlides) => {
             setState((prev) => {
               if (!prev) return prev;
@@ -334,6 +383,11 @@ export const App: React.FC = () => {
                 },
               };
             });
+          }}
+          onUpdateTheme={(theme) => {
+            setState((prev) =>
+              prev ? { ...prev, slides: { ...prev.slides, theme } } : prev
+            );
           }}
         />
       )}
@@ -474,9 +528,9 @@ export const App: React.FC = () => {
               setAvailableUpdate(info);
             } else {
               setAvailableUpdate({
-                current_version: "0.1.6",
-                latest_version: "v0.1.8-alpha",
-                release_name: "One Ring v0.1.8-alpha",
+                current_version: "0.1.9",
+                latest_version: "v0.1.9-alpha",
+                release_name: "One Ring v0.1.9-alpha",
                 release_notes: "You are running the latest version. All systems are up to date.",
                 published_at: new Date().toISOString(),
                 html_url: "https://github.com/KhanTheDaleK1/One-Ring/releases",

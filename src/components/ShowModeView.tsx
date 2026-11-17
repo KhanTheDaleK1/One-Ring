@@ -198,7 +198,7 @@ export const ShowModeView: React.FC<ShowModeViewProps> = ({
         gridTemplateColumns: "minmax(0, 1.05fr) minmax(0, 1fr) minmax(0, 0.92fr)",
         gap: 16,
         padding: 16,
-        height: "calc(100vh - 64px)",
+        minHeight: "calc(100vh - 64px)",
         alignItems: "stretch",
       }}
     >

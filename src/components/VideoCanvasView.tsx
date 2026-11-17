@@ -32,7 +32,7 @@ export const VideoCanvasView: React.FC<VideoCanvasViewProps> = ({
       style={{
         display: "flex",
         flexDirection: "column",
-        height: "calc(100vh - 64px)",
+        minHeight: "calc(100vh - 64px)",
         background: "#080B10",
         color: "#F3F4F6",
         padding: 16,

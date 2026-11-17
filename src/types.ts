@@ -179,6 +179,20 @@ export interface SlideCue {
   kind: SlideKind;
 }
 
+
+export interface SlideTheme {
+  backgroundType: "solid" | "gradient" | "image";
+  backgroundColor: string;
+  gradientTo?: string;
+  backgroundImage?: string;
+  fontFamily: string;
+  fontSize: number;
+  textColor: string;
+  lowerThirdBg: string;
+  lowerThirdAccent: string;
+  lowerThirdPosition: "bottom" | "lower-bar";
+}
+
 export interface SlideState {
   app: string;
   playlistName: string;
@@ -196,6 +210,7 @@ export interface SlideState {
    * this is absent.
    */
   slides?: SlideCue[];
+  theme?: SlideTheme;
 }
 
 export interface ServiceCue {

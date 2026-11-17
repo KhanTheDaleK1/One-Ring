@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { FileText, Sparkles, X, Plus, Layers } from "lucide-react";
+import { FileText, X, Plus } from "lucide-react";
 import type { SlideCue } from "../types";
 
 interface LyricImportModalProps {
@@ -20,7 +20,7 @@ export const LyricImportModal: React.FC<LyricImportModalProps> = ({
 
   if (!isOpen) return null;
 
-  // Process text into slides based on lines per slide and blank line separation
+  // Process text into slides based on lines per slide and auto-detected section tags
   const generatePreview = (): SlideCue[] => {
     if (!rawText.trim()) return [];
 
@@ -37,8 +37,9 @@ export const LyricImportModal: React.FC<LyricImportModalProps> = ({
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i];
 
-      // Auto-detect section headers like [Chorus], [Verse 2], Bridge:
-      const sectionMatch = line.match(/^\[(.*)\]$/) || line.match(/^(Verse \d+|Chorus|Bridge|Tag|Intro|Outro):?$/i);
+      const sectionMatch =
+        line.match(/^\[(.*)\]$/) ||
+        line.match(/^(Verse\s*\d*|Chorus|Pre-Chorus|Bridge|Tag|Intro|Outro|Ending):?$/i);
       if (sectionMatch) {
         if (currentLines.length > 0) {
           slides.push({
@@ -52,7 +53,7 @@ export const LyricImportModal: React.FC<LyricImportModalProps> = ({
           slideNumber++;
           currentLines = [];
         }
-        currentSection = sectionMatch[1] || sectionMatch[0].replace(/[:\[\]]/g, "");
+        currentSection = (sectionMatch[1] || sectionMatch[0]).replace(/[:\[\]]/g, "").trim();
         continue;
       }
 
@@ -72,7 +73,6 @@ export const LyricImportModal: React.FC<LyricImportModalProps> = ({
       }
     }
 
-    // Flush remaining lines
     if (currentLines.length > 0) {
       slides.push({
         id: `slide-${slideNumber}`,
@@ -100,10 +100,7 @@ export const LyricImportModal: React.FC<LyricImportModalProps> = ({
     <div
       style={{
         position: "fixed",
-        top: 0,
-        left: 0,
-        right: 0,
-        bottom: 0,
+        inset: 0,
         backgroundColor: "rgba(8, 11, 16, 0.85)",
         backdropFilter: "blur(6px)",
         display: "flex",
@@ -116,7 +113,8 @@ export const LyricImportModal: React.FC<LyricImportModalProps> = ({
       <div
         style={{
           width: "100%",
-          maxWidth: 880,
+          maxWidth: 900,
+          maxHeight: "88vh",
           background: "#121721",
           border: "1px solid #2E3748",
           borderRadius: 14,
@@ -124,12 +122,13 @@ export const LyricImportModal: React.FC<LyricImportModalProps> = ({
           color: "#E2E8F0",
           display: "flex",
           flexDirection: "column",
-          gap: 16,
-          boxShadow: "0 20px 50px rgba(0,0,0,0.6)",
+          gap: 14,
+          boxShadow: "0 20px 50px rgba(0,0,0,0.65)",
+          overflow: "hidden",
         }}
       >
         {/* Header */}
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexShrink: 0 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
             <div
               style={{
@@ -150,24 +149,24 @@ export const LyricImportModal: React.FC<LyricImportModalProps> = ({
                 Import Lyrics & Reflow Slides
               </h3>
               <p style={{ margin: "2px 0 0", color: "#94A3B8", fontSize: 12 }}>
-                Paste lyrics directly from CCLI, Google Docs, or text files. Configure custom lines per slide.
+                Paste lyrics directly from CCLI, Google Docs, or text files. Preview scrolls cleanly inside the box.
               </p>
             </div>
           </div>
           <button
             type="button"
             onClick={onClose}
-            style={{ background: "transparent", border: "none", color: "#94A3B8", cursor: "pointer" }}
+            style={{ background: "transparent", border: "none", color: "#94A3B8", cursor: "pointer", padding: 4 }}
           >
-            <X size={20} />
+            <X size={18} />
           </button>
         </div>
 
-        {/* Options Row */}
-        <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1fr", gap: 12 }}>
+        {/* Title and Lines Per Slide Config */}
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 220px", gap: 12, flexShrink: 0 }}>
           <div>
-            <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: "#CBD5E1", marginBottom: 4 }}>
-              Song Title
+            <label style={{ display: "block", fontSize: 11, fontWeight: 700, color: "#94A3B8", textTransform: "uppercase", marginBottom: 4 }}>
+              Song / Presentation Title
             </label>
             <input
               type="text"
@@ -177,75 +176,59 @@ export const LyricImportModal: React.FC<LyricImportModalProps> = ({
               style={{
                 width: "100%",
                 height: 38,
-                padding: "0 10px",
+                padding: "0 12px",
                 background: "#0B0E14",
                 border: "1px solid #2B3545",
                 borderRadius: 6,
                 color: "#FFFFFF",
                 fontSize: 13,
-                boxSizing: "border-box",
               }}
             />
           </div>
 
           <div>
-            <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: "#CBD5E1", marginBottom: 4 }}>
+            <label style={{ display: "block", fontSize: 11, fontWeight: 700, color: "#94A3B8", textTransform: "uppercase", marginBottom: 4 }}>
               Lines Per Slide
             </label>
-            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 6 }}>
               {[1, 2, 3, 4].map((num) => (
                 <button
                   key={num}
                   type="button"
                   onClick={() => setLinesPerSlide(num)}
                   style={{
-                    flex: 1,
                     height: 38,
                     borderRadius: 6,
-                    border: linesPerSlide === num ? "1px solid #3B82F6" : "1px solid #2B3545",
-                    background: linesPerSlide === num ? "#2563EB" : "#161C26",
-                    color: linesPerSlide === num ? "#FFFFFF" : "#94A3B8",
                     fontWeight: 700,
-                    cursor: "pointer",
                     fontSize: 13,
+                    cursor: "pointer",
+                    background: linesPerSlide === num ? "#2563EB" : "#1E2533",
+                    border: `1px solid ${linesPerSlide === num ? "#60A5FA" : "#2E3748"}`,
+                    color: linesPerSlide === num ? "#FFFFFF" : "#94A3B8",
                   }}
                 >
-                  {num}
+                  {num}L
                 </button>
               ))}
             </div>
           </div>
-
-          <div>
-            <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: "#CBD5E1", marginBottom: 4 }}>
-              Initial Section
-            </label>
-            <input
-              type="text"
-              value={sectionTag}
-              onChange={(e) => setSectionTag(e.target.value)}
-              placeholder="Verse 1"
-              style={{
-                width: "100%",
-                height: 38,
-                padding: "0 10px",
-                background: "#0B0E14",
-                border: "1px solid #2B3545",
-                borderRadius: 6,
-                color: "#FFFFFF",
-                fontSize: 13,
-                boxSizing: "border-box",
-              }}
-            />
-          </div>
         </div>
 
-        {/* Text Input & Live Preview Grid */}
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, minHeight: 280, maxHeight: 360 }}>
-          {/* Input Area */}
-          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-            <span style={{ fontSize: 12, fontWeight: 600, color: "#94A3B8" }}>
-              Paste Full Lyrics Here:
+        {/* Editor & Bounded Scroll Preview */}
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "1fr 1fr",
+            gap: 14,
+            flex: 1,
+            minHeight: 0,
+            overflow: "hidden",
+          }}
+        >
+          {/* Raw Text Area */}
+          <div style={{ display: "flex", flexDirection: "column", gap: 6, minHeight: 0 }}>
+            <span style={{ fontSize: 12, fontWeight: 600, color: "#94A3B8", flexShrink: 0 }}>
+              Paste Lyrics Here (section tags like [Verse 1], [Chorus] auto-split):
             </span>
             <textarea
               value={rawText}
@@ -253,6 +236,7 @@ export const LyricImportModal: React.FC<LyricImportModalProps> = ({
               placeholder={"[Verse 1]\nI love You, Lord\nFor Your mercy never fails me\nAll my days, I've been held in Your hands\n\n[Chorus]\nAnd all my life You have been faithful\nAnd all my life You have been so, so good"}
               style={{
                 flex: 1,
+                minHeight: 220,
                 padding: 12,
                 background: "#0B0E14",
                 border: "1px solid #2B3545",
@@ -263,13 +247,14 @@ export const LyricImportModal: React.FC<LyricImportModalProps> = ({
                 lineHeight: 1.5,
                 resize: "none",
                 outline: "none",
+                overflowY: "auto",
               }}
             />
           </div>
 
-          {/* Live Reflowed Slide Preview */}
-          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          {/* Bounded Live Reflowed Slide Preview */}
+          <div style={{ display: "flex", flexDirection: "column", gap: 6, minHeight: 0, overflow: "hidden" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexShrink: 0 }}>
               <span style={{ fontSize: 12, fontWeight: 600, color: "#94A3B8" }}>
                 Reflowed Slides Preview ({previewSlides.length} slides):
               </span>
@@ -280,12 +265,14 @@ export const LyricImportModal: React.FC<LyricImportModalProps> = ({
             <div
               style={{
                 flex: 1,
+                minHeight: 220,
                 overflowY: "auto",
                 background: "#080B10",
                 border: "1px solid #1E2533",
                 borderRadius: 8,
                 padding: 10,
-                display: "grid",
+                display: "flex",
+                flexDirection: "column",
                 gap: 8,
               }}
             >
@@ -302,36 +289,31 @@ export const LyricImportModal: React.FC<LyricImportModalProps> = ({
                       border: "1px solid #283344",
                       borderRadius: 6,
                       padding: "8px 12px",
-                      display: "flex",
-                      alignItems: "flex-start",
-                      justifyContent: "space-between",
-                      gap: 8,
+                      flexShrink: 0,
+                      wordBreak: "break-word",
                     }}
                   >
-                    <div>
-                      <span
-                        style={{
-                          fontSize: 10,
-                          fontWeight: 700,
-                          color: "#60A5FA",
-                          textTransform: "uppercase",
-                          marginRight: 6,
-                        }}
-                      >
-                        Slide {idx + 1} • {slide.section}
-                      </span>
-                      <div
-                        style={{
-                          whiteSpace: "pre-line",
-                          fontSize: 13,
-                          fontWeight: 500,
-                          color: "#FFFFFF",
-                          marginTop: 3,
-                          lineHeight: 1.4,
-                        }}
-                      >
-                        {slide.text}
-                      </div>
+                    <span
+                      style={{
+                        fontSize: 10,
+                        fontWeight: 700,
+                        color: "#60A5FA",
+                        textTransform: "uppercase",
+                      }}
+                    >
+                      Slide {idx + 1} • {slide.section}
+                    </span>
+                    <div
+                      style={{
+                        whiteSpace: "pre-line",
+                        fontSize: 13,
+                        fontWeight: 500,
+                        color: "#FFFFFF",
+                        marginTop: 3,
+                        lineHeight: 1.4,
+                      }}
+                    >
+                      {slide.text}
                     </div>
                   </div>
                 ))
@@ -341,7 +323,7 @@ export const LyricImportModal: React.FC<LyricImportModalProps> = ({
         </div>
 
         {/* Footer Actions */}
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 10, marginTop: 4 }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 10, flexShrink: 0 }}>
           <button
             type="button"
             onClick={onClose}

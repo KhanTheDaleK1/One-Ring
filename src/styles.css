@@ -6,6 +6,11 @@
   color-scheme: dark;
 }
 
+html, body, #root {
+  min-height: 100%;
+  overflow-y: auto;
+}
+
 body {
   margin: 0;
   font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
