@@ -57,15 +57,7 @@ fn parse_semver_tuple(v: &str) -> (u32, u32, u32) {
 fn is_newer(remote_tag: &str, current: &str) -> bool {
     let remote_tuple = parse_semver_tuple(remote_tag);
     let current_tuple = parse_semver_tuple(current);
-    if remote_tuple > current_tuple {
-        return true;
-    }
-    if remote_tuple == current_tuple {
-        let r_clean = remote_tag.trim().trim_start_matches('v');
-        let c_clean = current.trim().trim_start_matches('v');
-        return r_clean != c_clean;
-    }
-    false
+    remote_tuple > current_tuple
 }
 
 pub fn check_for_updates() -> Result<Option<UpdateInfo>, String> {
@@ -85,7 +77,7 @@ pub fn check_for_updates() -> Result<Option<UpdateInfo>, String> {
     #[cfg(not(target_os = "windows"))]
     let mut cmd = {
         let mut c = std::process::Command::new("curl");
-        c.arg("-s")
+        c.arg("-sL")
             .arg("-H")
             .arg("User-Agent: One-Ring-Production-Suite")
             .arg(&url);
