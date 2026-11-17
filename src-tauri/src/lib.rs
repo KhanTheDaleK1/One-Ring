@@ -678,7 +678,6 @@ pub fn run() {
                     &[
                         &about,
                         &check_update,
-            get_discovered_peers,
                         &PredefinedMenuItem::separator(app)?,
                         &PredefinedMenuItem::services(app, None)?,
                         &PredefinedMenuItem::separator(app)?,
