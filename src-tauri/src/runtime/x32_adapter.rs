@@ -60,6 +60,7 @@ pub enum X32Command {
     SetChannelFader { channel: u8, fader: f32 },
     RecallScene { scene: u32 },
     Identify,
+    RawOsc { address: String, value: f32 },
 }
 
 /// Start the adapter. Returns a handle that stops when the process stops or the command channel
@@ -333,6 +334,9 @@ async fn handle_command(
             sink.log(format!(
                 "[x32] Sent /-action/goscene {scene} (high-impact; confirmation enforced by cue engine)"
             ));
+        }
+        X32Command::RawOsc { address, value } => {
+            send(socket, &OscMessage::new(address, vec![OscArg::Float(value)])).await?
         }
         X32Command::Identify => {
             send(socket, &OscMessage::xinfo()).await?;

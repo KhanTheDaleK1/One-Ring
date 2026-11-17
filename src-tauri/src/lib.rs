@@ -815,6 +815,7 @@ fn send_x32_osc(
             }
         }
     }
+    dispatch(&state, AdapterCommand::X32(X32Command::RawOsc { address: address.clone(), value }));
     let mut inner = state.inner.lock().unwrap();
     inner.event_log.insert(0, format!("[x32-osc] {} -> {:.2}", address, value));
     inner.clone()

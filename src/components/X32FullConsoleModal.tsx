@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import {
   X,
   Sliders,
@@ -22,7 +23,7 @@ export interface X32FullConsoleModalProps {
   onSendX32Command?: (address: string, value: number | string) => void;
 }
 
-type ConsoleBankId = "ch1_16" | "ch17_32" | "aux_fx" | "bus1_16" | "mtx1_6" | "dca1_8";
+type ConsoleBankId = "ch1_16" | "ch17_32" | "aux_fx" | "bus1_16" | "mtx1_6" | "dca1_8" | "p16_1_16";
 type DetailTabId = "eq_dyn" | "bus_sends" | "routing";
 type RoutingDomainId = "AES50-A" | "AES50-B" | "Local 1-32" | "Card" | "P16 Ultranet";
 
@@ -59,6 +60,7 @@ const BANK_TABS: Array<{ id: ConsoleBankId; label: string }> = [
   { id: "bus1_16", label: "Bus 1-16" },
   { id: "mtx1_6", label: "Matrix 1-6" },
   { id: "dca1_8", label: "DCA 1-8" },
+  { id: "p16_1_16", label: "P16 1-16" },
 ];
 
 interface EqBandState {
@@ -393,6 +395,40 @@ function buildInitialChannels(): X32ChannelStripState[] {
       faderDb: 0,
       pan: 0,
       meterLevel: n === 8 ? -90 : -15,
+      eqOn: false,
+      eqBands: createDefaultEq(false),
+      gate: { on: false, threshold: -50, range: 15 },
+      comp: { on: false, threshold: -18, ratio: 2.0, attack: 15 },
+      busSends: createBusSends(false),
+    });
+  });
+
+  const p16Names = [
+    "Kick", "Snare", "Bass", "Keys L",
+    "Keys R", "Guitar", "Lead Vox", "BGV 1",
+    "BGV 2", "Click", "Guide", "Tracks L",
+    "Tracks R", "Choir", "Pastor", "Room",
+  ];
+  p16Names.forEach((name, idx) => {
+    const n = idx + 1;
+    const nn = String(n).padStart(2, "0");
+    channels.push({
+      id: `p16-${n}`,
+      bank: "p16_1_16",
+      shortLabel: `P16 ${n}`,
+      oscPrefix: `/outputs/p16/${nn}`,
+      headampIndex: null,
+      name,
+      color: n <= 6 ? "CY" : n <= 9 ? "MG" : n <= 11 ? "YE" : "BL",
+      phantom48v: false,
+      preampGainDb: 0,
+      hpfOn: false,
+      hpfFreqHz: 80,
+      solo: false,
+      mute: false,
+      faderDb: 0,
+      pan: 0,
+      meterLevel: -18,
       eqOn: false,
       eqBands: createDefaultEq(false),
       gate: { on: false, threshold: -50, range: 15 },
@@ -905,10 +941,80 @@ export const X32FullConsoleModal: React.FC<X32FullConsoleModalProps> = ({
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [isOpen, onClose]);
 
+  const hardwareRtaActiveRef = useRef<boolean>(false);
+
+  useEffect(() => {
+    if (!isOpen || typeof window === "undefined" || !("__TAURI_INTERNALS__" in window)) return;
+    let unlistenOsc: UnlistenFn | null = null;
+    let unlistenRta: UnlistenFn | null = null;
+    let disposed = false;
+
+    listen<{ address?: string; path?: string; args?: unknown[]; value?: unknown }>("x32://osc", (event) => {
+      if (disposed) return;
+      const payload = event.payload || {};
+      const address = payload.address || payload.path || "";
+      const rawVal = Array.isArray(payload.args) && payload.args.length > 0 ? payload.args[0] : payload.value;
+      const chMatch = address.match(/^\/ch\/(\d{2})\/mix\/(fader|on)$/);
+      if (!chMatch) return;
+      const chNum = parseInt(chMatch[1], 10);
+      const param = chMatch[2];
+      const targetId = `ch-${chNum}`;
+
+      setChannels((prev) =>
+        prev.map((ch) => {
+          if (ch.id !== targetId) return ch;
+          if (param === "fader" && typeof rawVal === "number") {
+            const faderDb = rawVal <= 0.0001 ? -90 : Math.round((rawVal * 100 - 90) * 10) / 10;
+            return { ...ch, faderDb };
+          }
+          if (param === "on" && (typeof rawVal === "number" || typeof rawVal === "boolean")) {
+            const isOn = typeof rawVal === "boolean" ? rawVal : rawVal > 0;
+            return { ...ch, mute: !isOn };
+          }
+          return ch;
+        })
+      );
+    }).then((fn) => {
+      if (disposed) fn();
+      else unlistenOsc = fn;
+    }).catch(() => {});
+
+    listen<number[] | { bands?: number[]; data?: number[] }>("x32://rta", (event) => {
+      if (disposed) return;
+      const payload = event.payload;
+      const rawBands = Array.isArray(payload)
+        ? payload
+        : Array.isArray(payload?.bands)
+          ? payload.bands
+          : Array.isArray(payload?.data)
+            ? payload.data
+            : null;
+      if (!rawBands || rawBands.length === 0) return;
+      hardwareRtaActiveRef.current = true;
+      setRtaBars(
+        Array.from({ length: 100 }, (_, i) => {
+          const val = rawBands[i] ?? 0;
+          return Math.max(0.02, Math.min(1, typeof val === "number" ? val : 0));
+        })
+      );
+    }).then((fn) => {
+      if (disposed) fn();
+      else unlistenRta = fn;
+    }).catch(() => {});
+
+    return () => {
+      disposed = true;
+      hardwareRtaActiveRef.current = false;
+      if (unlistenOsc) unlistenOsc();
+      if (unlistenRta) unlistenRta();
+    };
+  }, [isOpen]);
+
   useEffect(() => {
     if (!isOpen || !rtaEnabled) return;
     let phase = 0;
     const timer = window.setInterval(() => {
+      if (hardwareRtaActiveRef.current) return;
       phase += 0.25;
       setRtaBars((prev) =>
         prev.map((v, i) => {
