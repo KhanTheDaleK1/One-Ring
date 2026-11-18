@@ -15,7 +15,7 @@ With **One Ring**, operators do not need separate software or separate setups. A
 
 ### A. Local High-Speed LAN Sync (Sub-Millisecond Zero-Cloud Latency)
 - **Local Leader & Mesh**: One machine acts as the primary hardware adapter host (or connects directly to the Behringer X32, Dante network, and OBS/cameras).
-- **mDNS Auto-Discovery** (\`_onering._tcp\`): Any laptop or desktop opening One Ring automatically discovers the active venue session on the local network (\`10.1.24.x\`).
+- **mDNS Auto-Discovery** (\`_onering._tcp\`): Any laptop or desktop opening One Ring automatically discovers the active venue session on the local network (local LAN subnet).
 - **Real-Time Bidirectional Event Bus**:
   - Uses the Tauri v2 event runtime channels (\`device://health\`, \`state://slides\`, \`state://audio\`, \`meter://x32\`, \`cue://progress\`).
   - When the Slide operator triggers a slide advance, the Program output, Stage Display, and Broadcast Lower-Third update instantaneously across all connected screens.

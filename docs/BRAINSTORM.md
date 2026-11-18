@@ -328,7 +328,7 @@ taking over" state for multi-instance control.
 
 ### 8.2 Agreed Joint Conclusion & Execution Plan (`t1` + `t2`)
 
-We (`t1` Antigravity and `t2` OpenCode) agree on the following prioritized roadmap to present to the Management Agent (`evans-mac-mini/t10`):
+We (`t1` Antigravity and `t2` OpenCode) agree on the following prioritized roadmap to present to the Management Agent (Lead Maintainer):
 
 | Phase | Deliverable | Proposed Owner |
 | :--- | :--- | :--- |

@@ -78,8 +78,8 @@ export const NdiStudioTools: React.FC<NdiStudioToolsProps> = ({
 }) => {
   // NDI Access Manager state
   const [discoveryEnabled, setDiscoveryEnabled] = useState<boolean>(true);
-  const [discoveryHost, setDiscoveryHost] = useState<string>("10.1.24.10:5959");
-  const [appliedDiscoveryHost, setAppliedDiscoveryHost] = useState<string>("10.1.24.10:5959");
+  const [discoveryHost, setDiscoveryHost] = useState<string>("127.0.0.1:5959");
+  const [appliedDiscoveryHost, setAppliedDiscoveryHost] = useState<string>("127.0.0.1:5959");
   const [availableGroups, setAvailableGroups] = useState<string[]>(DEFAULT_RECEIVE_GROUPS);
   const [activeGroups, setActiveGroups] = useState<string[]>(["public", "Sanctuary-Cameras", "Broadcast-Feeds"]);
   const [newGroupName, setNewGroupName] = useState<string>("");
@@ -792,7 +792,7 @@ export const NdiStudioTools: React.FC<NdiStudioToolsProps> = ({
                 value={discoveryHost}
                 disabled={!discoveryEnabled}
                 onChange={(e) => setDiscoveryHost(e.target.value)}
-                placeholder="10.1.24.10:5959"
+                placeholder="127.0.0.1:5959"
                 style={{
                   flex: 1,
                   height: 32,
@@ -809,7 +809,7 @@ export const NdiStudioTools: React.FC<NdiStudioToolsProps> = ({
                 type="button"
                 disabled={!discoveryEnabled}
                 onClick={() => {
-                  const trimmed = discoveryHost.trim() || "10.1.24.10:5959";
+                  const trimmed = discoveryHost.trim() || "127.0.0.1:5959";
                   setAppliedDiscoveryHost(trimmed);
                   notify(`Discovery Server updated -> ${trimmed}`);
                 }}

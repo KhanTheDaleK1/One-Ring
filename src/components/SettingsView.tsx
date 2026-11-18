@@ -708,7 +708,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ state, onSave, onChe
                 onChange={(e) =>
                   patchSection("ndiPtz", { discoveryRangeStart: e.target.value })
                 }
-                placeholder="10.1.24.1"
+                placeholder="192.168.1.1"
               />
             </Field>
             <Field label="Discovery range end" hint="Last IPv4 address in the sweep.">
@@ -719,7 +719,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ state, onSave, onChe
                 onChange={(e) =>
                   patchSection("ndiPtz", { discoveryRangeEnd: e.target.value })
                 }
-                placeholder="10.1.24.254"
+                placeholder="192.168.1.254"
               />
             </Field>
             <Field label="Camera control UDP port" hint="Camera control UDP port. Default 52381.">

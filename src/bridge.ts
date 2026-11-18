@@ -927,3 +927,24 @@ export async function saveReplayBuffer(): Promise<string> {
   if (isTauri()) return invokeTauri<string>("save_replay_buffer");
   return "Saved 30s Instant Replay clip!";
 }
+
+export async function remuxRecordingToMp4(filePath: string): Promise<string> {
+  if (isTauri()) {
+    return invokeTauri<string>("remux_recording_to_mp4", { filePath });
+  }
+  return `Remuxed cleanly to ${filePath.replace(/\.[^/.]+$/, "")}.mp4 (browser mode simulated)`;
+}
+
+export async function sendObsStreamCaption(text: string): Promise<string> {
+  if (isTauri()) {
+    return invokeTauri<string>("send_obs_stream_caption", { text });
+  }
+  return text ? `CC sent (local fallback): "${text}"` : "Cleared stream captions";
+}
+
+export async function dispatchObsStudioCommand(action: string, arg?: string): Promise<string> {
+  if (isTauri()) {
+    return invokeTauri<string>("dispatch_obs_studio_command", { action, arg: arg ?? null });
+  }
+  return `Dispatched ${action}`;
+}

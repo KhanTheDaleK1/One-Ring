@@ -25,6 +25,21 @@ export interface ObsAudioMixerPanelProps {
   onUpdateTrackRouting: (id: string, tracks: boolean[]) => void;
 }
 
+type AudioMonitoringMode = "monitor_off" | "monitor_only" | "monitor_and_output";
+
+interface DspChainNodes {
+  sourceId?: string;
+  ctx: AudioContext;
+  hpf: BiquadFilterNode;
+  eqLow: BiquadFilterNode;
+  eqMid: BiquadFilterNode;
+  eqHigh: BiquadFilterNode;
+  comp: DynamicsCompressorNode;
+  delay: DelayNode;
+  gainNode: GainNode;
+  monitoringConnected: boolean;
+}
+
 const AUDIO_CAPABLE_TYPES: ReadonlySet<SourceType> = new Set<SourceType>([
   "audio_input_capture",
   "audio_output_capture",
@@ -54,6 +69,32 @@ function isAudioCapableSource(source: SceneSourceItem): boolean {
 function clampDb(db: number | undefined): number {
   if (typeof db !== "number" || Number.isNaN(db)) return 0;
   return Math.max(-60, Math.min(0, db));
+}
+
+function normalizeMonitoringMode(raw: unknown): AudioMonitoringMode {
+  if (raw === "monitor_only" || raw === "Monitor Only") return "monitor_only";
+  if (raw === "monitor_and_output" || raw === "Monitor & Output") return "monitor_and_output";
+  return "monitor_off";
+}
+
+function getSourceAsyncDelayMs(source?: SceneSourceItem): number {
+  const flt = source?.filters?.find((f) => f.type === "async_delay" && f.enabled);
+  const val = flt?.settings?.delayMs;
+  return typeof val === "number" && !Number.isNaN(val) ? val : 0;
+}
+
+function setChainMonitoringConnected(chain: DspChainNodes, shouldMonitor: boolean): void {
+  if (shouldMonitor && !chain.monitoringConnected) {
+    chain.gainNode.connect(chain.ctx.destination);
+    chain.monitoringConnected = true;
+  } else if (!shouldMonitor && chain.monitoringConnected) {
+    try {
+      chain.gainNode.disconnect(chain.ctx.destination);
+    } catch {
+      // Ignore if destination node was already disconnected
+    }
+    chain.monitoringConnected = false;
+  }
 }
 
 function getSourceTracks(
@@ -209,120 +250,21 @@ export const ObsAudioMixerPanel: React.FC<ObsAudioMixerPanelProps> = ({
   const [liveSystemDb, setLiveSystemDb] = useState<number>(-60);
   const [dspHpfEnabled, setDspHpfEnabled] = useState(true);
   const [dspCompEnabled, setDspCompEnabled] = useState(true);
+  const [dspEqOpen, setDspEqOpen] = useState(false);
+  const [dspEqEnabled, setDspEqEnabled] = useState(true);
+  const [dspEqLowDb, setDspEqLowDb] = useState(0);
+  const [dspEqMidDb, setDspEqMidDb] = useState(0);
+  const [dspEqHighDb, setDspEqHighDb] = useState(0);
   const audioCtxRef = React.useRef<AudioContext | null>(null);
   const micStreamRef = React.useRef<MediaStream | null>(null);
   const sysStreamRef = React.useRef<MediaStream | null>(null);
-  const hpfNodesRef = React.useRef<BiquadFilterNode[]>([]);
-  const compNodesRef = React.useRef<DynamicsCompressorNode[]>([]);
+  const dspChainsRef = React.useRef<DspChainNodes[]>([]);
 
-  useEffect(() => {
-    const freq = dspHpfEnabled ? 80 : 10;
-    for (const node of hpfNodesRef.current) {
-      node.frequency.setTargetAtTime(freq, node.context.currentTime, 0.01);
-    }
-  }, [dspHpfEnabled]);
-
-  useEffect(() => {
-    const threshold = dspCompEnabled ? -18 : 0;
-    const ratio = dspCompEnabled ? 4 : 1;
-    for (const node of compNodesRef.current) {
-      node.threshold.setTargetAtTime(threshold, node.context.currentTime, 0.01);
-      node.ratio.setTargetAtTime(ratio, node.context.currentTime, 0.01);
-    }
-  }, [dspCompEnabled]);
-
-  const connectWithDspChain = (
-    ctx: AudioContext,
-    src: MediaStreamAudioSourceNode,
-    analyser: AnalyserNode
-  ) => {
-    const hpf = ctx.createBiquadFilter();
-    hpf.type = "highpass";
-    hpf.frequency.value = dspHpfEnabled ? 80 : 10;
-
-    const comp = ctx.createDynamicsCompressor();
-    comp.threshold.value = dspCompEnabled ? -18 : 0;
-    comp.ratio.value = dspCompEnabled ? 4 : 1;
-    comp.attack.value = 0.005;
-    comp.release.value = 0.15;
-
-    const gain = ctx.createGain();
-    gain.gain.value = 1.0;
-
-    src.connect(hpf);
-    hpf.connect(comp);
-    comp.connect(gain);
-    gain.connect(analyser);
-
-    hpfNodesRef.current.push(hpf);
-    compNodesRef.current.push(comp);
-  };
-
-  const enableLivePcMicCapture = async () => {
-    try {
-      const ctx = audioCtxRef.current || new AudioContext();
-      audioCtxRef.current = ctx;
-      if (ctx.state === "suspended") await ctx.resume();
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      micStreamRef.current = stream;
-      const src = ctx.createMediaStreamSource(stream);
-      const analyser = ctx.createAnalyser();
-      analyser.fftSize = 512;
-      connectWithDspChain(ctx, src, analyser);
-      const buf = new Float32Array(analyser.fftSize);
-      setLiveAudioActive(true);
-
-      const poll = () => {
-        if (!micStreamRef.current) return;
-        analyser.getFloatTimeDomainData(buf);
-        let peak = 0;
-        for (let i = 0; i < buf.length; i++) {
-          const abs = Math.abs(buf[i]);
-          if (abs > peak) peak = abs;
-        }
-        const db = peak > 0.0001 ? Math.max(-60, Math.min(0, 20 * Math.log10(peak))) : -60;
-        setLiveMicDb(db);
-        requestAnimationFrame(poll);
-      };
-      requestAnimationFrame(poll);
-    } catch {}
-  };
-
-  const enableLiveSystemAudioCapture = async () => {
-    try {
-      const ctx = audioCtxRef.current || new AudioContext();
-      audioCtxRef.current = ctx;
-      if (ctx.state === "suspended") await ctx.resume();
-      const stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
-      sysStreamRef.current = stream;
-      if (stream.getAudioTracks().length > 0) {
-        const src = ctx.createMediaStreamSource(stream);
-        const analyser = ctx.createAnalyser();
-        analyser.fftSize = 512;
-        connectWithDspChain(ctx, src, analyser);
-        const buf = new Float32Array(analyser.fftSize);
-        const poll = () => {
-          if (!sysStreamRef.current) return;
-          analyser.getFloatTimeDomainData(buf);
-          let peak = 0;
-          for (let i = 0; i < buf.length; i++) {
-            const abs = Math.abs(buf[i]);
-            if (abs > peak) peak = abs;
-          }
-          const db = peak > 0.0001 ? Math.max(-60, Math.min(0, 20 * Math.log10(peak))) : -60;
-          setLiveSystemDb(db);
-          requestAnimationFrame(poll);
-        };
-        requestAnimationFrame(poll);
-      }
-      setLiveAudioActive(true);
-    } catch {}
-  };
   const [viewMode, setViewMode] = useState<"mixer" | "matrix">("mixer");
   const [localTrackOverrides, setLocalTrackOverrides] = useState<Record<string, boolean[]>>({});
   const [localSyncOffsets, setLocalSyncOffsets] = useState<Record<string, number>>({});
   const [localMonoMap, setLocalMonoMap] = useState<Record<string, boolean>>({});
-  const [localMonitoring, setLocalMonitoring] = useState<Record<string, "Monitor Off" | "Monitor Only" | "Monitor & Output">>({});
+  const [localMonitoring, setLocalMonitoring] = useState<Record<string, AudioMonitoringMode>>({});
 
   useEffect(() => {
     const id = window.setInterval(() => {
@@ -348,6 +290,258 @@ export const ObsAudioMixerPanel: React.FC<ObsAudioMixerPanelProps> = ({
         : allAudioSources.filter((s) => !s.hideInMixer),
     [allAudioSources, showHiddenSources]
   );
+
+  const getSourceEqGains = (source?: SceneSourceItem) => {
+    if (!dspEqEnabled) {
+      return { lowDb: 0, midDb: 0, highDb: 0 };
+    }
+    const eqFilter = source?.filters?.find((f) => f.type === "basic_eq" && f.enabled);
+    const filterLow = typeof eqFilter?.settings?.lowDb === "number" ? eqFilter.settings.lowDb : 0;
+    const filterMid = typeof eqFilter?.settings?.midDb === "number" ? eqFilter.settings.midDb : 0;
+    const filterHigh = typeof eqFilter?.settings?.highDb === "number" ? eqFilter.settings.highDb : 0;
+    return {
+      lowDb: Math.max(-24, Math.min(24, filterLow + dspEqLowDb)),
+      midDb: Math.max(-24, Math.min(24, filterMid + dspEqMidDb)),
+      highDb: Math.max(-24, Math.min(24, filterHigh + dspEqHighDb)),
+    };
+  };
+
+  const getSourceCompSettings = (source?: SceneSourceItem) => {
+    if (!dspCompEnabled) {
+      return { threshold: 0, ratio: 1, attack: 0.005, release: 0.15 };
+    }
+    const compFilter = source?.filters?.find((f) => f.type === "compressor" && f.enabled);
+    const threshold = typeof compFilter?.settings?.thresholdDb === "number" ? compFilter.settings.thresholdDb : -18;
+    const ratio = typeof compFilter?.settings?.ratio === "number" ? Math.max(1, Math.min(20, compFilter.settings.ratio)) : 4;
+    const attack = typeof compFilter?.settings?.attackMs === "number" ? Math.max(0, Math.min(1, compFilter.settings.attackMs / 1000)) : 0.005;
+    const release = typeof compFilter?.settings?.releaseMs === "number" ? Math.max(0.01, Math.min(1, compFilter.settings.releaseMs / 1000)) : 0.15;
+    return { threshold, ratio, attack, release };
+  };
+
+  const getSourceDelaySec = (sourceId?: string, source?: SceneSourceItem): number => {
+    const syncMs =
+      (sourceId ? localSyncOffsets[sourceId] : undefined) ??
+      (typeof source?.settings?.syncOffsetMs === "number" ? source.settings.syncOffsetMs : 0);
+    const asyncFilterMs = getSourceAsyncDelayMs(source);
+    const totalMs = Math.max(0, Math.min(5000, syncMs + asyncFilterMs));
+    return totalMs / 1000;
+  };
+
+  const getSourceLinearGain = (source?: SceneSourceItem): number => {
+    if (!source) return 1.0;
+    if (source.muted) return 0;
+    const faderDb = clampDb(source.volumeDb);
+    const gainFilter = source.filters?.find((f) => f.type === "gain" && f.enabled);
+    const filterDb = typeof gainFilter?.settings?.db === "number" ? gainFilter.settings.db : 0;
+    const totalDb = faderDb + filterDb;
+    let linear = faderDb <= -60 ? 0 : Math.pow(10, totalDb / 20);
+    const inverted = source.filters?.some((f) => f.type === "invert_polarity" && f.enabled);
+    if (inverted) linear *= -1;
+    return linear;
+  };
+
+  const getSourceMonitoring = (source: SceneSourceItem): AudioMonitoringMode =>
+    localMonitoring[source.id] ?? normalizeMonitoringMode(source.settings?.monitoring);
+
+  useEffect(() => {
+    const hpfFreq = dspHpfEnabled ? 80 : 10;
+    for (const chain of dspChainsRef.current) {
+      if (chain.ctx.state === "closed") continue;
+      const now = chain.ctx.currentTime;
+      const targetSource = chain.sourceId
+        ? sources.find((s) => s.id === chain.sourceId)
+        : allAudioSources.find((s) => s.type === "audio_input_capture") ?? allAudioSources[0];
+      const effectiveId = chain.sourceId ?? targetSource?.id;
+
+      chain.hpf.frequency.setTargetAtTime(hpfFreq, now, 0.01);
+
+      const eqGains = getSourceEqGains(targetSource);
+      chain.eqLow.gain.setTargetAtTime(eqGains.lowDb, now, 0.01);
+      chain.eqMid.gain.setTargetAtTime(eqGains.midDb, now, 0.01);
+      chain.eqHigh.gain.setTargetAtTime(eqGains.highDb, now, 0.01);
+
+      const compCfg = getSourceCompSettings(targetSource);
+      chain.comp.threshold.setTargetAtTime(compCfg.threshold, now, 0.01);
+      chain.comp.ratio.setTargetAtTime(compCfg.ratio, now, 0.01);
+      chain.comp.attack.setTargetAtTime(compCfg.attack, now, 0.01);
+      chain.comp.release.setTargetAtTime(compCfg.release, now, 0.01);
+
+      const delaySec = getSourceDelaySec(effectiveId, targetSource);
+      chain.delay.delayTime.setTargetAtTime(delaySec, now, 0.01);
+
+      const linearGain = getSourceLinearGain(targetSource);
+      chain.gainNode.gain.setTargetAtTime(linearGain, now, 0.01);
+
+      const monitoring: AudioMonitoringMode = effectiveId
+        ? localMonitoring[effectiveId] ?? normalizeMonitoringMode(targetSource?.settings?.monitoring)
+        : "monitor_off";
+      setChainMonitoringConnected(
+        chain,
+        monitoring === "monitor_only" || monitoring === "monitor_and_output"
+      );
+    }
+  }, [
+    sources,
+    allAudioSources,
+    dspHpfEnabled,
+    dspCompEnabled,
+    dspEqEnabled,
+    dspEqLowDb,
+    dspEqMidDb,
+    dspEqHighDb,
+    localSyncOffsets,
+    localMonitoring,
+  ]);
+
+  const connectWithDspChain = (
+    ctx: AudioContext,
+    src: MediaStreamAudioSourceNode,
+    analyser: AnalyserNode,
+    sourceId?: string
+  ) => {
+    const matchedSource = sourceId
+      ? sources.find((s) => s.id === sourceId)
+      : allAudioSources.find((s) => s.type === "audio_input_capture") ?? allAudioSources[0];
+    const effectiveId = sourceId ?? matchedSource?.id;
+
+    const hpf = ctx.createBiquadFilter();
+    hpf.type = "highpass";
+    hpf.frequency.value = dspHpfEnabled ? 80 : 10;
+
+    // 3-Band EQ (Lowshelf 120Hz, Peaking 1kHz, Highshelf 6kHz)
+    const eqGains = getSourceEqGains(matchedSource);
+    const eqLow = ctx.createBiquadFilter();
+    eqLow.type = "lowshelf";
+    eqLow.frequency.value = 120;
+    eqLow.gain.value = eqGains.lowDb;
+
+    const eqMid = ctx.createBiquadFilter();
+    eqMid.type = "peaking";
+    eqMid.frequency.value = 1000;
+    eqMid.Q.value = 1.0;
+    eqMid.gain.value = eqGains.midDb;
+
+    const eqHigh = ctx.createBiquadFilter();
+    eqHigh.type = "highshelf";
+    eqHigh.frequency.value = 6000;
+    eqHigh.gain.value = eqGains.highDb;
+
+    const compCfg = getSourceCompSettings(matchedSource);
+    const comp = ctx.createDynamicsCompressor();
+    comp.threshold.value = compCfg.threshold;
+    comp.ratio.value = compCfg.ratio;
+    comp.attack.value = compCfg.attack;
+    comp.release.value = compCfg.release;
+
+    // Sync Offset DelayNode (supports up to 5000 ms)
+    const delay = ctx.createDelay(5.0);
+    delay.delayTime.value = getSourceDelaySec(effectiveId, matchedSource);
+
+    const gainNode = ctx.createGain();
+    gainNode.gain.value = getSourceLinearGain(matchedSource);
+
+    src.connect(hpf);
+    hpf.connect(eqLow);
+    eqLow.connect(eqMid);
+    eqMid.connect(eqHigh);
+    eqHigh.connect(comp);
+    comp.connect(delay);
+    delay.connect(gainNode);
+    gainNode.connect(analyser);
+
+    const monitoring: AudioMonitoringMode = effectiveId
+      ? localMonitoring[effectiveId] ?? normalizeMonitoringMode(matchedSource?.settings?.monitoring)
+      : "monitor_off";
+
+    const chain: DspChainNodes = {
+      sourceId,
+      ctx,
+      hpf,
+      eqLow,
+      eqMid,
+      eqHigh,
+      comp,
+      delay,
+      gainNode,
+      monitoringConnected: false,
+    };
+
+    if (monitoring === "monitor_only" || monitoring === "monitor_and_output") {
+      gainNode.connect(ctx.destination);
+      chain.monitoringConnected = true;
+    }
+
+    dspChainsRef.current.push(chain);
+  };
+
+  const enableLivePcMicCapture = async (targetSourceId?: string) => {
+    try {
+      const ctx = audioCtxRef.current || new AudioContext();
+      audioCtxRef.current = ctx;
+      if (ctx.state === "suspended") await ctx.resume();
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      micStreamRef.current = stream;
+      const src = ctx.createMediaStreamSource(stream);
+      const analyser = ctx.createAnalyser();
+      analyser.fftSize = 512;
+      const matchedMic = targetSourceId
+        ? sources.find((s) => s.id === targetSourceId)
+        : allAudioSources.find((s) => s.type === "audio_input_capture") ?? allAudioSources[0];
+      connectWithDspChain(ctx, src, analyser, matchedMic?.id);
+      const buf = new Float32Array(analyser.fftSize);
+      setLiveAudioActive(true);
+
+      const poll = () => {
+        if (!micStreamRef.current) return;
+        analyser.getFloatTimeDomainData(buf);
+        let peak = 0;
+        for (let i = 0; i < buf.length; i++) {
+          const abs = Math.abs(buf[i]);
+          if (abs > peak) peak = abs;
+        }
+        const db = peak > 0.0001 ? Math.max(-60, Math.min(0, 20 * Math.log10(peak))) : -60;
+        setLiveMicDb(db);
+        requestAnimationFrame(poll);
+      };
+      requestAnimationFrame(poll);
+    } catch {}
+  };
+
+  const enableLiveSystemAudioCapture = async (targetSourceId?: string) => {
+    try {
+      const ctx = audioCtxRef.current || new AudioContext();
+      audioCtxRef.current = ctx;
+      if (ctx.state === "suspended") await ctx.resume();
+      const stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
+      sysStreamRef.current = stream;
+      if (stream.getAudioTracks().length > 0) {
+        const src = ctx.createMediaStreamSource(stream);
+        const analyser = ctx.createAnalyser();
+        analyser.fftSize = 512;
+        const matchedSys = targetSourceId
+          ? sources.find((s) => s.id === targetSourceId)
+          : allAudioSources.find(
+              (s) => s.type === "audio_output_capture" || s.type === "app_audio_capture"
+            ) ?? allAudioSources[0];
+        connectWithDspChain(ctx, src, analyser, matchedSys?.id);
+        const buf = new Float32Array(analyser.fftSize);
+        const poll = () => {
+          if (!sysStreamRef.current) return;
+          analyser.getFloatTimeDomainData(buf);
+          let peak = 0;
+          for (let i = 0; i < buf.length; i++) {
+            const abs = Math.abs(buf[i]);
+            if (abs > peak) peak = abs;
+          }
+          const db = peak > 0.0001 ? Math.max(-60, Math.min(0, 20 * Math.log10(peak))) : -60;
+          setLiveSystemDb(db);
+          requestAnimationFrame(poll);
+        };
+        requestAnimationFrame(poll);
+      }
+      setLiveAudioActive(true);
+    } catch {}
+  };
 
   const handleTrackToggle = (source: SceneSourceItem, trackIndex: number) => {
     const current = getSourceTracks(source, localTrackOverrides);
@@ -482,7 +676,7 @@ export const ObsAudioMixerPanel: React.FC<ObsAudioMixerPanelProps> = ({
 
           <button
             type="button"
-            onClick={enableLivePcMicCapture}
+            onClick={() => void enableLivePcMicCapture()}
             style={{
               display: "flex",
               alignItems: "center",
@@ -518,6 +712,25 @@ export const ObsAudioMixerPanel: React.FC<ObsAudioMixerPanelProps> = ({
             }}
           >
             HPF 80Hz
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setDspEqOpen((v) => !v)}
+            title="Toggle 3-Band EQ DSP Controls (120Hz / 1kHz / 6kHz)"
+            style={{
+              height: 24,
+              padding: "0 8px",
+              borderRadius: 999,
+              border: `1px solid ${dspEqOpen || dspEqLowDb !== 0 || dspEqMidDb !== 0 || dspEqHighDb !== 0 ? "#8B5CF6" : "#283344"}`,
+              background: dspEqOpen ? "rgba(139, 92, 246, 0.2)" : "#161B24",
+              color: dspEqOpen ? "#DDD6FE" : "#94A3B8",
+              fontSize: 10.5,
+              fontWeight: 700,
+              cursor: "pointer",
+            }}
+          >
+            3-Band EQ
           </button>
 
           <button
@@ -561,6 +774,88 @@ export const ObsAudioMixerPanel: React.FC<ObsAudioMixerPanelProps> = ({
           </button>
         </div>
       </div>
+
+      {/* Collapsible Live 3-Band EQ Trim Bar */}
+      {dspEqOpen && (
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 14,
+            flexWrap: "wrap",
+            padding: "8px 12px",
+            background: "#121721",
+            border: "1px solid #283344",
+            borderRadius: 8,
+            flexShrink: 0,
+          }}
+        >
+          <button
+            type="button"
+            onClick={() => setDspEqEnabled((v) => !v)}
+            style={{
+              height: 24,
+              padding: "0 8px",
+              borderRadius: 5,
+              border: `1px solid ${dspEqEnabled ? "#8B5CF6" : "#283344"}`,
+              background: dspEqEnabled ? "rgba(139, 92, 246, 0.18)" : "#161B24",
+              color: dspEqEnabled ? "#DDD6FE" : "#64748B",
+              fontSize: 10.5,
+              fontWeight: 700,
+              cursor: "pointer",
+            }}
+          >
+            EQ {dspEqEnabled ? "ON" : "BYPASS"}
+          </button>
+
+          {[
+            { label: "Low 120Hz", value: dspEqLowDb, set: setDspEqLowDb },
+            { label: "Mid 1kHz", value: dspEqMidDb, set: setDspEqMidDb },
+            { label: "High 6kHz", value: dspEqHighDb, set: setDspEqHighDb },
+          ].map((band) => (
+            <div key={band.label} style={{ display: "flex", alignItems: "center", gap: 6, flex: 1, minWidth: 150 }}>
+              <span style={{ fontSize: 10.5, fontWeight: 700, color: "#94A3B8", minWidth: 64 }}>
+                {band.label}
+              </span>
+              <input
+                type="range"
+                min={-15}
+                max={15}
+                step={0.5}
+                value={band.value}
+                aria-label={`DSP ${band.label}`}
+                onChange={(e) => band.set(Number(e.target.value))}
+                style={{ flex: 1, accentColor: "#8B5CF6", cursor: "pointer" }}
+              />
+              <span className="mono" style={{ fontSize: 10.5, color: "#DDD6FE", minWidth: 46, textAlign: "right" }}>
+                {band.value > 0 ? `+${band.value.toFixed(1)}` : band.value.toFixed(1)} dB
+              </span>
+            </div>
+          ))}
+
+          <button
+            type="button"
+            onClick={() => {
+              setDspEqLowDb(0);
+              setDspEqMidDb(0);
+              setDspEqHighDb(0);
+            }}
+            style={{
+              height: 24,
+              padding: "0 8px",
+              borderRadius: 5,
+              border: "1px solid #283344",
+              background: "#161B24",
+              color: "#94A3B8",
+              fontSize: 10.5,
+              fontWeight: 600,
+              cursor: "pointer",
+            }}
+          >
+            Flat
+          </button>
+        </div>
+      )}
 
       {/* Empty State */}
       {visibleMixerSources.length === 0 ? (
@@ -613,6 +908,7 @@ export const ObsAudioMixerPanel: React.FC<ObsAudioMixerPanelProps> = ({
             const muted = Boolean(source.muted);
             const tracks = getSourceTracks(source, localTrackOverrides);
             const filterCount = source.filters?.length ?? 0;
+            const monitoring = getSourceMonitoring(source);
 
             return (
               <div
@@ -663,7 +959,7 @@ export const ObsAudioMixerPanel: React.FC<ObsAudioMixerPanelProps> = ({
                     </div>
                   </div>
 
-                  {/* dB Numeric + Reset + Filters + Mute */}
+                  {/* dB Numeric + Reset + Filters + Monitoring + Mute */}
                   <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
                     <button
                       type="button"
@@ -714,26 +1010,38 @@ export const ObsAudioMixerPanel: React.FC<ObsAudioMixerPanelProps> = ({
                     <select
                       aria-label={`${source.name} audio monitoring`}
                       title="Audio Monitoring"
-                      value={localMonitoring[source.id] ?? "Monitor Off"}
+                      value={monitoring}
                       onChange={(e) => {
-                        const mode = e.target.value as "Monitor Off" | "Monitor Only" | "Monitor & Output";
+                        const mode = e.target.value as AudioMonitoringMode;
                         setLocalMonitoring((prev) => ({ ...prev, [source.id]: mode }));
+                        const shouldMonitor =
+                          mode === "monitor_only" || mode === "monitor_and_output";
+                        if (shouldMonitor && audioCtxRef.current?.state === "suspended") {
+                          void audioCtxRef.current.resume();
+                        }
+                        for (const chain of dspChainsRef.current) {
+                          if (chain.ctx.state === "closed") continue;
+                          if (!chain.sourceId || chain.sourceId === source.id) {
+                            setChainMonitoringConnected(chain, shouldMonitor);
+                          }
+                        }
                       }}
                       style={{
                         height: 28,
                         padding: "0 6px",
                         borderRadius: 6,
-                        background: "#161B24",
-                        border: "1px solid #283344",
-                        color: "#CBD5E1",
+                        background:
+                          monitoring !== "monitor_off" ? "rgba(59, 130, 246, 0.16)" : "#161B24",
+                        border: `1px solid ${monitoring !== "monitor_off" ? "#3B82F6" : "#283344"}`,
+                        color: monitoring !== "monitor_off" ? "#93C5FD" : "#CBD5E1",
                         fontSize: 11,
                         fontWeight: 600,
                         cursor: "pointer",
                       }}
                     >
-                      <option value="Monitor Off">Monitor Off</option>
-                      <option value="Monitor Only">Monitor Only</option>
-                      <option value="Monitor & Output">Monitor & Output</option>
+                      <option value="monitor_off">Monitor Off</option>
+                      <option value="monitor_only">Monitor Only</option>
+                      <option value="monitor_and_output">Monitor & Output</option>
                     </select>
 
                     <button
@@ -1011,7 +1319,7 @@ export const ObsAudioMixerPanel: React.FC<ObsAudioMixerPanelProps> = ({
                     Advanced Audio Properties (OBS Tracks 1–6)
                   </h3>
                   <p style={{ margin: "2px 0 0", fontSize: 12, color: "#94A3B8" }}>
-                    Configure per-source gain, mute, VST/AU filter chains, and Track 1–6 broadcast/VOD routing.
+                    Configure per-source gain, mute, sync offset delay, VST/AU filter chains, and Track 1–6 routing.
                   </p>
                 </div>
               </div>
@@ -1060,7 +1368,11 @@ export const ObsAudioMixerPanel: React.FC<ObsAudioMixerPanelProps> = ({
                     const muted = Boolean(source.muted);
                     const tracks = getSourceTracks(source, localTrackOverrides);
                     const mono = Boolean(localMonoMap[source.id]);
-                    const syncMs = localSyncOffsets[source.id] ?? 0;
+                    const syncMs =
+                      localSyncOffsets[source.id] ??
+                      (typeof source.settings?.syncOffsetMs === "number"
+                        ? source.settings.syncOffsetMs
+                        : 0);
                     const filterCount = source.filters?.length ?? 0;
 
                     return (
@@ -1128,12 +1440,26 @@ export const ObsAudioMixerPanel: React.FC<ObsAudioMixerPanelProps> = ({
                               step={10}
                               min={-950}
                               max={2000}
-                              onChange={(e) =>
+                              aria-label={`${source.name} sync offset ms`}
+                              onChange={(e) => {
+                                const nextMs = Number(e.target.value) || 0;
                                 setLocalSyncOffsets((prev) => ({
                                   ...prev,
-                                  [source.id]: Number(e.target.value) || 0,
-                                }))
-                              }
+                                  [source.id]: nextMs,
+                                }));
+                                const asyncFilterMs = getSourceAsyncDelayMs(source);
+                                const delaySec = Math.max(0, Math.min(5, (nextMs + asyncFilterMs) / 1000));
+                                for (const chain of dspChainsRef.current) {
+                                  if (chain.ctx.state === "closed") continue;
+                                  if (!chain.sourceId || chain.sourceId === source.id) {
+                                    chain.delay.delayTime.setTargetAtTime(
+                                      delaySec,
+                                      chain.ctx.currentTime,
+                                      0.01
+                                    );
+                                  }
+                                }
+                              }}
                               style={{
                                 width: 64,
                                 height: 28,

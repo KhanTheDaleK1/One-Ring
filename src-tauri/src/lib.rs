@@ -705,6 +705,41 @@ fn dispatch_obs_worker_command(
     serialized
 }
 
+
+#[tauri::command]
+fn send_obs_stream_caption(text: String, state: State<ManagedState>) -> String {
+    dispatch(&state, AdapterCommand::Obs(ObsCommand::SendStreamCaption(text.clone())));
+    let mut inner = state.inner.lock().unwrap();
+    inner.event_log.insert(0, format!("[obs-caption] CEA-608/708 -> {}", text));
+    format!("Sent stream caption: {}", text)
+}
+
+#[tauri::command]
+fn remux_recording_to_mp4(file_path: String) -> Result<String, String> {
+    runtime::obs_daemon::remux_mkv_to_mp4(&file_path)
+}
+
+#[tauri::command]
+fn dispatch_obs_studio_command(action: String, arg: Option<String>, state: State<ManagedState>) -> String {
+    let cmd = match action.as_str() {
+        "pause_record" => Some(ObsCommand::PauseRecord),
+        "resume_record" => Some(ObsCommand::ResumeRecord),
+        "start_virtual_cam" => Some(ObsCommand::StartVirtualCam),
+        "stop_virtual_cam" => Some(ObsCommand::StopVirtualCam),
+        "trigger_transition" => Some(ObsCommand::TriggerStudioModeTransition),
+        "studio_mode_on" => Some(ObsCommand::SetStudioModeEnabled(true)),
+        "studio_mode_off" => Some(ObsCommand::SetStudioModeEnabled(false)),
+        "create_scene" => arg.clone().map(ObsCommand::CreateScene),
+        "remove_scene" => arg.clone().map(ObsCommand::RemoveScene),
+        "set_transition" => arg.clone().map(ObsCommand::SetCurrentSceneTransition),
+        _ => None,
+    };
+    if let Some(c) = cmd {
+        dispatch(&state, AdapterCommand::Obs(c));
+    }
+    format!("Dispatched OBS action: {}", action)
+}
+
 #[tauri::command]
 fn split_recording_file(state: State<ManagedState>) -> AppStateSnapshot {
     dispatch(&state, AdapterCommand::Obs(ObsCommand::CreateRecordChapter("Split Segment".into())));
@@ -1019,6 +1054,9 @@ pub fn run() {
             probe_libobs_sidecar,
             dispatch_obs_worker_command,
             split_recording_file,
+            send_obs_stream_caption,
+            remux_recording_to_mp4,
+            dispatch_obs_studio_command,
             start_headless_media_daemon,
             route_dante_crosspoint,
             trigger_ndi_ptz,

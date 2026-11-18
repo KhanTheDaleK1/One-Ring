@@ -56,6 +56,23 @@ pub enum ObsCommand {
     StartRecord,
     StopRecord,
     Refresh,
+    PauseRecord,
+    ResumeRecord,
+    StartVirtualCam,
+    StopVirtualCam,
+    StartReplayBuffer,
+    SaveReplayBuffer,
+    TriggerStudioModeTransition,
+    SetStudioModeEnabled(bool),
+    SetTBarPosition(f64),
+    SetCurrentSceneTransition(String),
+    SetCurrentSceneTransitionDuration(u32),
+    CreateScene(String),
+    RemoveScene(String),
+    SetInputMute { input_name: String, muted: bool },
+    SetInputVolumeDb { input_name: String, db: f64 },
+    SendStreamCaption(String),
+    OpenVideoMixProjector(String),
 }
 
 pub fn spawn(
@@ -269,6 +286,25 @@ async fn send_text(
         .map_err(|e| format!("OBS send failed: {e}"))
 }
 
+async fn ws_request(
+    ws: &mut tokio_tungstenite::WebSocketStream<
+        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+    >,
+    request_type: &str,
+    request_data: Option<Value>,
+    request_id: &str,
+) -> Result<(), String> {
+    let payload = json!({
+        "op": 6,
+        "d": {
+            "requestType": request_type,
+            "requestId": request_id,
+            "requestData": request_data.unwrap_or_else(|| json!({}))
+        }
+    });
+    send_text(ws, payload.to_string()).await
+}
+
 async fn send_command(
     ws: &mut tokio_tungstenite::WebSocketStream<
         tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
@@ -311,6 +347,23 @@ async fn send_command(
             send_text(ws, ObsRequest::stop_record().to_json()).await?;
             send_text(ws, ObsRequest::get_record_status().to_json()).await
         }
+        ObsCommand::PauseRecord => ws_request(ws, "PauseRecord", None, "pause_rec").await,
+        ObsCommand::ResumeRecord => ws_request(ws, "ResumeRecord", None, "resume_rec").await,
+        ObsCommand::StartVirtualCam => ws_request(ws, "StartVirtualCam", None, "start_vcam").await,
+        ObsCommand::StopVirtualCam => ws_request(ws, "StopVirtualCam", None, "stop_vcam").await,
+        ObsCommand::StartReplayBuffer => ws_request(ws, "StartReplayBuffer", None, "start_rb").await,
+        ObsCommand::SaveReplayBuffer => ws_request(ws, "SaveReplayBuffer", None, "save_rb").await,
+        ObsCommand::TriggerStudioModeTransition => ws_request(ws, "TriggerStudioModeTransition", None, "studio_trans").await,
+        ObsCommand::SetStudioModeEnabled(enabled) => ws_request(ws, "SetStudioModeEnabled", Some(json!({ "studioModeEnabled": enabled })), "set_studio").await,
+        ObsCommand::SetTBarPosition(pos) => ws_request(ws, "SetTBarPosition", Some(json!({ "position": pos, "release": false })), "tbar").await,
+        ObsCommand::SetCurrentSceneTransition(name) => ws_request(ws, "SetCurrentSceneTransition", Some(json!({ "transitionName": name })), "set_trans").await,
+        ObsCommand::SetCurrentSceneTransitionDuration(ms) => ws_request(ws, "SetCurrentSceneTransitionDuration", Some(json!({ "transitionDuration": ms })), "set_trans_dur").await,
+        ObsCommand::CreateScene(name) => ws_request(ws, "CreateScene", Some(json!({ "sceneName": name })), "create_scene").await,
+        ObsCommand::RemoveScene(name) => ws_request(ws, "RemoveScene", Some(json!({ "sceneName": name })), "remove_scene").await,
+        ObsCommand::SetInputMute { input_name, muted } => ws_request(ws, "SetInputMute", Some(json!({ "inputName": input_name, "inputMuted": muted })), "mute_in").await,
+        ObsCommand::SetInputVolumeDb { input_name, db } => ws_request(ws, "SetInputVolume", Some(json!({ "inputName": input_name, "inputVolumeDb": db })), "vol_in").await,
+        ObsCommand::SendStreamCaption(caption_text) => ws_request(ws, "SendStreamCaption", Some(json!({ "captionText": caption_text })), "caption").await,
+        ObsCommand::OpenVideoMixProjector(mix) => ws_request(ws, "OpenVideoMixProjector", Some(json!({ "videoMixType": mix })), "proj").await,
         ObsCommand::Refresh => {
             let batch = ObsRequestBatch::new(
                 initial_requests(),

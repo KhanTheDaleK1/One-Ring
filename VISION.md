@@ -13,7 +13,7 @@ Unified, cross-platform (**Windows & macOS**) control suite for church productio
    - **Cameras** (PTZ presets, pan/tilt/zoom, exposure/white balance, tally)
 
 ## Reverse-Engineering Inputs (`docs/re-findings/`)
-As REA decompiles each application in `/mnt/BCloud/Personal/Projects/church suite/`, protocol specifications, local IPC/WebSocket/OSC/HTTP APIs, discovery mechanisms, and authentication/handshake details are documented in `docs/re-findings/<app>.md` to inform clean, native integrations.
+As REA decompiles each application from reference production applications, protocol specifications, local IPC/WebSocket/OSC/HTTP APIs, discovery mechanisms, and authentication/handshake details are documented in `docs/re-findings/<app>.md` to inform clean, native integrations.
 
 ## UX & Architecture Principles
 - **Volunteer-First Simplicity**: Clean "Live Show" mode with big, unmistakable cues/macros ("Pre-Service", "Worship", "Sermon", "Go Live", "Emergency Mute") alongside an expandable "Engineer" view for deep mixer/Dante/camera tweaks.

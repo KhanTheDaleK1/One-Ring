@@ -32,7 +32,7 @@ export interface SourceDefinition {
 export interface SourceFilter {
   id: string;
   name: string;
-  type: "vst" | "au" | "gain" | "noise_suppress" | "compressor" | "chroma_key" | "color_correction" | "lut" | "crop_pad";
+  type: "vst" | "au" | "gain" | "noise_suppress" | "noise_gate" | "expander" | "compressor" | "basic_eq" | "invert_polarity" | "async_delay" | "chroma_key" | "luma_key" | "color_correction" | "lut" | "crop_pad" | "sharpness" | "scroll";
   enabled: boolean;
   settings: Record<string, unknown>;
 }
@@ -48,6 +48,26 @@ export interface SourceTransform {
   deinterlacing: "disable" | "discard" | "retro" | "blend" | "linear" | "yadif";
   flipH?: boolean;
   flipV?: boolean;
+  cropLeft?: number;
+  cropRight?: number;
+  cropTop?: number;
+  cropBottom?: number;
+  opacity?: number;
+}
+
+export interface ObsProfileSettings {
+  name: string;
+  baseResolution: string;
+  outputResolution: string;
+  fps: number;
+  videoEncoder: "h264_nvenc" | "h264_videotoolbox" | "libx264" | "av1_nvenc";
+  rateControl: "CBR" | "VBR" | "CQP";
+  bitrateKbps: number;
+  keyframeIntervalSec: number;
+  audioSampleRate: 44100 | 48000;
+  audioBitrateKbps: 128 | 160 | 192 | 320;
+  recordingFormat: "mkv" | "mp4" | "flv";
+  autoRemuxToMp4: boolean;
 }
 
 export interface SceneSourceItem {

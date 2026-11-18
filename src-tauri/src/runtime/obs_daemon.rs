@@ -532,3 +532,27 @@ impl ReplayBufferProcess {
         Ok("Replay Buffer armed — waiting for first 5s segment".into())
     }
 }
+
+/// Clean-room FFmpeg fast lossless container remux (`mkv`/`flv` -> `mp4` `-c copy -movflags +faststart`)
+pub fn remux_mkv_to_mp4(input_path: &str) -> Result<String, String> {
+    let bin = find_ffmpeg_binary().ok_or_else(|| "FFmpeg binary not found for auto-remux".to_string())?;
+    let p = Path::new(input_path);
+    if !p.exists() {
+        return Err(format!("Recording not found: {input_path}"));
+    }
+    let out = p.with_extension("mp4");
+    let status = Command::new(&bin)
+        .args([
+            "-y",
+            "-i", input_path,
+            "-c", "copy",
+            "-movflags", "+faststart",
+            &out.to_string_lossy(),
+        ])
+        .output()
+        .map_err(|e| format!("Failed to spawn FFmpeg remux: {e}"))?;
+    if !status.status.success() {
+        return Err(format!("FFmpeg remux failed: {}", String::from_utf8_lossy(&status.stderr)));
+    }
+    Ok(format!("Remuxed cleanly to {}", out.display()))
+}

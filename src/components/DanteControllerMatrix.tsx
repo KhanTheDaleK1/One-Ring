@@ -120,7 +120,7 @@ const DEFAULT_PREVIEW_ROUTES: DanteRoute[] = [
 function extractIpFromLabel(name: string, fallbackIndex: number): string {
   const match = name.match(/\b(\d{1,3}(?:\.\d{1,3}){3})\b/);
   if (match) return match[1];
-  return `10.1.24.${101 + (fallbackIndex % 120)}`;
+  return `192.168.1.${101 + (fallbackIndex % 120)}`;
 }
 
 function parseChanNumber(channelLabel: string, fallbackIndex: number): number {
@@ -261,7 +261,7 @@ export const DanteControllerMatrix: React.FC<DanteControllerMatrixProps> = ({
     sampleRate: 48,
     encoding: "PCM 24",
     latencyMs: 0.5,
-    ip: deviceIpMap[activeDevice] || "10.1.24.101",
+    ip: deviceIpMap[activeDevice] || "192.168.1.101",
   };
 
   const patchDeviceConfig = (patch: Partial<DeviceConfigState>) => {

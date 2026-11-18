@@ -23,18 +23,18 @@ export const EngineerView: React.FC<EngineerViewProps> = ({
   onAutoHealNdi,
   onFlashDanteIdentify,
 }) => {
-  const [tab, setTab] = useState<"broadcast" | "audio" | "dante" | "ndi" | "logs">("broadcast");
+  const [tab, setTab] = useState<"audio" | "dante" | "ndi" | "broadcast" | "logs">("audio");
   const [showFullX32, setShowFullX32] = useState(false);
 
   return (
-    <div style={{ padding: 20, maxWidth: 1220, margin: "0 auto" }}>
-      <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 16 }}>
+    <div style={{ padding: tab === "audio" ? "8px 12px" : 20, maxWidth: tab === "audio" ? "100%" : 1220, margin: "0 auto" }}>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: tab === "audio" ? 8 : 14 }}>
         {(
           [
-            ["broadcast", "Stream & Recording Outputs"],
-            ["audio", "X32 Console & Mic Safety"],
+            ["audio", "X32-Edit Console"],
             ["dante", "Dante Audio Matrix"],
             ["ndi", "NDI Video Matrix"],
+            ["broadcast", "Stream & Recording Outputs"],
             ["logs", "Activity Log"],
           ] as const
         ).map(([id, label]) => (
@@ -147,57 +147,69 @@ export const EngineerView: React.FC<EngineerViewProps> = ({
       )}
 
       {tab === "audio" && (
-        <div className="card" style={{ padding: 20 }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
-            <div>
-              <h3 style={{ margin: 0 }}>Behringer X32 OSC (:10023) & Dante Conmon Signal Truth</h3>
-              <p style={{ margin: "4px 0 0", color: "#9CA3AF", fontSize: 13 }}>
-                Test the Silent Pastor Mic detector by injecting a simulated `0xFE` (`&lt;-90 dBFS`) beltpack mute while DCA 1 is unmuted.
-              </p>
+        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+          <div
+            style={{
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+              padding: "6px 12px",
+              borderRadius: 6,
+              background: "#141821",
+              border: "1px solid #242A36",
+              gap: 10,
+              flexWrap: "wrap",
+            }}
+          >
+            <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+              <strong style={{ fontSize: 12.5, color: "#E2E8F0" }}>Behringer X32-Edit (:10023)</strong>
+              {state.dcas.map((d) => (
+                <button
+                  key={d.id}
+                  type="button"
+                  onClick={() => onToggleDcaMute(d.id)}
+                  title={`${d.danteTxChannel}: ${d.signalDb} dBFS — Click to Mute/Unmute DCA ${d.number}`}
+                  style={{
+                    height: 24,
+                    padding: "0 8px",
+                    borderRadius: 4,
+                    fontSize: 11,
+                    fontWeight: 700,
+                    cursor: "pointer",
+                    background: d.muted ? "#7F1D1D" : "#065F46",
+                    border: `1px solid ${d.muted ? "#EF4444" : "#10B981"}`,
+                    color: "#FFFFFF",
+                  }}
+                >
+                  DCA {d.number} {d.name}: {d.muted ? "MUTE" : `${d.levelDb}dB`}
+                </button>
+              ))}
             </div>
             <button
               type="button"
               className="btn"
               onClick={onToggleBeltpackFault}
               style={{
-                height: 40,
-                padding: "0 14px",
+                height: 26,
+                padding: "0 10px",
+                fontSize: 11,
                 background: state.beltpackFaultSimulated ? "#7F1D1D" : "#1C222D",
-                borderColor: state.beltpackFaultSimulated ? "#EF4444" : "#3B82F6",
+                borderColor: state.beltpackFaultSimulated ? "#EF4444" : "#334155",
               }}
             >
-              {state.beltpackFaultSimulated
-                ? "Clear Simulated Pastor Beltpack Fault"
-                : "Simulate Pastor Beltpack Fault (Dante 0xFE)"}
+              {state.beltpackFaultSimulated ? "Clear Pastor Fault" : "Test Beltpack Fault (0xFE)"}
             </button>
           </div>
 
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12 }}>
-            {state.dcas.map((d) => (
-              <div key={d.id} style={{ padding: 14, borderRadius: 10, background: "#1C222D", border: "1px solid #2A3241" }}>
-                <div style={{ fontWeight: 700, marginBottom: 4 }}>DCA {d.number}: {d.name}</div>
-                <div className="mono" style={{ fontSize: 12, color: "#9CA3AF", marginBottom: 4 }}>
-                  Fader: {d.levelDb} dB (Bounds: {d.minDb}..+{d.maxDb})
-                </div>
-                <div className="mono" style={{ fontSize: 11, color: d.signalPresent ? "#34D399" : "#F87171", marginBottom: 10 }}>
-                  {d.danteTxChannel}: {d.signalDb} dBFS
-                </div>
-                <button
-                  type="button"
-                  className="btn"
-                  onClick={() => onToggleDcaMute(d.id)}
-                  style={{
-                    width: "100%",
-                    height: 38,
-                    background: d.muted ? "#7F1D1D" : "#065F46",
-                    borderColor: d.muted ? "#EF4444" : "#10B981",
-                  }}
-                >
-                  {d.muted ? "MUTED" : "UNMUTED (LIVE)"}
-                </button>
-              </div>
-            ))}
-          </div>
+          <X32FullConsoleModal
+            embedded
+            isOpen={true}
+            onClose={() => {}}
+            onPopout={() => setShowFullX32(true)}
+            onSendX32Command={(addr, val) => {
+              if (typeof val === "number") sendX32Osc(addr, val);
+            }}
+          />
         </div>
       )}
 
@@ -339,13 +351,17 @@ export const EngineerView: React.FC<EngineerViewProps> = ({
           </div>
         </div>
       )}
-      <DanteControllerMatrix
-        routes={state.danteRoutes}
-        onRoutePatch={(rxIp, rxChanId, txChan, txDev) => {
-          routeDanteCrosspoint(rxIp, rxChanId, txChan, txDev);
-        }}
-        onIdentifyDevice={(deviceIp) => onFlashDanteIdentify(deviceIp)}
-      />
+      {tab === "dante" && (
+        <div style={{ marginTop: 14 }}>
+          <DanteControllerMatrix
+            routes={state.danteRoutes}
+            onRoutePatch={(rxIp, rxChanId, txChan, txDev) => {
+              routeDanteCrosspoint(rxIp, rxChanId, txChan, txDev);
+            }}
+            onIdentifyDevice={(deviceIp) => onFlashDanteIdentify(deviceIp)}
+          />
+        </div>
+      )}
 
       <X32FullConsoleModal
         isOpen={showFullX32}

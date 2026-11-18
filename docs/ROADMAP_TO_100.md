@@ -7,7 +7,7 @@ This document tracks the systematic closure of every gap identified in the REA b
 - [x] **NDI 6 Discovery Runtime Adapter (`src-tauri/src/runtime/ndi_adapter.rs`)**: Live TCP `:5959` NDI 6 Receiver Listener, source/receiver graph hydration, `<control_receiver>` source switching, and PTZ metadata command dispatch.
 - [x] **Dedicated Output Displays (`src/components/SecondaryOutputWindow.tsx`)**: Multi-window BroadcastChannel sync for independent FOH Fullscreen Display, Livestream Lower Thirds Keyed Output, and Stage Confidence Display windows.
 
-## Phase 2 — Assigned to Worker Agent Team (`opencode` / `rea-decompiler`)
+## Phase 2 — Assigned to Worker Agent Team (Rust/Tauri Worker Agents)
 - **Host Media & Audio Plugin Discovery**:
   - `scan_installed_audio_plugins`: Recursively scan OS VST3 / AU / VST2 directories on Windows & macOS so `SourceFiltersModal` populates native plugins automatically.
   - `list_capture_hardware`: Enumerate OS cameras, audio I/O endpoints, and secondary monitors so `SourceSettingsModal` and Secondary Outputs snap automatically to projector monitors.

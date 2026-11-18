@@ -1,8 +1,8 @@
 [package]
 name = "one-ring"
-version = "0.3.1"
+version = "0.3.2"
 description = "Unified cross-platform church production controller (FOH Slides, Multi-Broadcast, X32, Dante, NDI, PTZ)"
-authors = ["Evan Beechem"]
+authors = ["One Ring Contributors"]
 edition = "2021"
 
 [lib]
