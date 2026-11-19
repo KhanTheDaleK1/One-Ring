@@ -18,6 +18,31 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DualStreamTransport {
+    LoopbackTcp(String),
+    LocalPipe(String),
+}
+
+impl DualStreamTransport {
+    pub fn loopback_default() -> Self {
+        Self::LoopbackTcp(DUAL_STREAM_TCP_ENDPOINT.to_string())
+    }
+
+    pub fn local_pipe_default() -> Self {
+        // Construct a neutral Windows pipe path without embedding restricted product names.
+        let path = String::from("\\\\.\\pipe\\onering_media_bridge");
+        Self::LocalPipe(path)
+    }
+
+    pub fn endpoint(&self) -> &str {
+        match self {
+            DualStreamTransport::LoopbackTcp(addr) => addr.as_str(),
+            DualStreamTransport::LocalPipe(path) => path.as_str(),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct DualStreamConfig {
     pub endpoint: String,
@@ -345,5 +370,22 @@ mod tests {
         .unwrap();
         handle_response(response, &state, &events);
         assert!(sink.snapshot().logs.iter().any(|l| l.contains("-32601")));
+    }
+
+    #[test]
+    fn dual_stream_transport_variants_expose_endpoints() {
+        let tcp = DualStreamTransport::LoopbackTcp("127.0.0.1:28194".into());
+        assert_eq!(tcp.endpoint(), "127.0.0.1:28194");
+
+        let pipe = DualStreamTransport::LocalPipe(String::from("\\\\.\\pipe\\custom_bridge"));
+        assert!(pipe.endpoint().contains("\\\\.\\pipe\\"));
+
+        let def_tcp = DualStreamTransport::loopback_default();
+        assert!(matches!(def_tcp, DualStreamTransport::LoopbackTcp(_)));
+        assert_eq!(def_tcp.endpoint(), DUAL_STREAM_TCP_ENDPOINT);
+
+        let def_pipe = DualStreamTransport::local_pipe_default();
+        assert!(matches!(def_pipe, DualStreamTransport::LocalPipe(_)));
+        assert!(def_pipe.endpoint().starts_with("\\\\.\\pipe\\"));
     }
 }

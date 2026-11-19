@@ -8,10 +8,11 @@
 //! Spec: `docs/re-findings/slide_http.md`; codec: [`crate::protocols::slide_http`].
 
 use crate::protocols::slide_http::{
-    catalog_path, clear_group_path, goto_slide_path, playlist_trigger_path, resource_path,
-    stage_message_path, timer_operation_path, transport_path, transport_seek_body,
-    transport_seek_path, SlideHttpUpdate, StatusStreamDecoder, StatusUpdateSubscription,
-    WS_PATH,
+    catalog_path, clear_group_path, goto_slide_path, parse_presentation_response,
+    playlist_trigger_path, presentation_ptr_query, resource_path, stage_message_path,
+    timer_operation_path, transport_path, transport_seek_body, transport_seek_path,
+    DiscoveredPresentationService, SlideHttpUpdate, StatusStreamDecoder,
+    StatusUpdateSubscription, MDNS_MULTICAST, MDNS_PORT, WS_PATH,
 };
 use crate::runtime::events::{state_patch, EventSink};
 use crate::runtime::health::HealthReporter;
@@ -22,8 +23,58 @@ use serde_json::{json, Value};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpStream;
+use tokio::net::{TcpStream, UdpSocket};
 use tokio::sync::mpsc;
+
+/// How long a zero-configuration discovery attempt waits for a PTR/SRV/A answer set.
+const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// Send one RFC 6762 PTR query and return the first HTTP presentation responder found.
+///
+/// The QU bit in the query asks responders to answer from our ephemeral source port, so no
+/// privileged bind on the shared mDNS port is needed.
+pub async fn discover_presentation_service(
+    timeout: Duration,
+) -> Result<DiscoveredPresentationService, String> {
+    let socket = UdpSocket::bind("0.0.0.0:0")
+        .await
+        .map_err(|e| format!("mDNS bind failed: {e}"))?;
+    socket
+        .send_to(&presentation_ptr_query(), (MDNS_MULTICAST, MDNS_PORT))
+        .await
+        .map_err(|e| format!("mDNS query send failed: {e}"))?;
+
+    let collect = async {
+        let mut buf = [0u8; 9000];
+        loop {
+            let (n, _) = socket
+                .recv_from(&mut buf)
+                .await
+                .map_err(|e| format!("mDNS read failed: {e}"))?;
+            if let Ok(services) = parse_presentation_response(&buf[..n]) {
+                if let Some(service) = services.into_iter().next() {
+                    return Ok(service);
+                }
+            }
+        }
+    };
+
+    tokio::time::timeout(timeout, collect)
+        .await
+        .map_err(|_| "HTTP presentation discovery timed out".to_string())?
+}
+
+/// Resolve a dialable endpoint: use the static host/port unless discovery is requested.
+pub async fn resolve_http_endpoint(
+    config: &SlideHttpConfig,
+    prefer_discovery: bool,
+) -> Result<String, String> {
+    if !prefer_discovery {
+        return Ok(config.endpoint());
+    }
+    let service = discover_presentation_service(DISCOVERY_TIMEOUT).await?;
+    Ok(service.endpoint())
+}
 
 #[derive(Debug, Clone)]
 pub struct SlideHttpConfig {

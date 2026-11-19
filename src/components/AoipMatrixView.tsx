@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import {
   Check,
   Lock,
@@ -31,6 +32,32 @@ interface DeviceConfigState {
   encoding: "PCM 24";
   latencyMs: AoipLatencyMs;
   ip: string;
+}
+
+interface DiscoveredAoipDevice {
+  name: string;
+  host: string;
+  ip: string;
+  port: number;
+  channels: number;
+}
+
+interface DevicesEventPayload {
+  devices?: DiscoveredAoipDevice[];
+  mapping?: Record<string, string>;
+}
+
+interface MetersEventPayload {
+  source?: string;
+  device?: string;
+  name?: string;
+  sequence?: number;
+  channels?: Array<{
+    index?: number;
+    channel?: number;
+    dbfs?: number | null;
+    db?: number | null;
+  }>;
 }
 
 interface TxColumn {
@@ -131,6 +158,39 @@ function parseChanNumber(channelLabel: string, fallbackIndex: number): number {
   return fallbackIndex;
 }
 
+function normalizeDeviceName(name: string): string {
+  return name.trim().toLowerCase().replace(/\s+/g, " ").replace(/[^a-z0-9 ._-]/g, "");
+}
+
+function isUsableIp(ip: unknown): ip is string {
+  if (typeof ip !== "string") return false;
+  const parts = ip.split(".");
+  return parts.length === 4 && parts.every((p) => /^\d{1,3}$/.test(p) && Number(p) <= 255);
+}
+
+/** Resolve a matrix device label to a genuinely discovered IP; never invent one. */
+function findDiscoveredIp(
+  deviceName: string,
+  devices: DiscoveredAoipDevice[],
+  mapping: Record<string, string>
+): string {
+  const normalized = normalizeDeviceName(deviceName);
+  if (!normalized) return "";
+
+  for (const [name, ip] of Object.entries(mapping)) {
+    if (isUsableIp(ip) && normalizeDeviceName(name) === normalized) return ip;
+  }
+  for (const device of devices) {
+    if (!isUsableIp(device.ip)) continue;
+    const name = normalizeDeviceName(device.name || "");
+    const host = normalizeDeviceName(device.host || "");
+    if (name === normalized || host === normalized) return device.ip;
+    if (name && (name.includes(normalized) || normalized.includes(name))) return device.ip;
+    if (host && (host.includes(normalized) || normalized.includes(host))) return device.ip;
+  }
+  return "";
+}
+
 export const AoipMatrixView: React.FC<AoipMatrixViewProps> = ({
   routes,
   onRoutePatch,
@@ -149,10 +209,76 @@ export const AoipMatrixView: React.FC<AoipMatrixViewProps> = ({
   const [optimisticPatches, setOptimisticPatches] = useState<
     Record<string, { txDevice: string; txChannel: string; rxStatus: AoipRoute["rxStatus"] }>
   >({});
+  const [discoveredDevices, setDiscoveredDevices] = useState<DiscoveredAoipDevice[]>([]);
+  const [deviceIpMapping, setDeviceIpMapping] = useState<Record<string, string>>({});
+  const [meterPeaks, setMeterPeaks] = useState<Record<string, number>>({});
 
   useEffect(() => {
     setOptimisticPatches({});
   }, [routes]);
+
+  // Hydrate real discovered IPs and live dBFS peaks from the AoIP runtime (Tauri only).
+  useEffect(() => {
+    if (typeof window === "undefined" || !("__TAURI_INTERNALS__" in window)) return;
+    let disposed = false;
+    const unlisteners: UnlistenFn[] = [];
+    const keep = (promise: Promise<UnlistenFn>) => {
+      promise
+        .then((fn) => {
+          if (disposed) fn();
+          else unlisteners.push(fn);
+        })
+        .catch(() => {});
+    };
+
+    keep(
+      listen<DevicesEventPayload>("aoip://devices", (event) => {
+        if (disposed) return;
+        const payload = event.payload || {};
+        setDiscoveredDevices(Array.isArray(payload.devices) ? payload.devices : []);
+        setDeviceIpMapping(
+          payload.mapping && typeof payload.mapping === "object" ? payload.mapping : {}
+        );
+      })
+    );
+
+    keep(
+      listen<MetersEventPayload>("aoip://meters", (event) => {
+        if (disposed) return;
+        const payload = event.payload || {};
+        const channels = Array.isArray(payload.channels) ? payload.channels : [];
+        const device =
+          typeof payload.device === "string"
+            ? payload.device
+            : typeof payload.name === "string"
+            ? payload.name
+            : typeof payload.source === "string"
+            ? payload.source
+            : "";
+        setMeterPeaks((prev) => {
+          const next = { ...prev };
+          for (const ch of channels) {
+            const channel =
+              typeof ch.channel === "number"
+                ? ch.channel
+                : typeof ch.index === "number"
+                ? ch.index + 1
+                : 0;
+            const db = typeof ch.dbfs === "number" ? ch.dbfs : typeof ch.db === "number" ? ch.db : null;
+            if (!channel || db === null || !Number.isFinite(db)) continue;
+            next[`*:${channel}`] = db;
+            if (device) next[`${normalizeDeviceName(device)}:${channel}`] = db;
+          }
+          return next;
+        });
+      })
+    );
+
+    return () => {
+      disposed = true;
+      unlisteners.forEach((fn) => fn());
+    };
+  }, []);
 
   const showNotice = (msg: string) => {
     setNoticeMsg(msg);
@@ -200,7 +326,11 @@ export const AoipMatrixView: React.FC<AoipMatrixViewProps> = ({
 
     const ipMap: Record<string, string> = {};
     devOrder.forEach((dev) => {
-      ipMap[dev] = deviceConfigs[dev]?.ip || extractIpFromLabel(dev);
+      // Only fill empty IPs with addresses actually reported by mDNS discovery.
+      ipMap[dev] =
+        deviceConfigs[dev]?.ip ||
+        extractIpFromLabel(dev) ||
+        findDiscoveredIp(dev, discoveredDevices, deviceIpMapping);
     });
 
     const q = searchQuery.trim().toLowerCase();
@@ -225,16 +355,20 @@ export const AoipMatrixView: React.FC<AoipMatrixViewProps> = ({
           if (q && !device.toLowerCase().includes(q) && !r.rxChannel.toLowerCase().includes(q)) return;
           const rxKey = `${device}:::${r.rxChannel}`;
           const opt = optimisticPatches[rxKey];
+          const channelNumber = parseChanNumber(r.rxChannel, idx + 1);
+          const livePeak =
+            meterPeaks[`${normalizeDeviceName(device)}:${channelNumber}`] ??
+            meterPeaks[`*:${channelNumber}`];
           rows.push({
             key: rxKey,
             device,
             channel: r.rxChannel,
             rxIp: ipMap[device],
-            rxChanId: parseChanNumber(r.rxChannel, idx + 1),
+            rxChanId: channelNumber,
             txDevice: opt ? opt.txDevice : r.txDevice,
             txChannel: opt ? opt.txChannel : r.txChannel,
             rxStatus: opt ? opt.rxStatus : r.rxStatus,
-            signalDbfs: r.signalDbfs,
+            signalDbfs: typeof livePeak === "number" ? livePeak : r.signalDbfs,
             identifyFlashing: r.identifyFlashing || Boolean(identifyingLocal[device]),
           });
         });
@@ -249,7 +383,17 @@ export const AoipMatrixView: React.FC<AoipMatrixViewProps> = ({
       allDeviceNames: devOrder,
       deviceIpMap: ipMap,
     };
-  }, [effectiveRoutes, showSpareChannels, deviceConfigs, searchQuery, optimisticPatches, identifyingLocal]);
+  }, [
+    effectiveRoutes,
+    showSpareChannels,
+    deviceConfigs,
+    searchQuery,
+    optimisticPatches,
+    identifyingLocal,
+    discoveredDevices,
+    deviceIpMapping,
+    meterPeaks,
+  ]);
 
   const activeDevice =
     selectedDevice && allDeviceNames.includes(selectedDevice)
@@ -260,7 +404,7 @@ export const AoipMatrixView: React.FC<AoipMatrixViewProps> = ({
     sampleRate: 48,
     encoding: "PCM 24",
     latencyMs: 0.5,
-    ip: deviceIpMap[activeDevice] || "192.168.1.101",
+    ip: deviceIpMap[activeDevice] || "",
   };
 
   const patchDeviceConfig = (patch: Partial<DeviceConfigState>) => {
@@ -440,6 +584,26 @@ export const AoipMatrixView: React.FC<AoipMatrixViewProps> = ({
               }}
             >
               Sanctuary Preview Topology
+            </span>
+          )}
+
+          {discoveredDevices.length > 0 && (
+            <span
+              style={{
+                fontSize: 11,
+                fontWeight: 700,
+                padding: "3px 8px",
+                borderRadius: 6,
+                background: "rgba(59, 130, 246, 0.15)",
+                border: "1px solid #3B82F6",
+                color: "#93C5FD",
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 4,
+              }}
+            >
+              <Radio size={12} />
+              mDNS: {discoveredDevices.length} device{discoveredDevices.length === 1 ? "" : "s"}
             </span>
           )}
 
@@ -1034,6 +1198,34 @@ export const AoipMatrixView: React.FC<AoipMatrixViewProps> = ({
                                   }}
                                 >
                                   {row.signalDbfs.toFixed(1)}dB
+                                </span>
+                                <span
+                                  title={`Live peak: ${row.signalDbfs.toFixed(1)} dBFS`}
+                                  style={{
+                                    width: 42,
+                                    height: 4,
+                                    borderRadius: 2,
+                                    background: "#1E2533",
+                                    display: "inline-block",
+                                    overflow: "hidden",
+                                  }}
+                                >
+                                  <span
+                                    style={{
+                                      display: "block",
+                                      width: `${Math.max(
+                                        0,
+                                        Math.min(100, ((row.signalDbfs + 60) / 60) * 100)
+                                      )}%`,
+                                      height: "100%",
+                                      background:
+                                        row.signalDbfs > -6
+                                          ? "#F59E0B"
+                                          : row.signalDbfs > -30
+                                          ? "#10B981"
+                                          : "#3B82F6",
+                                    }}
+                                  />
                                 </span>
                                 <span
                                   style={{

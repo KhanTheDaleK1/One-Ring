@@ -14,13 +14,216 @@ import {
   BookOpen,
   Clock,
   Upload,
+  PenLine,
+  LayoutTemplate,
 } from "lucide-react";
 import type { AppStateSnapshot, ServiceSong, SlideCue, SlideTheme } from "../types";
 import { LyricImportModal } from "./LyricImportModal";
 import { SongCatalogModal, type SongLibraryResult } from "./SongCatalogModal";
+import {
+  SlideEditorModal,
+  isVideoBackground,
+  toEditableSlide,
+  type EditableSlide,
+} from "./SlideEditorModal";
 import { importSlideArchive, bridge } from "../bridge";
 import { BibleLookupModal } from "./BibleLookupModal";
 import { TimersAndAlertsModal } from "./TimersAndAlertsModal";
+
+type StageLayoutMode = "classic" | "clock_focus" | "notes_focus";
+
+const STAGE_LAYOUT_KEY = "onering_stage_layout";
+const SLIDE_EXTRAS_KEY = "onering_slide_editor_extras";
+const STAGE_LAYOUTS: StageLayoutMode[] = ["classic", "clock_focus", "notes_focus"];
+
+function cleanImportedLine(raw: string): string {
+  return raw
+    .replace(/\[[^\]]+\]/g, "")
+    .replace(/\{[^\}]*\}/g, "")
+    .replace(/<[^>]+>/g, "")
+    .replace(/[\u00A0\uFEFF]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function sectionLabel(raw: string): string {
+  const value = (raw || "").trim();
+  const match = value.match(/^([A-Za-z]+)\s*(\d*)$/);
+  if (!match) return value || "Song";
+  const labels: Record<string, string> = {
+    v: "Verse",
+    c: "Chorus",
+    b: "Bridge",
+    p: "Pre-Chorus",
+    t: "Tag",
+    i: "Intro",
+    o: "Outro",
+    e: "Ending",
+  };
+  const word = labels[match[1].toLowerCase()] || match[1];
+  return match[2] ? `${word} ${match[2]}` : word;
+}
+
+function blocksToSlides(blocks: string[], title: string): EditableSlide[] {
+  const slides: EditableSlide[] = [];
+  const seen = new Set<string>();
+  for (const block of blocks) {
+    const lines = block
+      .split(/\r?\n/)
+      .map(cleanImportedLine)
+      .filter((line) => line.length > 0);
+    for (let i = 0; i < lines.length; i += 2) {
+      const text = lines.slice(i, i + 2).join("\n");
+      const key = text.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const number = slides.length + 1;
+      slides.push(
+        toEditableSlide({
+          id: `import-${Date.now()}-${number}`,
+          number,
+          section: "Slide",
+          title: `${title} - ${number}`,
+          text,
+          kind: "lyrics",
+        })
+      );
+    }
+  }
+  return slides;
+}
+
+/** Parse an OpenLyrics song without trusting element prefixes or parser-specific namespace aliases. */
+function parseOpenLyrics(text: string, fallbackTitle: string): { title: string; slides: EditableSlide[] } | null {
+  const doc = new DOMParser().parseFromString(text, "application/xml");
+  if (doc.getElementsByTagName("parsererror").length > 0) return null;
+  const byLocalName = (root: Document | Element, name: string): Element[] =>
+    Array.from(root.getElementsByTagName("*")).filter(
+      (element) => (element.localName || element.nodeName.replace(/^.*:/, "")) === name
+    );
+
+  const titleText = cleanImportedLine(byLocalName(doc, "title")[0]?.textContent || "");
+  const title = titleText || fallbackTitle;
+  const verses = byLocalName(doc, "verse");
+  const slides: EditableSlide[] = [];
+
+  for (const verse of verses) {
+    const section = sectionLabel(
+      verse.getAttribute("name") || verse.getAttribute("type") || "Verse"
+    );
+    const lineContainers = byLocalName(verse, "lines");
+    const sources = lineContainers.length > 0 ? lineContainers : [verse];
+    const blocks: string[] = [];
+
+    for (const container of sources) {
+      let lines = "";
+      const walk = (node: Node) => {
+        if (node.nodeType === Node.TEXT_NODE) {
+          lines += node.textContent || "";
+        } else if (node.nodeType === Node.ELEMENT_NODE) {
+          const element = node as Element;
+          if ((element.localName || element.nodeName).toLowerCase() === "br") {
+            lines += "\n";
+          } else {
+            Array.from(element.childNodes).forEach(walk);
+          }
+        }
+      };
+      Array.from(container.childNodes).forEach(walk);
+      const cleaned = lines
+        .split(/\r?\n/)
+        .map(cleanImportedLine)
+        .filter(Boolean)
+        .join("\n");
+      if (cleaned) blocks.push(cleaned);
+    }
+
+    for (const block of blocks) {
+      const lines = block.split("\n").map(cleanImportedLine).filter(Boolean);
+      for (let i = 0; i < lines.length; i += 2) {
+        const number = slides.length + 1;
+        slides.push(
+          toEditableSlide({
+            id: `openlyrics-${Date.now()}-${number}`,
+            number,
+            section,
+            title: `${title} - ${number}`,
+            text: lines.slice(i, i + 2).join("\n"),
+            kind: "lyrics",
+          })
+        );
+      }
+    }
+  }
+
+  return slides.length > 0 ? { title, slides } : null;
+}
+
+function decodeVarint(bytes: Uint8Array, start: number): { value: number; next: number } | null {
+  let value = 0;
+  let shift = 0;
+  let pos = start;
+  while (pos < bytes.length && shift < 35) {
+    const byte = bytes[pos++];
+    value += (byte & 0x7f) * Math.pow(2, shift);
+    if ((byte & 0x80) === 0) return { value, next: pos };
+    shift += 7;
+  }
+  return null;
+}
+
+function isReadableBlock(value: string): boolean {
+  const text = value.trim();
+  if (text.length < 3 || text.length > 500) return false;
+  if (/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/.test(text)) return false;
+  if (/^(https?:|data:|file:|\{|\[|<)/i.test(text)) return false;
+  const letters = (text.match(/[\p{L}\p{N}]/gu) || []).length;
+  return letters / text.length > 0.55;
+}
+
+/** Clean-room readable-string recovery from a length-delimited binary deck. */
+function scanBinaryDeck(bytes: Uint8Array): string[] {
+  const decoder = new TextDecoder("utf-8");
+  const found: string[] = [];
+  let offset = 0;
+
+  while (offset + 1 < bytes.length) {
+    const key = decodeVarint(bytes, offset);
+    const fieldNumber = key ? Math.floor(key.value / 8) : 0;
+    const wireType = key ? key.value % 8 : -1;
+    if (!key || wireType !== 2 || fieldNumber === 0) {
+      offset += 1;
+      continue;
+    }
+    const length = decodeVarint(bytes, key.next);
+    if (!length || length.value < 3 || length.value > 4096) {
+      offset += 1;
+      continue;
+    }
+    const start = length.next;
+    const end = start + length.value;
+    if (end > bytes.length) {
+      offset += 1;
+      continue;
+    }
+    const text = decoder.decode(bytes.subarray(start, end));
+    if (isReadableBlock(text)) {
+      found.push(text);
+      offset = end;
+    } else {
+      offset += 1;
+    }
+  }
+
+  if (found.length === 0) {
+    const runs = decoder.decode(bytes).match(/[ -~\u00A0-\uFFFF]{4,}/g) || [];
+    for (const run of runs) {
+      if (isReadableBlock(run)) found.push(run);
+    }
+  }
+
+  return found;
+}
 
 interface SlidesCanvasViewProps {
   state: AppStateSnapshot;
@@ -71,6 +274,9 @@ export const SlidesCanvasView: React.FC<SlidesCanvasViewProps> = ({
   const [stageAlertMsg, setStageAlertMsg] = useState<string>("");
   const [stageAlertActive, setStageAlertActive] = useState<boolean>(false);
   const [timerLabel, setTimerLabel] = useState<string>("Countdown Ready");
+  const [showSlideEditor, setShowSlideEditor] = useState(false);
+  const [editorInitialIndex, setEditorInitialIndex] = useState(0);
+  const [stageLayout, setStageLayout] = useState<StageLayoutMode>("classic");
   const fileImportRef = React.useRef<HTMLInputElement | null>(null);
 
   const handleFileImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -115,8 +321,27 @@ export const SlidesCanvasView: React.FC<SlidesCanvasViewProps> = ({
       return;
     }
 
+    if (lowerName.endsWith(".xml")) {
+      const parsed = parseOpenLyrics(await file.text(), baseName);
+      if (parsed && parsed.slides.length > 0) {
+        onImportSong(parsed.title, parsed.slides);
+        setImportNotice(`Imported ${parsed.slides.length} slide(s) from OpenLyrics song "${parsed.title}"`);
+      } else {
+        setImportNotice("No OpenLyrics <title>/<verse><lines> content was found in this XML file.");
+      }
+      e.target.value = "";
+      return;
+    }
+
     if (lowerName.endsWith(".pro")) {
-      setImportNotice("SlideHttp .pro files are binary protobuf bundles; export as .txt / ChordPro (.cho) to import.");
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      const recovered = blocksToSlides(scanBinaryDeck(bytes), baseName);
+      if (recovered.length > 0) {
+        onImportSong(baseName, recovered);
+        setImportNotice(`Recovered ${recovered.length} editable slide(s) from binary deck ${file.name}`);
+      } else {
+        setImportNotice(`No readable slide text blocks were found in ${file.name}.`);
+      }
       e.target.value = "";
       return;
     }
@@ -166,6 +391,70 @@ export const SlidesCanvasView: React.FC<SlidesCanvasViewProps> = ({
 
   const patchTheme = <K extends keyof SlideTheme>(key: K, val: SlideTheme[K]) => {
     onUpdateTheme({ ...theme, [key]: val });
+  };
+
+  const activeSong = (state.slides.songs || []).find((song) => song.id === state.slides.activeSongId);
+  const editorSourceSlides: SlideCue[] =
+    activeSong && activeSong.slides.length > 0 ? activeSong.slides : slides;
+
+  // Stage layout is shared with the confidence output window through storage + broadcast.
+  useEffect(() => {
+    const read = (): StageLayoutMode | null => {
+      try {
+        const raw = localStorage.getItem(STAGE_LAYOUT_KEY);
+        return raw && STAGE_LAYOUTS.includes(raw as StageLayoutMode) ? (raw as StageLayoutMode) : null;
+      } catch {
+        return null;
+      }
+    };
+    if (read()) setStageLayout(read() as StageLayoutMode);
+    const onStorage = (ev: StorageEvent) => {
+      if (ev.key === STAGE_LAYOUT_KEY && ev.newValue && STAGE_LAYOUTS.includes(ev.newValue as StageLayoutMode)) {
+        setStageLayout(ev.newValue as StageLayoutMode);
+      }
+    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, []);
+
+  const applyStageLayout = (layout: StageLayoutMode) => {
+    setStageLayout(layout);
+    try {
+      localStorage.setItem(STAGE_LAYOUT_KEY, layout);
+      const channel = new BroadcastChannel("onering_display_sync");
+      channel.postMessage({ type: "STAGE_LAYOUT_UPDATE", layout });
+      channel.close();
+    } catch {}
+    onUpdateTheme({ ...theme, stageLayout: layout } as SlideTheme);
+  };
+
+  const openSlideEditor = (index?: number) => {
+    const currentIndex = slides.findIndex((slide) => slide.number === state.slides.currentSlide);
+    setEditorInitialIndex(Math.max(0, index ?? currentIndex));
+    setShowSlideEditor(true);
+  };
+
+  const applySlideEditorResult = (
+    title: string,
+    editedSlides: EditableSlide[],
+    editedTheme: SlideTheme
+  ) => {
+    try {
+      const payload = {
+        slides: editedSlides,
+        theme: editedTheme,
+        stageLayout,
+        updatedMs: Date.now(),
+      };
+      localStorage.setItem(SLIDE_EXTRAS_KEY, JSON.stringify(payload));
+      const channel = new BroadcastChannel("onering_display_sync");
+      channel.postMessage({ type: "SLIDE_EXTRAS_UPDATE", ...payload });
+      channel.close();
+    } catch {}
+    // Theme first: the import handler applies its functional state update on top of it.
+    onUpdateTheme(editedTheme);
+    onImportSong(title, editedSlides);
+    setImportNotice(`Applied ${editedSlides.length} slide(s) to "${title}"`);
   };
 
   // Keyboard arrow navigation when in Slides view (Left/Right or Up/Down)
@@ -368,6 +657,52 @@ export const SlidesCanvasView: React.FC<SlidesCanvasViewProps> = ({
 
           <button
             type="button"
+            onClick={() => openSlideEditor()}
+            title="Open the WYSIWYG slide and theme editor"
+            style={{
+              height: 34,
+              padding: "0 12px",
+              background: showSlideEditor ? "#7C3AED" : "#1C222D",
+              border: `1px solid ${showSlideEditor ? "#A78BFA" : "#2E3746"}`,
+              color: "#FFFFFF",
+              borderRadius: 6,
+              cursor: "pointer",
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
+              fontSize: 12,
+              fontWeight: 600,
+            }}
+          >
+            <PenLine size={13} /> Edit Slides (WYSIWYG)
+          </button>
+
+          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <LayoutTemplate size={13} color="#38BDF8" />
+            <select
+              aria-label="Stage display layout"
+              title="Stage Display layout mode"
+              value={stageLayout}
+              onChange={(e) => applyStageLayout(e.target.value as StageLayoutMode)}
+              style={{
+                height: 34,
+                background: "#1C222D",
+                border: "1px solid #2E3746",
+                color: "#E2E8F0",
+                borderRadius: 6,
+                padding: "0 6px",
+                fontSize: 11.5,
+                fontWeight: 600,
+              }}
+            >
+              <option value="classic">Stage: Classic</option>
+              <option value="clock_focus">Stage: Clock Focus</option>
+              <option value="notes_focus">Stage: Notes Focus</option>
+            </select>
+          </div>
+
+          <button
+            type="button"
             onClick={() => onSlideAction("clear")}
             style={{
               height: 34,
@@ -540,7 +875,7 @@ export const SlidesCanvasView: React.FC<SlidesCanvasViewProps> = ({
             <input
               ref={fileImportRef}
               type="file"
-              accept=".txt,.cho,.chordpro,.usr,.pro,.ewsx"
+              accept=".txt,.cho,.chordpro,.usr,.pro,.ewsx,.xml"
               onChange={handleFileImport}
               style={{ display: "none" }}
             />
@@ -681,6 +1016,9 @@ export const SlidesCanvasView: React.FC<SlidesCanvasViewProps> = ({
               Active Slide Deck (Click any slide or use ← / → keys)
             </span>
             <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <button type="button" onClick={() => openSlideEditor()} style={navBtnStyle} title="Edit this deck in the WYSIWYG editor">
+                <PenLine size={13} /> Edit Deck
+              </button>
               <button
                 type="button"
                 onClick={() => onSlideAction("prev")}
@@ -782,6 +1120,7 @@ export const SlidesCanvasView: React.FC<SlidesCanvasViewProps> = ({
 
             <div
               style={{
+                position: "relative",
                 aspectRatio: "16 / 9",
                 background: fohBackgroundStyle,
                 border: "1px solid #283344",
@@ -791,29 +1130,42 @@ export const SlidesCanvasView: React.FC<SlidesCanvasViewProps> = ({
                 justifyContent: "center",
                 padding: 16,
                 textAlign: "center",
+                overflow: "hidden",
               }}
             >
-              {state.slides.cleared ? (
-                <span style={{ color: "#94A3B8", fontStyle: "italic", fontSize: 12 }}>
-                  [Text Cleared — Background Active]
-                </span>
-              ) : currentSlide ? (
-                <div
-                  style={{
-                    fontFamily: theme.fontFamily,
-                    fontSize: theme.fontSize,
-                    fontWeight: 700,
-                    color: theme.textColor,
-                    lineHeight: 1.35,
-                    whiteSpace: "pre-line",
-                    textShadow: "0 2px 10px rgba(0,0,0,0.85)",
-                  }}
-                >
-                  {currentSlide.text}
-                </div>
-              ) : (
-                <span style={{ color: "#64748B", fontSize: 12 }}>No Active Slide</span>
+              {isVideoBackground(theme.backgroundImage) && (
+                <video
+                  autoPlay
+                  loop
+                  muted
+                  playsInline
+                  src={theme.backgroundImage}
+                  style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover" }}
+                />
               )}
+              <div style={{ position: "relative", zIndex: 1 }}>
+                {state.slides.cleared ? (
+                  <span style={{ color: "#94A3B8", fontStyle: "italic", fontSize: 12 }}>
+                    [Text Cleared — Background Active]
+                  </span>
+                ) : currentSlide ? (
+                  <div
+                    style={{
+                      fontFamily: theme.fontFamily,
+                      fontSize: theme.fontSize,
+                      fontWeight: 700,
+                      color: theme.textColor,
+                      lineHeight: 1.35,
+                      whiteSpace: "pre-line",
+                      textShadow: "0 2px 10px rgba(0,0,0,0.85)",
+                    }}
+                  >
+                    {currentSlide.text}
+                  </div>
+                ) : (
+                  <span style={{ color: "#64748B", fontSize: 12 }}>No Active Slide</span>
+                )}
+              </div>
             </div>
           </div>
 
@@ -1013,6 +1365,16 @@ export const SlidesCanvasView: React.FC<SlidesCanvasViewProps> = ({
             onImportSong(song.title, importedSlides);
           }
         }}
+      />
+
+      <SlideEditorModal
+        isOpen={showSlideEditor}
+        onClose={() => setShowSlideEditor(false)}
+        songTitle={activeSong?.title || state.slides.presentationName || "Untitled Deck"}
+        slides={editorSourceSlides}
+        theme={theme}
+        initialIndex={editorInitialIndex}
+        onApply={applySlideEditorResult}
       />
     </div>
   );

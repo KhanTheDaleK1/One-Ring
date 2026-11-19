@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import {
   Camera,
   Video,
@@ -13,7 +13,9 @@ import {
 } from "lucide-react";
 import type { AppStateSnapshot } from "../types";
 import { IpVideoTools } from "./IpVideoTools";
-import { ptzDriveCamera, triggerIpVideoPtz } from "../bridge";
+import { CameraPreview, PtzControlDeckModal, PTZ_CAMERAS_STORAGE_KEY } from "./PtzControlDeckModal";
+import type { PtzRosterCamera } from "./PtzControlDeckModal";
+import { ptzDriveCamera, ptzRecallPreset, ptzStorePreset, triggerIpVideoPtz } from "../bridge";
 
 interface VideoCanvasViewProps {
   state: AppStateSnapshot;
@@ -38,6 +40,41 @@ export const VideoCanvasView: React.FC<VideoCanvasViewProps> = ({
     state.settings?.ipVideoPtz?.discoveryRangeStart ||
     "192.168.1.50";
   const ptzPort = state.settings?.ipVideoPtz?.ptzIpPort || 52381;
+
+  // The camera roster is owned by the PTZ Control Deck; read it so the canvas wall
+  // can display the selected camera's configured live feed.
+  const [rosterPreviewUrl, setRosterPreviewUrl] = useState<string>("");
+  const [ptzDeckOpen, setPtzDeckOpen] = useState<boolean>(false);
+
+  useEffect(() => {
+    const readRoster = () => {
+      try {
+        const raw = localStorage.getItem(PTZ_CAMERAS_STORAGE_KEY);
+        if (!raw) {
+          setRosterPreviewUrl("");
+          return;
+        }
+        const cameras = JSON.parse(raw) as PtzRosterCamera[];
+        if (!Array.isArray(cameras)) {
+          setRosterPreviewUrl("");
+          return;
+        }
+        const match =
+          cameras.find(
+            (cam) =>
+              cam.id === activeCamera?.id ||
+              cam.name === activeCamera?.name ||
+              (!!cam.ip && cam.ip === ptzIp)
+          ) || cameras[0];
+        setRosterPreviewUrl(match?.previewUrl || "");
+      } catch {
+        setRosterPreviewUrl("");
+      }
+    };
+    readRoster();
+    window.addEventListener("storage", readRoster);
+    return () => window.removeEventListener("storage", readRoster);
+  }, [activeCamera?.id, activeCamera?.name, ptzIp]);
 
   const drivePtz = useCallback(
     (pan: number, tilt: number, zoom: number) => {
@@ -259,6 +296,36 @@ export const VideoCanvasView: React.FC<VideoCanvasViewProps> = ({
             </strong>
           </div>
 
+          {/* Live preview of the selected camera's configured feed */}
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            <span style={{ fontSize: 11, fontWeight: 700, color: "#94A3B8", letterSpacing: "0.05em" }}>
+              LIVE CAMERA PREVIEW
+            </span>
+            <CameraPreview url={rosterPreviewUrl} name={activeCamera?.name || "Camera"} />
+            {!rosterPreviewUrl && (
+              <span style={{ fontSize: 10.5, color: "#64748B", lineHeight: 1.4 }}>
+                Set a preview URL for this camera in the PTZ Control Deck roster.
+              </span>
+            )}
+          </div>
+
+          <button
+            type="button"
+            onClick={() => setPtzDeckOpen(true)}
+            style={{
+              height: 34,
+              background: "#1E3A8A",
+              border: "1px solid #3B82F6",
+              borderRadius: 8,
+              color: "#FFFFFF",
+              fontSize: 12,
+              fontWeight: 700,
+              cursor: "pointer",
+            }}
+          >
+            Open PTZ Control Deck (roster · optics · presets)
+          </button>
+
           {/* D-Pad Directional Controller */}
           {(() => {
             const padStyle: React.CSSProperties = {
@@ -380,6 +447,25 @@ export const VideoCanvasView: React.FC<VideoCanvasViewProps> = ({
         onPtzPreset={(sourceId, presetIdx) => triggerIpVideoPtz(sourceId, presetIdx)}
         onPanTilt={(sourceId, pan, tilt) => triggerIpVideoPtz(sourceId, undefined, pan, tilt)}
       />
+
+      {ptzDeckOpen && (
+        <PtzControlDeckModal
+          isOpen={ptzDeckOpen}
+          onClose={() => setPtzDeckOpen(false)}
+          cameraName={activeCamera?.name}
+          defaultIp={ptzIp}
+          defaultPort={ptzPort}
+          onDrive={(pan, tilt, zoom, ip, port) => {
+            ptzDriveCamera(ip, port, pan, tilt, zoom).catch(() => {});
+          }}
+          onRecallPreset={(presetNum, ip, port) => {
+            ptzRecallPreset(ip, port, presetNum).catch(() => {});
+          }}
+          onSavePreset={(presetNum, _name, ip, port) => {
+            ptzStorePreset(ip, port, presetNum).catch(() => {});
+          }}
+        />
+      )}
     </div>
   );
 };

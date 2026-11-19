@@ -12,6 +12,7 @@
 //! adapter layer; this module only turns messages into bytes and back.
 
 use super::ProtocolError;
+use serde_json::json;
 use std::collections::BTreeMap;
 
 pub const IP_VIDEO_DISCOVERY_PORT: u16 = 5959;
@@ -424,6 +425,97 @@ pub fn tally_echo(on_program: bool, on_preview: bool) -> String {
     )
 }
 
+// -- Web receiver HTTP control API --------------------------------------------------------------
+//
+// Small, clean-room HTTP request descriptors for a receiver's local control interface. The codec
+// only describes the requests; the adapter/transport layer owns sockets, retries and timeouts.
+
+pub const RECEIVER_API_SOURCES: &str = "/v1/sources";
+pub const RECEIVER_API_CONFIGURATION: &str = "/v1/configuration";
+pub const RECEIVER_API_RECORDING: &str = "/v1/recording";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReceiverRecordingAction {
+    Start,
+    Stop,
+}
+
+impl ReceiverRecordingAction {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Start => "start",
+            Self::Stop => "stop",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IpVideoHttpRequest {
+    pub method: &'static str,
+    pub path: &'static str,
+    pub body: Option<String>,
+}
+
+impl IpVideoHttpRequest {
+    /// Render an HTTP/1.1 request with the correct `Host`, `Content-Type` and `Content-Length`.
+    pub fn to_http_request(&self, host: &str) -> String {
+        let host = host.trim().trim_end_matches('/');
+        let mut out = format!("{} {} HTTP/1.1\r\nHost: {}\r\n", self.method, self.path, host);
+        if let Some(body) = &self.body {
+            out.push_str("Content-Type: application/json\r\n");
+            out.push_str(&format!("Content-Length: {}\r\n", body.len()));
+        }
+        out.push_str("Connection: close\r\n\r\n");
+        if let Some(body) = &self.body {
+            out.push_str(body);
+        }
+        out
+    }
+}
+
+/// `GET /v1/sources` — enumerate the feeds a receiver can subscribe to.
+pub fn receiver_sources_request() -> IpVideoHttpRequest {
+    IpVideoHttpRequest {
+        method: "GET",
+        path: RECEIVER_API_SOURCES,
+        body: None,
+    }
+}
+
+/// `POST /v1/configuration` — tune the receiver to a source with optional group filters.
+pub fn receiver_configuration_request(
+    source_name: &str,
+    groups: &[String],
+    metadata_only: bool,
+) -> IpVideoHttpRequest {
+    let payload = json!({
+        "source": source_name,
+        "groups": groups,
+        "metadata_only": metadata_only,
+    });
+    IpVideoHttpRequest {
+        method: "POST",
+        path: RECEIVER_API_CONFIGURATION,
+        body: Some(payload.to_string()),
+    }
+}
+
+/// `POST /v1/recording` — start or stop a local recording, optionally with a file name.
+pub fn receiver_recording_request(
+    action: ReceiverRecordingAction,
+    filename: Option<&str>,
+) -> IpVideoHttpRequest {
+    let mut payload = json!({ "action": action.as_str() });
+    if let Some(name) = filename {
+        payload["filename"] = json!(name);
+    }
+    IpVideoHttpRequest {
+        method: "POST",
+        path: RECEIVER_API_RECORDING,
+        body: Some(payload.to_string()),
+    }
+}
+
 // -- PTZ ----------------------------------------------------------------------------------------
 
 fn clamp_signed(v: f64) -> f64 {
@@ -829,5 +921,56 @@ mod tests {
             parse_message("<something/>").unwrap(),
             IpVideoMessage::Unknown(_)
         ));
+    }
+
+    #[test]
+    fn receiver_sources_request_is_a_bare_get() {
+        let req = receiver_sources_request();
+        assert_eq!(req.method, "GET");
+        assert_eq!(req.path, "/v1/sources");
+        assert_eq!(req.body, None);
+        let wire = req.to_http_request("192.0.2.10:8080");
+        assert!(wire.starts_with("GET /v1/sources HTTP/1.1\r\n"));
+        assert!(wire.contains("Host: 192.0.2.10:8080\r\n"));
+        assert!(wire.ends_with("Connection: close\r\n\r\n"));
+        assert!(!wire.contains("Content-Length"));
+    }
+
+    #[test]
+    fn receiver_configuration_request_carries_json_body() {
+        let groups = vec!["public".to_string(), "sanctuary".to_string()];
+        let req = receiver_configuration_request("Stage Cam \"A\"", &groups, true);
+        assert_eq!(req.method, "POST");
+        assert_eq!(req.path, "/v1/configuration");
+
+        let body = req.body.as_deref().expect("configuration body");
+        let value: serde_json::Value = serde_json::from_str(body).unwrap();
+        assert_eq!(value["source"], "Stage Cam \"A\"");
+        assert_eq!(value["groups"], json!(groups));
+        assert_eq!(value["metadata_only"], true);
+
+        let wire = req.to_http_request("receiver.local/");
+        assert!(wire.starts_with("POST /v1/configuration HTTP/1.1\r\n"));
+        assert!(wire.contains("Host: receiver.local\r\n"));
+        assert!(wire.contains("Content-Type: application/json\r\n"));
+        assert!(wire.contains(&format!("Content-Length: {}\r\n", body.len())));
+        assert!(wire.ends_with(body));
+    }
+
+    #[test]
+    fn receiver_recording_request_start_and_stop() {
+        let start = receiver_recording_request(ReceiverRecordingAction::Start, Some("service.mkv"));
+        assert_eq!(start.method, "POST");
+        assert_eq!(start.path, "/v1/recording");
+        let value: serde_json::Value =
+            serde_json::from_str(start.body.as_deref().unwrap()).unwrap();
+        assert_eq!(value["action"], "start");
+        assert_eq!(value["filename"], "service.mkv");
+
+        let stop = receiver_recording_request(ReceiverRecordingAction::Stop, None);
+        let value: serde_json::Value = serde_json::from_str(stop.body.as_deref().unwrap()).unwrap();
+        assert_eq!(value["action"], "stop");
+        assert!(value.get("filename").is_none());
+        assert_eq!(ReceiverRecordingAction::Start.as_str(), "start");
     }
 }

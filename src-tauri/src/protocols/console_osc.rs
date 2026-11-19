@@ -1,8 +1,9 @@
 //! Clean-room OSC codec for the Console Console / Console Console (UDP `:10023`).
 //!
 //! Implements OSC 1.0 framing (`i`, `f`, `s`, `b`), the Console keepalive/identity messages, channel /
-//! DCA / main parameter helpers, scene recall, `/meters/1` blob parsing, and the fader-float ↔ dB
-//! law documented in `docs/re-findings/console.md`.
+//! bus / matrix / DCA / main parameter helpers, the initial parameter query burst, scene recall,
+//! USB recorder transport state, `/meters/1` + `/meters/2` + `/meters/4` blob parsing, and the
+//! fader-float ↔ dB law documented in `docs/re-findings/console.md`.
 //!
 //! This module is transport-agnostic: it produces and consumes byte vectors. The adapter layer owns
 //! the UDP socket, keepalive timer, reconnect backoff, and write debouncing.
@@ -29,7 +30,15 @@ pub const FADER_DB_PER_DECADE: f32 = 80.04;
 pub const FADER_MIN_DB: f32 = -90.0;
 
 pub const MAX_CHANNEL: u8 = 32;
+pub const MAX_BUS: u8 = 16;
+pub const MAX_MTX: u8 = 6;
 pub const MAX_DCA: u8 = 8;
+
+/// OSC address used for the USB stereo recorder transport state.
+pub const TAPE_STATE_ADDRESS: &str = "/-stat/tape/state";
+
+/// Human-readable labels for `/-stat/tape/state`, indexed by its integer payload.
+pub const USB_RECORDER_STATE_LABELS: [&str; 5] = ["Stop", "Pause", "Play", "PauseRec", "Record"];
 
 // -------------------------------------------------------------------------------------------------
 // OSC arguments
@@ -198,6 +207,48 @@ impl OscMessage {
         Self::new("/status", vec![])
     }
 
+    /// An argument-less OSC message. On the console this is a *query*: it asks the console to
+    /// push the current value of `address` back to us.
+    pub fn query(address: impl Into<String>) -> Self {
+        Self::new(address, vec![])
+    }
+
+    /// Full set of parameter queries used after the `/xinfo` handshake so a freshly connected
+    /// client can hydrate every control the UI exposes (names, faders, mutes, pan, buses,
+    /// matrices, DCAs and the stereo main).
+    ///
+    /// The order is deterministic, which makes the burst easy to assert in tests and keeps the
+    /// console's inbound queue predictable.
+    pub fn initial_sync_queries() -> Vec<Self> {
+        let capacity = (MAX_CHANNEL as usize * 4)
+            + (MAX_BUS as usize * 2)
+            + MAX_MTX as usize
+            + (MAX_DCA as usize * 2)
+            + 2;
+        let mut queries = Vec::with_capacity(capacity);
+
+        for channel in 1..=MAX_CHANNEL {
+            queries.push(Self::query(format!("/ch/{channel:02}/config/name")));
+            queries.push(Self::query(format!("/ch/{channel:02}/mix/fader")));
+            queries.push(Self::query(format!("/ch/{channel:02}/mix/on")));
+            queries.push(Self::query(format!("/ch/{channel:02}/mix/pan")));
+        }
+        for bus in 1..=MAX_BUS {
+            queries.push(Self::query(format!("/bus/{bus:02}/mix/fader")));
+            queries.push(Self::query(format!("/bus/{bus:02}/mix/on")));
+        }
+        for matrix in 1..=MAX_MTX {
+            queries.push(Self::query(format!("/mtx/{matrix:02}/mix/fader")));
+        }
+        for dca in 1..=MAX_DCA {
+            queries.push(Self::query(format!("/dca/{dca}/fader")));
+            queries.push(Self::query(format!("/dca/{dca}/on")));
+        }
+        queries.push(Self::query("/main/st/mix/fader"));
+        queries.push(Self::query("/main/st/mix/on"));
+        queries
+    }
+
     /// `/ch/NN/mix/fader` with a clamped `0.0..=1.0` float.
     pub fn channel_fader(channel: u8, fader: f32) -> Result<Self, ProtocolError> {
         validate_channel(channel)?;
@@ -222,6 +273,42 @@ impl OscMessage {
         Ok(Self::new(
             format!("/ch/{channel:02}/config/name"),
             vec![OscArg::String(name.to_string())],
+        ))
+    }
+
+    /// `/ch/NN/mix/pan` with a clamped `0.0..=1.0` float (`0.5` = center).
+    pub fn channel_pan(channel: u8, pan: f32) -> Result<Self, ProtocolError> {
+        validate_channel(channel)?;
+        Ok(Self::new(
+            format!("/ch/{channel:02}/mix/pan"),
+            vec![OscArg::Float(clamp01(pan))],
+        ))
+    }
+
+    /// `/bus/NN/mix/fader` with a clamped `0.0..=1.0` float.
+    pub fn bus_fader(bus: u8, fader: f32) -> Result<Self, ProtocolError> {
+        validate_bus(bus)?;
+        Ok(Self::new(
+            format!("/bus/{bus:02}/mix/fader"),
+            vec![OscArg::Float(clamp01(fader))],
+        ))
+    }
+
+    /// `/bus/NN/mix/on` (`true` = on, `false` = muted).
+    pub fn bus_on(bus: u8, on: bool) -> Result<Self, ProtocolError> {
+        validate_bus(bus)?;
+        Ok(Self::new(
+            format!("/bus/{bus:02}/mix/on"),
+            vec![OscArg::Int(if on { 1 } else { 0 })],
+        ))
+    }
+
+    /// `/mtx/NN/mix/fader` with a clamped `0.0..=1.0` float.
+    pub fn matrix_fader(matrix: u8, fader: f32) -> Result<Self, ProtocolError> {
+        validate_matrix(matrix)?;
+        Ok(Self::new(
+            format!("/mtx/{matrix:02}/mix/fader"),
+            vec![OscArg::Float(clamp01(fader))],
         ))
     }
 
@@ -280,6 +367,26 @@ impl OscMessage {
             "/-action/gosnippet",
             vec![OscArg::Int(snippet as i32)],
         ))
+    }
+
+    /// `/-stat/tape/state` — USB stereo recorder transport state.
+    ///
+    /// `0` = Stop, `1` = Pause, `2` = Play, `3` = PauseRec, `4` = Record. Out-of-range values are
+    /// clamped to Stop/Record so a malformed push can never move the transport into an unknown
+    /// state.
+    pub fn usb_recorder_state(state: i32) -> Self {
+        Self::new(
+            TAPE_STATE_ADDRESS,
+            vec![OscArg::Int(state.clamp(0, 4))],
+        )
+    }
+
+    /// Human-readable transport label. Unknown values fall back to `"Stop"` for UI safety.
+    pub fn usb_recorder_state_label(state: i32) -> &'static str {
+        USB_RECORDER_STATE_LABELS
+            .get(state as usize)
+            .copied()
+            .unwrap_or("Stop")
     }
 }
 
@@ -390,6 +497,26 @@ fn validate_channel(channel: u8) -> Result<(), ProtocolError> {
     } else {
         Err(ProtocolError::malformed(format!(
             "channel {channel} out of range 1..={MAX_CHANNEL}"
+        )))
+    }
+}
+
+fn validate_bus(bus: u8) -> Result<(), ProtocolError> {
+    if (1..=MAX_BUS).contains(&bus) {
+        Ok(())
+    } else {
+        Err(ProtocolError::malformed(format!(
+            "bus {bus} out of range 1..={MAX_BUS}"
+        )))
+    }
+}
+
+fn validate_matrix(matrix: u8) -> Result<(), ProtocolError> {
+    if (1..=MAX_MTX).contains(&matrix) {
+        Ok(())
+    } else {
+        Err(ProtocolError::malformed(format!(
+            "matrix {matrix} out of range 1..={MAX_MTX}"
         )))
     }
 }
@@ -626,5 +753,69 @@ mod tests {
         assert!(parse_meters_blob(&[1, 0]).is_err());
         let short = [5, 0, 0, 0, 1, 2];
         assert!(parse_meters_blob(&short).is_err());
+    }
+
+    #[test]
+    fn initial_sync_burst_covers_every_hydrated_parameter() {
+        let queries = OscMessage::initial_sync_queries();
+        // 32 channels × 4 + 16 buses × 2 + 6 matrices × 1 + 8 DCAs × 2 + 2 mains.
+        assert_eq!(queries.len(), 184);
+        assert!(queries.iter().all(|q| q.args.is_empty()));
+
+        let addresses: Vec<&str> = queries.iter().map(|q| q.address.as_str()).collect();
+        for suffix in ["config/name", "mix/fader", "mix/on", "mix/pan"] {
+            assert!(addresses.contains(&format!("/ch/01/{suffix}").as_str()));
+            assert!(addresses.contains(&format!("/ch/32/{suffix}").as_str()));
+        }
+        assert!(addresses.contains(&"/bus/01/mix/fader"));
+        assert!(addresses.contains(&"/bus/16/mix/on"));
+        assert!(addresses.contains(&"/mtx/01/mix/fader"));
+        assert!(addresses.contains(&"/mtx/06/mix/fader"));
+        assert!(addresses.contains(&"/dca/1/fader"));
+        assert!(addresses.contains(&"/dca/8/on"));
+        assert!(addresses.contains(&"/main/st/mix/fader"));
+        assert!(addresses.contains(&"/main/st/mix/on"));
+        assert!(!addresses.contains(&"/ch/33/mix/fader"));
+
+        // A query is an argument-less OSC message and must survive a wire round-trip.
+        let decoded = OscMessage::decode(&queries[0].encode()).unwrap();
+        assert_eq!(decoded, queries[0]);
+    }
+
+    #[test]
+    fn usb_recorder_state_roundtrips_and_clamps() {
+        for (state, label) in [
+            (0, "Stop"),
+            (1, "Pause"),
+            (2, "Play"),
+            (3, "PauseRec"),
+            (4, "Record"),
+        ] {
+            let msg = OscMessage::usb_recorder_state(state);
+            assert_eq!(msg.address, "/-stat/tape/state");
+            assert_eq!(msg.args, vec![OscArg::Int(state)]);
+            assert_eq!(OscMessage::usb_recorder_state_label(state), label);
+            let decoded = OscMessage::decode(&msg.encode()).unwrap();
+            assert_eq!(decoded, msg);
+            assert_eq!(decoded.args, vec![OscArg::Int(state)]);
+        }
+        assert_eq!(OscMessage::usb_recorder_state(-5).args, vec![OscArg::Int(0)]);
+        assert_eq!(OscMessage::usb_recorder_state(99).args, vec![OscArg::Int(4)]);
+        assert_eq!(OscMessage::usb_recorder_state_label(-1), "Stop");
+        assert_eq!(OscMessage::usb_recorder_state_label(7), "Stop");
+    }
+
+    #[test]
+    fn bus_matrix_and_pan_messages_validate_and_roundtrip() {
+        assert_eq!(OscMessage::channel_pan(3, 0.25).unwrap().address, "/ch/03/mix/pan");
+        assert_eq!(OscMessage::bus_fader(16, 0.5).unwrap().address, "/bus/16/mix/fader");
+        assert_eq!(OscMessage::bus_on(2, false).unwrap().address, "/bus/02/mix/on");
+        assert_eq!(OscMessage::matrix_fader(6, 0.9).unwrap().address, "/mtx/06/mix/fader");
+        assert!(OscMessage::bus_fader(0, 0.5).is_err());
+        assert!(OscMessage::bus_on(17, true).is_err());
+        assert!(OscMessage::matrix_fader(7, 0.5).is_err());
+
+        let msg = OscMessage::bus_on(2, false).unwrap();
+        assert_eq!(OscMessage::decode(&msg.encode()).unwrap(), msg);
     }
 }

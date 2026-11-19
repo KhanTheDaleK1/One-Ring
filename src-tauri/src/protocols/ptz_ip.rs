@@ -123,6 +123,52 @@ impl PtzIpPacket {
         let payload = vec![0x81, 0x01, 0x04, 0x3F, 0x01, preset_idx, 0xFF];
         Self::new(PtzIpPayloadType::Command, seq, payload)
     }
+
+    // -- Clean-room camera optics commands -------------------------------------------------
+    // Only the numeric wire opcodes are reproduced here; descriptive names are generic.
+    // Every payload uses the same 0x81 0x01 ... 0xFF command framing as the builders above.
+
+    /// Return the camera mechanism to its home/reference position: `81 01 06 04 FF`.
+    pub fn home(seq: u32) -> Self {
+        let payload = vec![0x81, 0x01, 0x06, 0x04, 0xFF];
+        Self::new(PtzIpPayloadType::Command, seq, payload)
+    }
+
+    /// Select the focus mode: `81 01 04 38 02 FF` (auto) / `81 01 04 38 03 FF` (manual).
+    pub fn focus_mode(seq: u32, auto: bool) -> Self {
+        let mode_byte = if auto { 0x02 } else { 0x03 };
+        let payload = vec![0x81, 0x01, 0x04, 0x38, mode_byte, 0xFF];
+        Self::new(PtzIpPayloadType::Command, seq, payload)
+    }
+
+    /// Drive focus continuously: `81 01 04 08 02 FF` (far), `03` (near), `00` (stop).
+    /// A positive `dir` drives far, a negative `dir` drives near, and zero stops.
+    pub fn focus_drive(seq: u32, dir: i8) -> Self {
+        let dir_byte = if dir > 0 { 0x02 } else if dir < 0 { 0x03 } else { 0x00 };
+        let payload = vec![0x81, 0x01, 0x04, 0x08, dir_byte, 0xFF];
+        Self::new(PtzIpPayloadType::Command, seq, payload)
+    }
+
+    /// Step the iris: `81 01 04 0B 02 FF` (open), `03` (close), `00` (stop/reset).
+    /// A positive `dir` opens, a negative `dir` closes, and zero stops.
+    pub fn iris_step(seq: u32, dir: i8) -> Self {
+        let dir_byte = if dir > 0 { 0x02 } else if dir < 0 { 0x03 } else { 0x00 };
+        let payload = vec![0x81, 0x01, 0x04, 0x0B, dir_byte, 0xFF];
+        Self::new(PtzIpPayloadType::Command, seq, payload)
+    }
+
+    /// Select a white-balance preset: `81 01 04 35 0m FF`.
+    /// `0` = Auto, `1` = Indoor, `2` = Outdoor, `3` = One-Push (values clamped to `0..=3`).
+    pub fn white_balance_mode(seq: u32, mode: u8) -> Self {
+        let payload = vec![0x81, 0x01, 0x04, 0x35, 0x00 | (mode.min(3) & 0x0F), 0xFF];
+        Self::new(PtzIpPayloadType::Command, seq, payload)
+    }
+
+    /// Select an exposure mode nibble: `81 01 04 39 0m FF` (values clamped to `0..=15`).
+    pub fn exposure_mode(seq: u32, mode: u8) -> Self {
+        let payload = vec![0x81, 0x01, 0x04, 0x39, 0x00 | (mode.min(15) & 0x0F), 0xFF];
+        Self::new(PtzIpPayloadType::Command, seq, payload)
+    }
 }
 
 #[cfg(test)]
@@ -143,5 +189,106 @@ mod tests {
         assert_eq!(parsed.sequence_number, 42);
         assert_eq!(parsed.payload_type, PtzIpPayloadType::Command);
         assert_eq!(parsed.payload, recall.payload);
+    }
+
+    fn assert_command_bytes(packet: &PtzIpPacket, expected_payload: &[u8]) {
+        let bytes = packet.to_bytes();
+        assert_eq!(bytes.len(), 8 + expected_payload.len());
+        assert_eq!(&bytes[0..2], &[0x01, 0x00]);
+        assert_eq!(
+            &bytes[2..4],
+            &[(expected_payload.len() >> 8) as u8, expected_payload.len() as u8]
+        );
+        assert_eq!(&bytes[4..8], packet.sequence_number.to_be_bytes().as_slice());
+        assert_eq!(&bytes[8..], expected_payload);
+        assert_eq!(packet.payload_type, PtzIpPayloadType::Command);
+
+        let parsed = PtzIpPacket::parse_bytes(&bytes).unwrap();
+        assert_eq!(parsed.payload, expected_payload);
+        assert_eq!(parsed.sequence_number, packet.sequence_number);
+    }
+
+    #[test]
+    fn home_packet() {
+        assert_command_bytes(&PtzIpPacket::home(7), &[0x81, 0x01, 0x06, 0x04, 0xFF]);
+    }
+
+    #[test]
+    fn focus_mode_packets() {
+        assert_command_bytes(
+            &PtzIpPacket::focus_mode(1, true),
+            &[0x81, 0x01, 0x04, 0x38, 0x02, 0xFF],
+        );
+        assert_command_bytes(
+            &PtzIpPacket::focus_mode(2, false),
+            &[0x81, 0x01, 0x04, 0x38, 0x03, 0xFF],
+        );
+    }
+
+    #[test]
+    fn focus_drive_packets() {
+        assert_command_bytes(
+            &PtzIpPacket::focus_drive(1, 1),
+            &[0x81, 0x01, 0x04, 0x08, 0x02, 0xFF],
+        );
+        assert_command_bytes(
+            &PtzIpPacket::focus_drive(2, -1),
+            &[0x81, 0x01, 0x04, 0x08, 0x03, 0xFF],
+        );
+        assert_command_bytes(
+            &PtzIpPacket::focus_drive(3, 0),
+            &[0x81, 0x01, 0x04, 0x08, 0x00, 0xFF],
+        );
+    }
+
+    #[test]
+    fn iris_step_packets() {
+        assert_command_bytes(
+            &PtzIpPacket::iris_step(1, 1),
+            &[0x81, 0x01, 0x04, 0x0B, 0x02, 0xFF],
+        );
+        assert_command_bytes(
+            &PtzIpPacket::iris_step(2, -1),
+            &[0x81, 0x01, 0x04, 0x0B, 0x03, 0xFF],
+        );
+        assert_command_bytes(
+            &PtzIpPacket::iris_step(3, 0),
+            &[0x81, 0x01, 0x04, 0x0B, 0x00, 0xFF],
+        );
+    }
+
+    #[test]
+    fn white_balance_mode_packets() {
+        for (mode, opcode) in [(0u8, 0x00u8), (1, 0x01), (2, 0x02), (3, 0x03)] {
+            assert_command_bytes(
+                &PtzIpPacket::white_balance_mode(mode as u32, mode),
+                &[0x81, 0x01, 0x04, 0x35, opcode, 0xFF],
+            );
+        }
+        // Out-of-range values are clamped to One-Push.
+        assert_command_bytes(
+            &PtzIpPacket::white_balance_mode(9, 12),
+            &[0x81, 0x01, 0x04, 0x35, 0x03, 0xFF],
+        );
+    }
+
+    #[test]
+    fn exposure_mode_packets() {
+        assert_command_bytes(
+            &PtzIpPacket::exposure_mode(1, 0),
+            &[0x81, 0x01, 0x04, 0x39, 0x00, 0xFF],
+        );
+        assert_command_bytes(
+            &PtzIpPacket::exposure_mode(2, 3),
+            &[0x81, 0x01, 0x04, 0x39, 0x03, 0xFF],
+        );
+        assert_command_bytes(
+            &PtzIpPacket::exposure_mode(3, 16),
+            &[0x81, 0x01, 0x04, 0x39, 0x0F, 0xFF],
+        );
+        assert_command_bytes(
+            &PtzIpPacket::exposure_mode(4, 255),
+            &[0x81, 0x01, 0x04, 0x39, 0x0F, 0xFF],
+        );
     }
 }

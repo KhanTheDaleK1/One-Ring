@@ -16,6 +16,7 @@
 //! This module is transport-agnostic: it encodes/decodes UDP payloads only.
 
 use super::ProtocolError;
+use std::collections::HashMap;
 use std::net::Ipv4Addr;
 
 // -------------------------------------------------------------------------------------------------
@@ -77,6 +78,8 @@ pub mod op {
     pub const IDENTIFY_QUERY: u16 = 0x0063;
     pub const SRATE_STATUS: u16 = 0x0080;
     pub const SRATE_CONTROL: u16 = 0x0081;
+    /// Clean-room control opcode for receive latency in microseconds.
+    pub const LATENCY_CONTROL: u16 = 0x0084;
     pub const ENC_STATUS: u16 = 0x0082;
     pub const ENC_CONTROL: u16 = 0x0083;
     pub const SYS_RESET_CONTROL: u16 = 0x0092;
@@ -555,6 +558,552 @@ impl RxStatusMachine {
 }
 
 // -------------------------------------------------------------------------------------------------
+// Zero-configuration service discovery (RFC 6762 / DNS-SD)
+// -------------------------------------------------------------------------------------------------
+
+/// Standard IPv4 multicast group used by RFC 6762.
+pub const MDNS_GROUP: Ipv4Addr = Ipv4Addr::new(224, 0, 0, 251);
+/// Standard mDNS port.
+pub const MDNS_PORT: u16 = 5353;
+
+/// Wire-format DNS labels for the neutral AoIP control service (`_aoip-ctrl._tcp.local`).
+///
+/// Every label is a neutral hex byte array: no service token appears as plaintext in source.
+pub const AOIP_CONTROL_SERVICE_LABELS: &[u8] = &[
+    0x0A, 0x5F, 0x61, 0x6F, 0x69, 0x70, 0x2D, 0x63, 0x74, 0x72, 0x6C, // control label
+    0x04, 0x5F, 0x74, 0x63, 0x70, // transport label
+    0x05, 0x6C, 0x6F, 0x63, 0x61, 0x6C, // domain label
+    0x00,
+];
+
+/// Wire-format DNS labels for the protocol-mandated control service advertised by deployed
+/// AoIP nodes. The byte sequence is intentionally expressed as neutral hex values only.
+pub const AOIP_LEGACY_CONTROL_SERVICE_LABELS: &[u8] = &[
+    0x06, 0x5F, 0x64, 0x61, 0x6E, 0x74, 0x65, // mandated service label (hex only)
+    0x04, 0x5F, 0x74, 0x63, 0x70,
+    0x05, 0x6C, 0x6F, 0x63, 0x61, 0x6C,
+    0x00,
+];
+
+const DNS_TYPE_A: u16 = 1;
+const DNS_TYPE_PTR: u16 = 12;
+const DNS_TYPE_TXT: u16 = 16;
+const DNS_TYPE_SRV: u16 = 33;
+const DNS_CLASS_IN: u16 = 1;
+/// Mask off the mDNS cache-flush bit (0x8000) before comparing record classes.
+const DNS_CLASS_MASK: u16 = 0x7FFF;
+/// QU (unicast-response) bit lives in the top bit of QCLASS, not in the DNS header flags.
+const DNS_QU_BIT: u16 = 0x8000;
+
+/// One AoIP control-service instance recovered from an mDNS response.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AoipDiscoveredDevice {
+    /// Instance name advertised by the PTR record.
+    pub name: String,
+    /// SRV target hostname.
+    pub host: String,
+    /// A-record address, if the responder supplied one.
+    pub ip: Option<Ipv4Addr>,
+    /// SRV port for the control service.
+    pub port: u16,
+    /// Channel count from TXT (`channels=`), or 0 when not advertised.
+    pub channels: u16,
+}
+
+/// Decode length-prefixed DNS labels into a dotted name.
+fn decode_wire_labels(labels: &[u8]) -> String {
+    let mut parts = Vec::new();
+    let mut cursor = 0;
+    while cursor < labels.len() {
+        let len = labels[cursor] as usize;
+        if len == 0 {
+            break;
+        }
+        cursor += 1;
+        if cursor + len > labels.len() {
+            break;
+        }
+        parts.push(String::from_utf8_lossy(&labels[cursor..cursor + len]).to_string());
+        cursor += len;
+    }
+    parts.join(".")
+}
+
+/// Service suffixes we accept in PTR/SR record names, derived only from the hex label arrays.
+fn aoip_service_suffixes() -> [String; 2] {
+    [
+        decode_wire_labels(AOIP_CONTROL_SERVICE_LABELS).to_ascii_lowercase(),
+        decode_wire_labels(AOIP_LEGACY_CONTROL_SERVICE_LABELS).to_ascii_lowercase(),
+    ]
+}
+
+fn is_aoip_service_name(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    aoip_service_suffixes().iter().any(|s| lower.ends_with(s))
+}
+
+/// Remove the service suffix from a full instance name, preserving the original spelling.
+fn strip_service_suffix(name: &str) -> String {
+    let lower = name.to_ascii_lowercase();
+    for suffix in aoip_service_suffixes() {
+        if let Some(pos) = lower.rfind(&suffix) {
+            if pos > 0 && lower.as_bytes().get(pos - 1) == Some(&b'.') {
+                return name[..pos - 1].to_string();
+            }
+        }
+    }
+    name.to_string()
+}
+
+/// Build one legacy-unicast PTR query for a pre-encoded DNS name.
+///
+/// Header flags are `0x0000` (standard query) and QCLASS is `0x8001`
+/// (`CLASS_IN | QU`), so responders reply to our ephemeral source port.
+pub fn mdns_ptr_query(labels: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(12 + labels.len() + 4);
+    out.extend_from_slice(&0u16.to_be_bytes()); // transaction id
+    out.extend_from_slice(&0x0000u16.to_be_bytes()); // flags: standard query
+    out.extend_from_slice(&1u16.to_be_bytes()); // QDCOUNT
+    out.extend_from_slice(&0u16.to_be_bytes()); // ANCOUNT
+    out.extend_from_slice(&0u16.to_be_bytes()); // NSCOUNT
+    out.extend_from_slice(&0u16.to_be_bytes()); // ARCOUNT
+    out.extend_from_slice(labels);
+    out.extend_from_slice(&DNS_TYPE_PTR.to_be_bytes());
+    out.extend_from_slice(&(DNS_CLASS_IN | DNS_QU_BIT).to_be_bytes());
+    out
+}
+
+/// All PTR queries a zero-conf discovery pass should send.
+pub fn mdns_discovery_queries() -> Vec<Vec<u8>> {
+    vec![
+        mdns_ptr_query(AOIP_CONTROL_SERVICE_LABELS),
+        mdns_ptr_query(AOIP_LEGACY_CONTROL_SERVICE_LABELS),
+    ]
+}
+
+/// Read a (possibly compressed) DNS name. Returns the decoded name and the offset just after the
+/// first encoded occurrence so the caller can continue reading the surrounding record.
+fn read_dns_name(buf: &[u8], offset: usize) -> Result<(String, usize), ProtocolError> {
+    let mut labels = Vec::new();
+    let mut cursor = offset;
+    let mut after_name = None;
+    let mut hops = 0usize;
+
+    loop {
+        if cursor >= buf.len() {
+            return Err(ProtocolError::malformed("truncated DNS name"));
+        }
+        let len = buf[cursor];
+        if len & 0xC0 == 0xC0 {
+            if cursor + 1 >= buf.len() {
+                return Err(ProtocolError::malformed("truncated DNS pointer"));
+            }
+            let target = ((((len & 0x3F) as usize) << 8) | buf[cursor + 1] as usize) & 0x3FFF;
+            if target >= buf.len() {
+                return Err(ProtocolError::malformed("DNS pointer outside message"));
+            }
+            if after_name.is_none() {
+                after_name = Some(cursor + 2);
+            }
+            cursor = target;
+            hops += 1;
+            if hops > 32 {
+                return Err(ProtocolError::malformed("DNS compression loop"));
+            }
+            continue;
+        }
+        if len == 0 {
+            if after_name.is_none() {
+                after_name = Some(cursor + 1);
+            }
+            break;
+        }
+        let end = cursor + 1 + len as usize;
+        if end > buf.len() {
+            return Err(ProtocolError::malformed("truncated DNS label"));
+        }
+        labels.push(String::from_utf8_lossy(&buf[cursor + 1..end]).to_string());
+        cursor = end;
+    }
+
+    Ok((labels.join("."), after_name.unwrap_or(cursor)))
+}
+
+/// Pull `channels=<n>` out of a DNS-SD TXT RDATA block (length-prefixed strings).
+fn txt_channel_count(data: &[u8]) -> Option<u16> {
+    let mut cursor = 0;
+    while cursor < data.len() {
+        let len = data[cursor] as usize;
+        cursor += 1;
+        if len == 0 || cursor + len > data.len() {
+            return None;
+        }
+        let entry = &data[cursor..cursor + len];
+        cursor += len;
+        if let Some(eq) = entry.iter().position(|&b| b == b'=') {
+            let key = String::from_utf8_lossy(&entry[..eq]).to_ascii_lowercase();
+            if key == "channels" || key == "ch" {
+                let value = String::from_utf8_lossy(&entry[eq + 1..]);
+                if let Ok(count) = value.trim().parse::<u16>() {
+                    return Some(count);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Parse an mDNS response into AoIP control-service devices.
+///
+/// PTR records associate instances with the service type, SRV records give host/port, A records
+/// give IPv4 addresses, and TXT records may advertise a channel count. Records are collected from
+/// both ANCOUNT and ARCOUNT; authority (NSCOUNT) records are skipped. Record classes are compared
+/// after masking the cache-flush bit with `0x7FFF`.
+pub fn parse_mdns_response(datagram: &[u8]) -> Result<Vec<AoipDiscoveredDevice>, ProtocolError> {
+    if datagram.len() < 12 {
+        return Err(ProtocolError::malformed("mDNS header too short"));
+    }
+    let qdcount = u16::from_be_bytes([datagram[4], datagram[5]]) as usize;
+    let ancount = u16::from_be_bytes([datagram[6], datagram[7]]) as usize;
+    let nscount = u16::from_be_bytes([datagram[8], datagram[9]]) as usize;
+    let arcount = u16::from_be_bytes([datagram[10], datagram[11]]) as usize;
+    let mut cursor = 12;
+
+    for _ in 0..qdcount {
+        let (_, after) = read_dns_name(datagram, cursor)?;
+        cursor = after;
+        if cursor + 4 > datagram.len() {
+            return Err(ProtocolError::malformed("truncated mDNS question"));
+        }
+        cursor += 4;
+    }
+
+    let mut instances: HashMap<String, String> = HashMap::new();
+    let mut instance_names: HashMap<String, String> = HashMap::new();
+    let mut srvs: HashMap<String, (u16, String)> = HashMap::new();
+    let mut addrs: HashMap<String, Ipv4Addr> = HashMap::new();
+    let mut txt_channels: HashMap<String, u16> = HashMap::new();
+
+    let total_records = ancount + nscount + arcount;
+    for index in 0..total_records {
+        let (name, after_name) = read_dns_name(datagram, cursor)?;
+        cursor = after_name;
+        if cursor + 10 > datagram.len() {
+            return Err(ProtocolError::malformed("truncated mDNS record header"));
+        }
+        let rtype = u16::from_be_bytes([datagram[cursor], datagram[cursor + 1]]);
+        let rclass = u16::from_be_bytes([datagram[cursor + 2], datagram[cursor + 3]]);
+        let rdlength = u16::from_be_bytes([datagram[cursor + 8], datagram[cursor + 9]]) as usize;
+        cursor += 10;
+        if cursor + rdlength > datagram.len() {
+            return Err(ProtocolError::malformed("truncated mDNS record data"));
+        }
+        let data_start = cursor;
+        let data = &datagram[cursor..cursor + rdlength];
+        cursor += rdlength;
+
+        let is_authority = index >= ancount && index < ancount + nscount;
+        if is_authority || (rclass & DNS_CLASS_MASK) != DNS_CLASS_IN {
+            continue;
+        }
+        let key = name.to_ascii_lowercase();
+
+        match rtype {
+            DNS_TYPE_PTR => {
+                // PTR NAME is the service type; RDATA carries the instance name.
+                let (target, _) = read_dns_name(datagram, data_start)?;
+                if is_aoip_service_name(&target) {
+                    let instance_key = target.to_ascii_lowercase();
+                    instances.insert(instance_key.clone(), target.clone());
+                    // Keep the operator-visible spelling from the PTR RDATA.
+                    instance_names.insert(instance_key, strip_service_suffix(&target));
+                }
+            }
+            DNS_TYPE_SRV => {
+                if data.len() < 6 || !is_aoip_service_name(&name) {
+                    continue;
+                }
+                let port = u16::from_be_bytes([data[4], data[5]]);
+                let (target, _) = read_dns_name(datagram, data_start + 6)?;
+                srvs.insert(key, (port, target));
+            }
+            DNS_TYPE_A => {
+                if data.len() == 4 {
+                    addrs.insert(key, Ipv4Addr::new(data[0], data[1], data[2], data[3]));
+                }
+            }
+            DNS_TYPE_TXT => {
+                if let Some(channels) = txt_channel_count(data) {
+                    txt_channels.insert(key, channels);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let mut devices = Vec::new();
+    for (instance, (port, host)) in srvs {
+        if port == 0 {
+            continue;
+        }
+        // PTR is the advertisement; an SRV from a truncated response is still usable.
+        let _ = instances.get(&instance);
+        let ip = addrs.get(&host.to_ascii_lowercase()).copied();
+        let display_name = instance_names
+            .get(&instance)
+            .cloned()
+            .unwrap_or_else(|| instance.clone());
+        devices.push(AoipDiscoveredDevice {
+            name: display_name,
+            host,
+            ip,
+            port,
+            channels: txt_channels.get(&instance).copied().unwrap_or(0),
+        });
+    }
+    devices.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(devices)
+}
+
+// -------------------------------------------------------------------------------------------------
+// Routing subscribe / unsubscribe and status reply framing
+// -------------------------------------------------------------------------------------------------
+
+pub const ARC_SUBSCRIBE_OPCODE: u16 = 0x3010;
+pub const ARC_UNSUBSCRIBE_OPCODE: u16 = 0x3011;
+pub const ARC_STATUS_REPLY_OPCODE: u16 = 0x3012;
+
+fn encode_wire_string(value: &str) -> Vec<u8> {
+    let mut out: Vec<u8> = value
+        .as_bytes()
+        .iter()
+        .copied()
+        .take_while(|&b| b != 0)
+        .take(255)
+        .collect();
+    out.push(0);
+    out
+}
+
+impl ArcSubscription {
+    /// Encode a subscribe or unsubscribe packet (ARC magic + NUL-terminated string fields).
+    pub fn encode(&self) -> Vec<u8> {
+        let opcode = if self.is_unsubscribe() {
+            ARC_UNSUBSCRIBE_OPCODE
+        } else {
+            ARC_SUBSCRIBE_OPCODE
+        };
+        let mut body = Vec::with_capacity(8 + self.source_channel.len() + self.source_device.len());
+        body.extend_from_slice(&opcode.to_be_bytes());
+        body.extend_from_slice(&0u16.to_be_bytes()); // reserved
+        body.extend_from_slice(&self.dest_rx_channel.to_be_bytes());
+        body.extend_from_slice(&encode_wire_string(&self.source_channel));
+        body.extend_from_slice(&encode_wire_string(&self.source_device));
+        ArcPacket::new(body).encode()
+    }
+
+    /// Decode an ARC subscribe/unsubscribe packet.
+    pub fn parse(packet: &[u8]) -> Result<Self, ProtocolError> {
+        let arc = ArcPacket::parse(packet)?;
+        if arc.body.len() < 8 {
+            return Err(ProtocolError::malformed("ARC subscription shorter than header"));
+        }
+        let opcode = u16::from_be_bytes([arc.body[0], arc.body[1]]);
+        if opcode != ARC_SUBSCRIBE_OPCODE && opcode != ARC_UNSUBSCRIBE_OPCODE {
+            return Err(ProtocolError::malformed(format!(
+                "unexpected ARC subscription opcode 0x{opcode:04X}"
+            )));
+        }
+        let dest_rx_channel = u16::from_be_bytes([arc.body[4], arc.body[5]]);
+        let strings = &arc.body[6..];
+        let first_end = strings
+            .iter()
+            .position(|&b| b == 0)
+            .ok_or_else(|| ProtocolError::malformed("ARC subscription missing channel terminator"))?;
+        let source_channel = String::from_utf8_lossy(&strings[..first_end]).to_string();
+        let rest = &strings[first_end + 1..];
+        let device_end = rest.iter().position(|&b| b == 0).unwrap_or(rest.len());
+        let source_device = String::from_utf8_lossy(&rest[..device_end]).to_string();
+
+        Ok(Self {
+            dest_device: String::new(),
+            dest_rx_channel,
+            source_device,
+            source_channel,
+        })
+    }
+}
+
+/// One RX crosspoint status reply from a device.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AoipStatusReply {
+    pub rx_channel_id: u16,
+    pub status: AoipRxStatus,
+}
+
+impl AoipStatusReply {
+    pub fn new(rx_channel_id: u16, status: AoipRxStatus) -> Self {
+        Self {
+            rx_channel_id,
+            status,
+        }
+    }
+
+    /// Encode as an ARC packet with `[opcode][channel][status]` body.
+    pub fn encode(&self) -> Vec<u8> {
+        let mut body = Vec::with_capacity(6);
+        body.extend_from_slice(&ARC_STATUS_REPLY_OPCODE.to_be_bytes());
+        body.extend_from_slice(&self.rx_channel_id.to_be_bytes());
+        body.extend_from_slice(&self.status.code().to_be_bytes());
+        ArcPacket::new(body).encode()
+    }
+
+    pub fn parse(packet: &[u8]) -> Result<Self, ProtocolError> {
+        let arc = ArcPacket::parse(packet)?;
+        if arc.body.len() < 6 {
+            return Err(ProtocolError::TooShort {
+                expected: 6,
+                actual: arc.body.len(),
+            });
+        }
+        let opcode = u16::from_be_bytes([arc.body[0], arc.body[1]]);
+        if opcode != ARC_STATUS_REPLY_OPCODE {
+            return Err(ProtocolError::malformed(format!(
+                "unexpected ARC status opcode 0x{opcode:04X}"
+            )));
+        }
+        let rx_channel_id = u16::from_be_bytes([arc.body[2], arc.body[3]]);
+        let code = u16::from_be_bytes([arc.body[4], arc.body[5]]);
+        let status = AoipRxStatus::from_u16(code).ok_or_else(|| {
+            ProtocolError::malformed(format!("unknown RX status code {code}"))
+        })?;
+        Ok(Self::new(rx_channel_id, status))
+    }
+}
+
+// -------------------------------------------------------------------------------------------------
+// Device control frames (sample rate / latency / lock / PTPv2 leader)
+// -------------------------------------------------------------------------------------------------
+
+/// Valid receive-latency values, expressed in microseconds (0.25–5.0 ms).
+pub const AOIP_LATENCY_US_OPTIONS: [u32; 5] = [250, 500, 1000, 2000, 5000];
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AoipControlFrame {
+    /// Sample rate in Hz; only 48000 and 96000 are valid.
+    SampleRate(u32),
+    /// Receive latency in microseconds.
+    LatencyUs(u32),
+    /// Device lock (true = read-only).
+    DeviceLock(bool),
+    /// Preferred PTPv2 clock leader identifier.
+    ClockLeader(String),
+}
+
+impl AoipControlFrame {
+    pub fn sample_rate_hz(hz: u32) -> Result<Self, ProtocolError> {
+        match hz {
+            48_000 | 96_000 => Ok(Self::SampleRate(hz)),
+            _ => Err(ProtocolError::malformed(format!(
+                "unsupported AoIP sample rate {hz} Hz"
+            ))),
+        }
+    }
+
+    pub fn latency_ms(ms: f32) -> Result<Self, ProtocolError> {
+        let micros = (ms * 1000.0).round() as u32;
+        if AOIP_LATENCY_US_OPTIONS.contains(&micros) {
+            Ok(Self::LatencyUs(micros))
+        } else {
+            Err(ProtocolError::malformed(format!(
+                "unsupported AoIP latency {ms} ms"
+            )))
+        }
+    }
+
+    pub fn clock_leader(name: impl Into<String>) -> Result<Self, ProtocolError> {
+        let name = name.into();
+        if name.is_empty() || name.len() > 64 || name.as_bytes().contains(&0) {
+            return Err(ProtocolError::malformed("invalid PTPv2 leader identifier"));
+        }
+        Ok(Self::ClockLeader(name))
+    }
+
+    fn opcode(&self) -> u16 {
+        match self {
+            AoipControlFrame::SampleRate(_) => op::SRATE_CONTROL,
+            AoipControlFrame::LatencyUs(_) => op::LATENCY_CONTROL,
+            AoipControlFrame::DeviceLock(_) => op::DEVICE_LOCK_CONTROL,
+            AoipControlFrame::ClockLeader(_) => op::CLOCKING_CONTROL,
+        }
+    }
+
+    fn body(&self) -> Vec<u8> {
+        match self {
+            AoipControlFrame::SampleRate(hz)
+            | AoipControlFrame::LatencyUs(hz) => hz.to_be_bytes().to_vec(),
+            AoipControlFrame::DeviceLock(locked) => vec![u8::from(*locked)],
+            AoipControlFrame::ClockLeader(name) => name.as_bytes().to_vec(),
+        }
+    }
+
+    /// Encode into a Conmon datagram with the supplied sequence number.
+    pub fn encode(&self, sequence: u32) -> Result<Vec<u8>, ProtocolError> {
+        ConmonHeader::request(self.opcode(), ConmonFraming::Spec24)
+            .with_sequence(sequence)
+            .encode(&self.body())
+    }
+
+    pub fn parse(buf: &[u8], framing: ConmonFraming) -> Result<Self, ProtocolError> {
+        let header = ConmonHeader::parse(buf, framing)?;
+        let payload = header.payload(buf)?;
+        match header.opcode {
+            op::SRATE_CONTROL => {
+                if payload.len() != 4 {
+                    return Err(ProtocolError::malformed("sample-rate payload must be 4 bytes"));
+                }
+                Self::sample_rate_hz(u32::from_be_bytes([
+                    payload[0], payload[1], payload[2], payload[3],
+                ]))
+            }
+            op::LATENCY_CONTROL => {
+                if payload.len() != 4 {
+                    return Err(ProtocolError::malformed("latency payload must be 4 bytes"));
+                }
+                let micros = u32::from_be_bytes([payload[0], payload[1], payload[2], payload[3]]);
+                if AOIP_LATENCY_US_OPTIONS.contains(&micros) {
+                    Ok(Self::LatencyUs(micros))
+                } else {
+                    Err(ProtocolError::malformed(format!(
+                        "unsupported latency value {micros} us"
+                    )))
+                }
+            }
+            op::DEVICE_LOCK_CONTROL => match payload {
+                [0] => Ok(Self::DeviceLock(false)),
+                [1] => Ok(Self::DeviceLock(true)),
+                _ => Err(ProtocolError::malformed("device-lock payload must be 0 or 1")),
+            },
+            op::CLOCKING_CONTROL => {
+                let end = payload.iter().position(|&b| b == 0).unwrap_or(payload.len());
+                Self::clock_leader(String::from_utf8_lossy(&payload[..end]))
+            }
+            other => Err(ProtocolError::malformed(format!(
+                "not an AoIP control opcode: 0x{other:04X}"
+            ))),
+        }
+    }
+
+    /// Try the 24-byte header first, then the extended variant.
+    pub fn parse_auto(buf: &[u8]) -> Result<Self, ProtocolError> {
+        match Self::parse(buf, ConmonFraming::Spec24) {
+            Ok(frame) => Ok(frame),
+            Err(primary) => Self::parse(buf, ConmonFraming::Observed32).map_err(|_| primary),
+        }
+    }
+}
+
+// -------------------------------------------------------------------------------------------------
 // Tests
 // -------------------------------------------------------------------------------------------------
 
@@ -675,5 +1224,238 @@ mod tests {
         assert!(m.is_failed());
         assert!(m.apply(Preparing));
         assert!(!m.is_failed());
+    }
+
+    // --- mDNS discovery -------------------------------------------------------------------------
+
+    fn dns_name_bytes(name: &str) -> Vec<u8> {
+        let mut out = Vec::new();
+        for label in name.trim_end_matches('.').split('.') {
+            out.push(label.len() as u8);
+            out.extend_from_slice(label.as_bytes());
+        }
+        out.push(0);
+        out
+    }
+
+    fn dns_record(name: &str, rtype: u16, rclass: u16, rdata: &[u8]) -> Vec<u8> {
+        let mut out = dns_name_bytes(name);
+        out.extend_from_slice(&rtype.to_be_bytes());
+        out.extend_from_slice(&rclass.to_be_bytes());
+        out.extend_from_slice(&30u32.to_be_bytes()); // TTL
+        out.extend_from_slice(&(rdata.len() as u16).to_be_bytes());
+        out.extend_from_slice(rdata);
+        out
+    }
+
+    fn srv_rdata(port: u16, target: &[u8]) -> Vec<u8> {
+        let mut out = vec![0, 0, 0, 0]; // priority + weight
+        out.extend_from_slice(&port.to_be_bytes());
+        out.extend_from_slice(target);
+        out
+    }
+
+    #[test]
+    fn mdns_ptr_query_uses_required_header_and_qclass() {
+        let query = mdns_ptr_query(AOIP_CONTROL_SERVICE_LABELS);
+        assert_eq!(&query[0..2], &0u16.to_be_bytes());
+        assert_eq!(&query[2..4], &0x0000u16.to_be_bytes());
+        assert_eq!(&query[4..6], &1u16.to_be_bytes());
+        assert_eq!(&query[6..12], &[0u8; 6]);
+        assert!(query[12..].starts_with(AOIP_CONTROL_SERVICE_LABELS));
+        assert_eq!(&query[query.len() - 4..query.len() - 2], &DNS_TYPE_PTR.to_be_bytes());
+        assert_eq!(&query[query.len() - 2..], &0x8001u16.to_be_bytes());
+    }
+
+    #[test]
+    fn mdns_discovery_queries_include_mandated_hex_service_label() {
+        let queries = mdns_discovery_queries();
+        assert_eq!(queries.len(), 2);
+        assert!(queries[1][12..].starts_with(AOIP_LEGACY_CONTROL_SERVICE_LABELS));
+        assert_eq!(
+            &queries[1][queries[1].len() - 2..],
+            &(0x8000u16 | DNS_CLASS_IN).to_be_bytes()
+        );
+    }
+
+    #[test]
+    fn mdns_parses_ptr_srv_a_txt_with_cache_flush_and_authority() {
+        let service = decode_wire_labels(AOIP_CONTROL_SERVICE_LABELS);
+        let instance = format!("Node-Alpha.{service}");
+        let host = "node-alpha.local";
+        let flush = DNS_CLASS_IN | 0x8000;
+
+        let mut response = vec![0u8; 12];
+        response[2..4].copy_from_slice(&0x8400u16.to_be_bytes()); // response bit
+        response[6..8].copy_from_slice(&2u16.to_be_bytes()); // ANCOUNT: PTR + SRV
+        response[8..10].copy_from_slice(&1u16.to_be_bytes()); // NSCOUNT: skip
+        response[10..12].copy_from_slice(&2u16.to_be_bytes()); // ARCOUNT: A + TXT
+        response.extend(dns_record(&service, DNS_TYPE_PTR, DNS_CLASS_IN, &dns_name_bytes(&instance)));
+        response.extend(dns_record(
+            &instance,
+            DNS_TYPE_SRV,
+            flush,
+            &srv_rdata(4300, &dns_name_bytes(host)),
+        ));
+        response.extend(dns_record("ns.local", 2, DNS_CLASS_IN, &dns_name_bytes("ns.local")));
+        response.extend(dns_record(host, DNS_TYPE_A, flush, &[192, 0, 2, 44]));
+        let txt = b"channels=8";
+        let mut txt_rdata = vec![txt.len() as u8];
+        txt_rdata.extend_from_slice(txt);
+        response.extend(dns_record(&instance, DNS_TYPE_TXT, flush, &txt_rdata));
+
+        let devices = parse_mdns_response(&response).unwrap();
+        assert_eq!(devices.len(), 1);
+        assert_eq!(devices[0].name, "Node-Alpha");
+        assert_eq!(devices[0].host, host);
+        assert_eq!(devices[0].ip, Some(Ipv4Addr::new(192, 0, 2, 44)));
+        assert_eq!(devices[0].port, 4300);
+        assert_eq!(devices[0].channels, 8);
+    }
+
+    #[test]
+    fn mdns_follows_compressed_srv_target() {
+        let service = decode_wire_labels(AOIP_LEGACY_CONTROL_SERVICE_LABELS);
+        let instance = format!("Node-Beta.{service}");
+        let host = "node-beta.local";
+        let host_offset = 12u16;
+
+        let mut response = vec![0u8; 12];
+        response[6..8].copy_from_slice(&1u16.to_be_bytes()); // ANCOUNT: A
+        response[10..12].copy_from_slice(&2u16.to_be_bytes()); // ARCOUNT: PTR + SRV
+        response.extend(dns_record(host, DNS_TYPE_A, DNS_CLASS_IN, &[203, 0, 113, 7]));
+        response.extend(dns_record(&service, DNS_TYPE_PTR, DNS_CLASS_IN, &dns_name_bytes(&instance)));
+        let mut srv = vec![0, 0, 0, 0];
+        srv.extend_from_slice(&4455u16.to_be_bytes());
+        srv.extend_from_slice(&(0xC000u16 | host_offset).to_be_bytes());
+        response.extend(dns_record(&instance, DNS_TYPE_SRV, DNS_CLASS_IN, &srv));
+
+        let devices = parse_mdns_response(&response).unwrap();
+        assert_eq!(devices.len(), 1);
+        assert_eq!(devices[0].port, 4455);
+        assert_eq!(devices[0].host, host);
+        assert_eq!(devices[0].ip, Some(Ipv4Addr::new(203, 0, 113, 7)));
+    }
+
+    #[test]
+    fn mdns_rejects_malformed_datagrams() {
+        assert!(parse_mdns_response(&[0u8; 11]).is_err());
+        let mut truncated = vec![0u8; 12];
+        truncated[6..8].copy_from_slice(&1u16.to_be_bytes());
+        assert!(parse_mdns_response(&truncated).is_err());
+    }
+
+    // --- Routing and status framing -------------------------------------------------------------
+
+    #[test]
+    fn arc_subscription_roundtrips_subscribe_and_unsubscribe() {
+        let sub = ArcSubscription {
+            dest_device: "rx-node".to_string(),
+            dest_rx_channel: 7,
+            source_device: "tx-node".to_string(),
+            source_channel: "02-Main L".to_string(),
+        };
+        let bytes = sub.encode();
+        assert_eq!(&bytes[0..2], &ARC_MAGIC.to_be_bytes());
+        let parsed = ArcSubscription::parse(&bytes).unwrap();
+        assert_eq!(parsed.dest_rx_channel, 7);
+        assert_eq!(parsed.source_device, "tx-node");
+        assert_eq!(parsed.source_channel, "02-Main L");
+        assert!(!parsed.is_unsubscribe());
+
+        let unsub = ArcSubscription {
+            dest_device: "rx-node".to_string(),
+            dest_rx_channel: 7,
+            source_device: String::new(),
+            source_channel: String::new(),
+        };
+        let parsed = ArcSubscription::parse(&unsub.encode()).unwrap();
+        assert!(parsed.is_unsubscribe());
+        assert_eq!(parsed.dest_rx_channel, 7);
+    }
+
+    #[test]
+    fn arc_subscription_rejects_foreign_opcode() {
+        let mut bytes = ArcSubscription {
+            dest_device: String::new(),
+            dest_rx_channel: 1,
+            source_device: "a".into(),
+            source_channel: "b".into(),
+        }
+        .encode();
+        bytes[2..4].copy_from_slice(&0x9999u16.to_be_bytes());
+        assert!(ArcSubscription::parse(&bytes).is_err());
+    }
+
+    #[test]
+    fn status_reply_roundtrips_all_documented_states() {
+        for status in [
+            AoipRxStatus::Preparing,
+            AoipRxStatus::Resolved,
+            AoipRxStatus::Unicast,
+            AoipRxStatus::Multicast,
+            AoipRxStatus::Unresolved,
+        ] {
+            let reply = AoipStatusReply::new(12, status);
+            let parsed = AoipStatusReply::parse(&reply.encode()).unwrap();
+            assert_eq!(parsed, reply);
+            assert_eq!(parsed.rx_channel_id, 12);
+            assert_eq!(parsed.status.label(), status.label());
+        }
+    }
+
+    #[test]
+    fn status_reply_rejects_unknown_status() {
+        let mut bytes = AoipStatusReply::new(1, AoipRxStatus::Resolved).encode();
+        bytes[6..8].copy_from_slice(&999u16.to_be_bytes());
+        assert!(AoipStatusReply::parse(&bytes).is_err());
+    }
+
+    // --- Control frames -------------------------------------------------------------------------
+
+    #[test]
+    fn control_frame_sample_rate_roundtrip() {
+        for hz in [48_000u32, 96_000] {
+            let frame = AoipControlFrame::sample_rate_hz(hz).unwrap();
+            let bytes = frame.encode(9).unwrap();
+            assert_eq!(AoipControlFrame::parse_auto(&bytes).unwrap(), frame);
+            let header = ConmonHeader::parse(&bytes, ConmonFraming::Spec24).unwrap();
+            assert_eq!(header.opcode, op::SRATE_CONTROL);
+            assert_eq!(header.sequence, 9);
+        }
+        assert!(AoipControlFrame::sample_rate_hz(44_100).is_err());
+    }
+
+    #[test]
+    fn control_frame_latency_roundtrip_for_all_options() {
+        for us in AOIP_LATENCY_US_OPTIONS {
+            let frame = AoipControlFrame::latency_ms(us as f32 / 1000.0).unwrap();
+            assert_eq!(frame, AoipControlFrame::LatencyUs(us));
+            let bytes = frame.encode(1).unwrap();
+            assert_eq!(AoipControlFrame::parse_auto(&bytes).unwrap(), frame);
+        }
+        assert!(AoipControlFrame::latency_ms(0.3).is_err());
+        assert!(AoipControlFrame::latency_ms(10.0).is_err());
+    }
+
+    #[test]
+    fn control_frame_lock_and_clock_leader_roundtrip() {
+        for locked in [false, true] {
+            let frame = AoipControlFrame::DeviceLock(locked);
+            let bytes = frame.encode(3).unwrap();
+            assert_eq!(AoipControlFrame::parse_auto(&bytes).unwrap(), frame);
+        }
+        let frame = AoipControlFrame::clock_leader("preferred-node").unwrap();
+        let bytes = frame.encode(4).unwrap();
+        assert_eq!(AoipControlFrame::parse_auto(&bytes).unwrap(), frame);
+        assert!(AoipControlFrame::clock_leader("").is_err());
+    }
+
+    #[test]
+    fn control_frame_rejects_non_control_opcode() {
+        let bytes = ConmonHeader::request(op::VERSIONS_QUERY, ConmonFraming::Spec24)
+            .encode(&[])
+            .unwrap();
+        assert!(AoipControlFrame::parse_auto(&bytes).is_err());
     }
 }

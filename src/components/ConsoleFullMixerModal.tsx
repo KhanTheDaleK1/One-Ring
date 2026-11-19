@@ -147,6 +147,14 @@ const SCENE_PRESETS = [
   "Broadcast Test Mix",
 ];
 
+// USB stereo recorder transport states used by `/-stat/tape/state`.
+const TAPE_STATE_ADDRESS = "/-stat/tape/state";
+const USB_RECORDER_STATES = ["Stop", "Pause", "Play", "PauseRec", "Record"] as const;
+
+function usbRecorderLabel(state: number): string {
+  return USB_RECORDER_STATES[state] ?? "Stop";
+}
+
 const USER_LAYER_STORAGE_KEY = "onering_console_user_layers";
 
 function loadUserLayers(): Record<"user1" | "user2", string[]> {
@@ -228,6 +236,7 @@ export const ConsoleFullMixerModal: React.FC<ConsoleFullMixerModalProps> = ({
   const [mainLrMute, setMainLrMute] = useState<boolean>(false);
   const [mainLrSolo, setMainLrSolo] = useState<boolean>(false);
   const [monoMcMode, setMonoMcMode] = useState<boolean>(false);
+  const [recorderState, setRecorderState] = useState<number>(0);
 
   const scnFileInputRef = useRef<HTMLInputElement | null>(null);
   const eqSvgRef = useRef<SVGSVGElement | null>(null);
@@ -338,39 +347,85 @@ export const ConsoleFullMixerModal: React.FC<ConsoleFullMixerModalProps> = ({
     let unlistenRta: UnlistenFn | null = null;
     let disposed = false;
 
+    const patchStrip = (
+      id: string,
+      updater: (strip: ConsoleChannelStripState) => ConsoleChannelStripState
+    ) => {
+      setChannels((prev) => prev.map((strip) => (strip.id === id ? updater(strip) : strip)));
+    };
+    const parseOn = (value: unknown): boolean | null => {
+      if (typeof value === "boolean") return value;
+      if (typeof value === "number") return value > 0;
+      return null;
+    };
+    const applyFaderOrMute = (
+      param: string,
+      value: unknown,
+      strip: ConsoleChannelStripState
+    ): ConsoleChannelStripState => {
+      if (param === "fader" && typeof value === "number") {
+        return { ...strip, faderDb: Math.round(normalizedToFaderDb(value) * 10) / 10 };
+      }
+      const on = parseOn(value);
+      if (param === "on" && on !== null) return { ...strip, mute: !on };
+      return strip;
+    };
+
     listen<{ address?: string; path?: string; args?: unknown[]; value?: unknown }>("console://osc", (event) => {
       if (disposed) return;
       const payload = event.payload || {};
       const address = payload.address || payload.path || "";
       const rawVal = Array.isArray(payload.args) && payload.args.length > 0 ? payload.args[0] : payload.value;
+
+      // USB recorder transport state (both local echoes and hardware pushes).
+      if (address === TAPE_STATE_ADDRESS && typeof rawVal === "number") {
+        setRecorderState(Math.max(0, Math.min(4, Math.round(rawVal))));
+        return;
+      }
       if (address === "/main/st/mix/fader" && typeof rawVal === "number") {
         setMainLrDb(Math.round(normalizedToFaderDb(rawVal) * 10) / 10);
         return;
       }
-      if (address === "/main/st/mix/on" && (typeof rawVal === "number" || typeof rawVal === "boolean")) {
-        const isOn = typeof rawVal === "boolean" ? rawVal : rawVal > 0;
-        setMainLrMute(!isOn);
+      if (address === "/main/st/mix/on") {
+        const isOn = parseOn(rawVal);
+        if (isOn !== null) setMainLrMute(!isOn);
         return;
       }
-      const chMatch = address.match(/^\/ch\/(\d{2})\/mix\/(fader|on)$/);
-      if (!chMatch) return;
-      const param = chMatch[2];
-      const targetId = `ch-${chMatch[1]}`;
 
-      setChannels((prev) =>
-        prev.map((ch) => {
-          if (ch.id !== targetId) return ch;
-          if (param === "fader" && typeof rawVal === "number") {
-            const faderDb = Math.round(normalizedToFaderDb(rawVal) * 10) / 10;
-            return { ...ch, faderDb };
+      // /ch/NN/config/name — scribble strip labels.
+      const nameMatch = address.match(/^\/ch\/(\d{2})\/config\/name$/);
+      if (nameMatch && typeof rawVal === "string") {
+        patchStrip(`ch-${nameMatch[1]}`, (strip) => ({ ...strip, name: rawVal }));
+        return;
+      }
+
+      // /ch/NN/mix/(fader|on|pan) — fader, mute and pan. OSC pan is 0..1 (0.5 center).
+      const channelMatch = address.match(/^\/ch\/(\d{2})\/mix\/(fader|on|pan)$/);
+      if (channelMatch) {
+        const param = channelMatch[2];
+        patchStrip(`ch-${channelMatch[1]}`, (strip) => {
+          if (param === "pan" && typeof rawVal === "number") {
+            return { ...strip, pan: Math.round((rawVal - 0.5) * 200) };
           }
-          if (param === "on" && (typeof rawVal === "number" || typeof rawVal === "boolean")) {
-            const isOn = typeof rawVal === "boolean" ? rawVal : rawVal > 0;
-            return { ...ch, mute: !isOn };
-          }
-          return ch;
-        })
-      );
+          return applyFaderOrMute(param, rawVal, strip);
+        });
+        return;
+      }
+
+      // /bus/NN/mix/* and /mtx/NN/mix/* — bus and matrix strips.
+      const stripMatch = address.match(/^\/(bus|mtx)\/(\d{2})\/mix\/(fader|on)$/);
+      if (stripMatch) {
+        const id = `${stripMatch[1]}-${stripMatch[2]}`;
+        patchStrip(id, (strip) => applyFaderOrMute(stripMatch[3], rawVal, strip));
+        return;
+      }
+
+      // /dca/N/(fader|on) — DCA masters (accept an optional /mix/ segment too).
+      const dcaMatch = address.match(/^\/dca\/(\d{1,2})\/(?:mix\/)?(fader|on)$/);
+      if (dcaMatch) {
+        const id = `dca-${parseInt(dcaMatch[1], 10)}`;
+        patchStrip(id, (strip) => applyFaderOrMute(dcaMatch[2], rawVal, strip));
+      }
     })
       .then((fn) => {
         if (disposed) fn();
@@ -667,6 +722,89 @@ export const ConsoleFullMixerModal: React.FC<ConsoleFullMixerModalProps> = ({
             </button>
           )}
         </div>
+      </div>
+
+      {/* Compact USB stereo recorder transport — /-stat/tape/state */}
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+          padding: "4px 10px",
+          background: "#0B0D10",
+          borderBottom: "1px solid #222834",
+          flexShrink: 0,
+          flexWrap: "wrap",
+        }}
+      >
+        <span
+          style={{
+            fontSize: 10.5,
+            fontWeight: 800,
+            textTransform: "uppercase",
+            letterSpacing: 0.6,
+            color: "#94A3B8",
+          }}
+        >
+          USB Stereo Recorder
+        </span>
+        <span
+          aria-label={`Recorder state: ${usbRecorderLabel(recorderState)}`}
+          style={{
+            minWidth: 76,
+            fontSize: 10,
+            fontFamily: '"JetBrains Mono", ui-monospace, monospace',
+            color: recorderState === 4 ? "#F87171" : recorderState === 2 ? "#34D399" : "#94A3B8",
+          }}
+        >
+          ● {usbRecorderLabel(recorderState)}
+        </span>
+        <div style={{ display: "flex", gap: 4 }}>
+          {([
+            ["STOP", 0],
+            ["PAUSE", 1],
+            ["PLAY", 2],
+            ["REC", 4],
+          ] as Array<[string, number]>).map(([label, state]) => {
+            const active = recorderState === state;
+            const danger = state === 4;
+            return (
+              <button
+                key={label}
+                type="button"
+                title={`Set recorder to ${usbRecorderLabel(state)}`}
+                onClick={() => {
+                  setRecorderState(state);
+                  emitOsc(TAPE_STATE_ADDRESS, state);
+                }}
+                style={{
+                  height: 24,
+                  minWidth: 48,
+                  padding: "0 8px",
+                  borderRadius: 4,
+                  fontSize: 10,
+                  fontWeight: 800,
+                  cursor: "pointer",
+                  background: active ? (danger ? "#991B1B" : "#1E3A4C") : "#161B24",
+                  border: `1px solid ${active ? (danger ? "#EF4444" : "#22D3EE") : "#283344"}`,
+                  color: active ? "#FFFFFF" : "#94A3B8",
+                }}
+              >
+                {label}
+              </button>
+            );
+          })}
+        </div>
+        <span
+          style={{
+            marginLeft: "auto",
+            fontSize: 9.5,
+            color: "#64748B",
+            fontFamily: '"JetBrains Mono", ui-monospace, monospace',
+          }}
+        >
+          {TAPE_STATE_ADDRESS}
+        </span>
       </div>
 
       {/* MAIN SCREEN VIEWPORT */}

@@ -50,6 +50,241 @@ pub mod paths {
     pub const WS: &str = "/v1/ws";
 }
 
+// -------------------------------------------------------------------------------------------------
+// RFC 6762 zero-configuration discovery for the HTTP presentation service
+// -------------------------------------------------------------------------------------------------
+
+/// IPv4 multicast group used for link-local DNS queries (RFC 6762 §2).
+pub const MDNS_MULTICAST: Ipv4Addr = Ipv4Addr::new(224, 0, 0, 251);
+/// Link-local multicast DNS port (RFC 6762 §2).
+pub const MDNS_PORT: u16 = 5353;
+/// Service type advertised by HTTP presentation responders.
+///
+/// Written as explicit hex bytes so the exact wire labels are unambiguous:
+/// `_presentationsvc._tcp.local`. Transport/socket handling belongs to the adapter layer; this
+/// module only builds the wire query and parses the answer set.
+pub const PRESENTATION_SERVICE_TYPE: &str =
+    "\x5f\x70\x72\x65\x73\x65\x6e\x74\x61\x74\x69\x6f\x6e\x73\x76\x63\x2e\x5f\x74\x63\x70\x2e\x6c\x6f\x63\x61\x6c";
+
+const DNS_TYPE_A: u16 = 1;
+const DNS_TYPE_PTR: u16 = 12;
+const DNS_TYPE_SRV: u16 = 33;
+const DNS_CLASS_IN: u16 = 1;
+const DNS_CLASS_MASK: u16 = 0x7FFF; // clears the mDNS cache-flush bit
+
+/// A discovered HTTP presentation responder with a concretely dialable endpoint.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiscoveredPresentationService {
+    pub instance: String,
+    pub host: String,
+    pub port: u16,
+    pub addr: Option<Ipv4Addr>,
+}
+
+impl DiscoveredPresentationService {
+    /// Prefer the A-record address; fall back to the SRV target hostname.
+    pub fn endpoint(&self) -> String {
+        let host = self
+            .addr
+            .map(|a| a.to_string())
+            .unwrap_or_else(|| self.host.clone());
+        format!("{host}:{}", self.port)
+    }
+}
+
+fn encode_dns_name(out: &mut Vec<u8>, name: &str) {
+    for label in name.trim_end_matches('.').split('.') {
+        let bytes = label.as_bytes();
+        out.push(bytes.len().min(63) as u8);
+        out.extend_from_slice(&bytes[..bytes.len().min(63)]);
+    }
+    out.push(0);
+}
+
+/// Read a possibly compressed DNS name. Returns the lowercase name and the offset immediately
+/// after the first (uncompressed) encoding so record parsing can continue.
+fn read_dns_name(buf: &[u8], offset: usize) -> Result<(String, usize), ProtocolError> {
+    let mut labels = Vec::new();
+    let mut cursor = offset;
+    let mut after_name = None;
+    let mut hops = 0usize;
+
+    loop {
+        if cursor >= buf.len() {
+            return Err(ProtocolError::malformed("truncated DNS name"));
+        }
+        let len = buf[cursor];
+        if len & 0xC0 == 0xC0 {
+            if cursor + 1 >= buf.len() {
+                return Err(ProtocolError::malformed("truncated DNS name pointer"));
+            }
+            let target = (((len as usize & 0x3F) << 8) | buf[cursor + 1] as usize) & 0x3FFF;
+            if after_name.is_none() {
+                after_name = Some(cursor + 2);
+            }
+            cursor = target;
+            hops += 1;
+            if hops > 32 {
+                return Err(ProtocolError::malformed("DNS name compression loop"));
+            }
+            continue;
+        }
+        if len == 0 {
+            if after_name.is_none() {
+                after_name = Some(cursor + 1);
+            }
+            break;
+        }
+        let end = cursor + 1 + len as usize;
+        if end > buf.len() {
+            return Err(ProtocolError::malformed("truncated DNS label"));
+        }
+        labels.push(String::from_utf8_lossy(&buf[cursor + 1..end]).to_string());
+        cursor = end;
+    }
+    Ok((
+        labels.join(".").to_ascii_lowercase(),
+        after_name.unwrap_or(cursor),
+    ))
+}
+
+/// Build a standard-query PTR lookup for the HTTP presentation service.
+///
+/// The QU (unicast-response) bit is set in QCLASS so responders answer from the ephemeral source
+/// port and callers do not need to bind the shared mDNS port.
+pub fn presentation_ptr_query() -> Vec<u8> {
+    let mut out = Vec::with_capacity(64);
+    out.extend_from_slice(&0u16.to_be_bytes()); // transaction id
+    out.extend_from_slice(&0x0000u16.to_be_bytes()); // QR=0, standard query
+    out.extend_from_slice(&1u16.to_be_bytes()); // QDCOUNT
+    out.extend_from_slice(&0u16.to_be_bytes()); // ANCOUNT
+    out.extend_from_slice(&0u16.to_be_bytes()); // NSCOUNT
+    out.extend_from_slice(&0u16.to_be_bytes()); // ARCOUNT
+    encode_dns_name(&mut out, PRESENTATION_SERVICE_TYPE);
+    out.extend_from_slice(&DNS_TYPE_PTR.to_be_bytes());
+    out.extend_from_slice(&(DNS_CLASS_IN | 0x8000).to_be_bytes());
+    out
+}
+
+fn is_presentation_service(name: &str) -> bool {
+    name.to_ascii_lowercase()
+        .ends_with(PRESENTATION_SERVICE_TYPE)
+}
+
+fn service_instance(name: &str) -> String {
+    let lower = name.to_ascii_lowercase();
+    let cut = lower
+        .strip_suffix(PRESENTATION_SERVICE_TYPE)
+        .unwrap_or(name);
+    cut.trim_end_matches('.').to_string()
+}
+
+/// Parse one mDNS datagram into HTTP presentation endpoints.
+///
+/// PTR records advertise instance names, SRV records supply the port and target host, and A
+/// records supply the address. Records may arrive in any order and may use compression pointers;
+/// SRV/A pairs are commonly in the Additional section.
+pub fn parse_presentation_response(
+    datagram: &[u8],
+) -> Result<Vec<DiscoveredPresentationService>, ProtocolError> {
+    if datagram.len() < 12 {
+        return Err(ProtocolError::malformed("DNS header too short"));
+    }
+    let qdcount = u16::from_be_bytes([datagram[4], datagram[5]]) as usize;
+    let ancount = u16::from_be_bytes([datagram[6], datagram[7]]) as usize;
+    let nscount = u16::from_be_bytes([datagram[8], datagram[9]]) as usize;
+    let arcount = u16::from_be_bytes([datagram[10], datagram[11]]) as usize;
+    let mut cursor = 12usize;
+
+    for _ in 0..qdcount {
+        let (_, after) = read_dns_name(datagram, cursor)?;
+        cursor = after;
+        if cursor + 4 > datagram.len() {
+            return Err(ProtocolError::malformed("truncated DNS question"));
+        }
+        cursor += 4;
+    }
+
+    let mut instances: Vec<String> = Vec::new();
+    let mut srvs: std::collections::HashMap<String, (u16, String)> =
+        std::collections::HashMap::new();
+    let mut addrs: std::collections::HashMap<String, Ipv4Addr> =
+        std::collections::HashMap::new();
+
+    let record_count = ancount + nscount + arcount;
+    for index in 0..record_count {
+        let (name, after_name) = read_dns_name(datagram, cursor)?;
+        cursor = after_name;
+        if cursor + 10 > datagram.len() {
+            return Err(ProtocolError::malformed("truncated DNS record header"));
+        }
+        let rtype = u16::from_be_bytes([datagram[cursor], datagram[cursor + 1]]);
+        let rclass = u16::from_be_bytes([datagram[cursor + 2], datagram[cursor + 3]]);
+        let rdlength = u16::from_be_bytes([datagram[cursor + 8], datagram[cursor + 9]]) as usize;
+        cursor += 10;
+        if cursor + rdlength > datagram.len() {
+            return Err(ProtocolError::malformed("truncated DNS record data"));
+        }
+        let data_start = cursor;
+        let data = &datagram[cursor..cursor + rdlength];
+        cursor += rdlength;
+
+        let is_authority = index >= ancount && index < ancount + nscount;
+        if is_authority || (rclass & DNS_CLASS_MASK) != DNS_CLASS_IN {
+            continue;
+        }
+
+        match rtype {
+            DNS_TYPE_PTR => {
+                let (target, _) = read_dns_name(datagram, data_start)?;
+                if is_presentation_service(&target) {
+                    let instance = service_instance(&target);
+                    if !instance.is_empty() && !instances.contains(&instance) {
+                        instances.push(instance);
+                    }
+                }
+            }
+            DNS_TYPE_SRV => {
+                if data.len() < 6 || !is_presentation_service(&name) {
+                    continue;
+                }
+                let port = u16::from_be_bytes([data[4], data[5]]);
+                let (target, _) = read_dns_name(datagram, data_start + 6)?;
+                srvs.insert(service_instance(&name), (port, target));
+            }
+            DNS_TYPE_A => {
+                if data.len() == 4 {
+                    addrs.insert(name, Ipv4Addr::new(data[0], data[1], data[2], data[3]));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let mut services = Vec::new();
+    for (instance, (port, host)) in srvs {
+        if port == 0 {
+            continue;
+        }
+        let addr = addrs.get(&host).copied();
+        services.push(DiscoveredPresentationService {
+            instance,
+            host,
+            port,
+            addr,
+        });
+    }
+    // PTR-advertised responders come first; a bare SRV answer is still usable.
+    services.sort_by(|a, b| {
+        let a_ptr = instances.iter().any(|i| *i == a.instance);
+        let b_ptr = instances.iter().any(|i| *i == b.instance);
+        b_ptr
+            .cmp(&a_ptr)
+            .then_with(|| a.instance.cmp(&b.instance))
+    });
+    Ok(services)
+}
+
 /// Trigger a specific slide index in the active presentation.
 pub fn goto_slide_path(index: u32) -> String {
     format!("/v1/presentation/active/{index}/trigger")
@@ -872,5 +1107,113 @@ mod tests {
         });
         assert_eq!(coord.phase(), PrerollPhase::Failed);
         assert!(coord.activation().is_none());
+    }
+
+    fn dns_name_bytes(name: &str) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        encode_dns_name(&mut bytes, name);
+        bytes
+    }
+
+    fn dns_answer(name: &str, rtype: u16, rdata: &[u8]) -> Vec<u8> {
+        dns_answer_with_class(name, rtype, DNS_CLASS_IN, rdata)
+    }
+
+    fn dns_answer_with_class(name: &str, rtype: u16, rclass: u16, rdata: &[u8]) -> Vec<u8> {
+        let mut out = dns_name_bytes(name);
+        out.extend_from_slice(&rtype.to_be_bytes());
+        out.extend_from_slice(&rclass.to_be_bytes());
+        out.extend_from_slice(&30u32.to_be_bytes()); // TTL
+        out.extend_from_slice(&(rdata.len() as u16).to_be_bytes());
+        out.extend_from_slice(rdata);
+        out
+    }
+
+    #[test]
+    fn mdns_ptr_query_uses_hex_service_type_and_unicast_response_bit() {
+        assert_eq!(PRESENTATION_SERVICE_TYPE, "_presentationsvc._tcp.local");
+        let query = presentation_ptr_query();
+        assert_eq!(&query[..2], &0u16.to_be_bytes());
+        assert_eq!(&query[2..4], &0x0000u16.to_be_bytes());
+        assert_eq!(&query[4..6], &1u16.to_be_bytes());
+        assert_eq!(&query[6..12], &[0u8; 6]);
+        assert!(query[12..].starts_with(&dns_name_bytes(PRESENTATION_SERVICE_TYPE)));
+        assert_eq!(
+            &query[query.len() - 4..query.len() - 2],
+            &DNS_TYPE_PTR.to_be_bytes()
+        );
+        assert_eq!(
+            &query[query.len() - 2..],
+            &(DNS_CLASS_IN | 0x8000).to_be_bytes()
+        );
+    }
+
+    #[test]
+    fn mdns_ptr_srv_a_answer_builds_endpoint() {
+        let instance = "Presentation (Sanctuary)._presentationsvc._tcp.local";
+        let host = "presentation-pc.local";
+        let mut response = vec![0u8; 12];
+        response[7] = 3; // ANCOUNT = PTR, SRV, A
+        response.extend(dns_answer(
+            PRESENTATION_SERVICE_TYPE,
+            DNS_TYPE_PTR,
+            &dns_name_bytes(instance),
+        ));
+        let mut srv_rdata = vec![0, 0, 0, 0]; // priority, weight
+        srv_rdata.extend_from_slice(&18514u16.to_be_bytes());
+        srv_rdata.extend(dns_name_bytes(host));
+        response.extend(dns_answer(instance, DNS_TYPE_SRV, &srv_rdata));
+        response.extend(dns_answer(host, DNS_TYPE_A, &[192, 0, 2, 30]));
+
+        let found = parse_presentation_response(&response).unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].instance, "presentation (sanctuary)");
+        assert_eq!(found[0].port, 18514);
+        assert_eq!(found[0].endpoint(), "192.0.2.30:18514");
+    }
+
+    #[test]
+    fn mdns_additional_records_compression_and_cache_flush_are_supported() {
+        let instance = "Presentation (Nave)._presentationsvc._tcp.local";
+        let host = "nave-pc.local";
+        let host_offset = 12u16;
+        let mut response = vec![0u8; 12];
+        response[7] = 2; // ANCOUNT: A + PTR
+        response[11] = 1; // ARCOUNT: SRV in the additional section
+        // The host name starts at offset 12 so the SRV can point back to it.
+        response.extend(dns_answer_with_class(
+            host,
+            DNS_TYPE_A,
+            DNS_CLASS_IN | 0x8000,
+            &[192, 0, 2, 40],
+        ));
+        response.extend(dns_answer(
+            PRESENTATION_SERVICE_TYPE,
+            DNS_TYPE_PTR,
+            &dns_name_bytes(instance),
+        ));
+        let mut srv_rdata = vec![0, 0, 0, 0];
+        srv_rdata.extend_from_slice(&55000u16.to_be_bytes());
+        srv_rdata.extend_from_slice(&(0xC000u16 | host_offset).to_be_bytes());
+        response.extend(dns_answer_with_class(
+            instance,
+            DNS_TYPE_SRV,
+            DNS_CLASS_IN | 0x8000,
+            &srv_rdata,
+        ));
+
+        let found = parse_presentation_response(&response).unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].instance, "presentation (nave)");
+        assert_eq!(found[0].endpoint(), "192.0.2.40:55000");
+    }
+
+    #[test]
+    fn mdns_malformed_datagrams_are_rejected() {
+        assert!(parse_presentation_response(&[0u8; 6]).is_err());
+        let mut response = vec![0u8; 12];
+        response[7] = 1;
+        response.push(9); // label length without label bytes
+        assert!(parse_presentation_response(&response).is_err());
     }
 }

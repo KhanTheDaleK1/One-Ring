@@ -1,10 +1,15 @@
 //! Live Console Console / Console Console adapter (OSC over UDP `:10023`).
 //!
-//! Uses the clean-room codec in [`crate::protocols::console`] and implements the Phase 2 contract:
+//! Uses the clean-room codec in [`crate::protocols::console_osc`] and implements the Phase 2
+//! contract:
 //!
 //! * `/xinfo` identity probe, then `/xremote` every 8 s (< 10 s expiry).
-//! * Bidirectional parameter updates for DCAs, channels, and Main LR.
-//! * `/meters/1` frames coalesced to a 20 Hz latest-wins `meter://console` stream.
+//! * One-shot parameter query burst after the identity handshake so every channel, bus, matrix,
+//!   DCA and main control hydrates from the hardware on connect.
+//! * Bidirectional parameter updates for DCAs, channels, buses, matrices, and Main LR.
+//! * `/meters/1` (channels/DCAs) and `/meters/2` (buses/matrices/mains) frames coalesced to a
+//!   20 Hz latest-wins `meter://console` stream; `/meters/4` feeds the 100-band RTA.
+//! * USB stereo recorder transport state (`/-stat/tape/state`) forwarded to `console://osc`.
 //! * Optimistic state patches after writes, reconciled by the `/xremote` echo.
 //! * Exponential reconnect backoff and `device://health` transitions.
 
@@ -129,7 +134,9 @@ async fn serve(
     send(&socket, &OscMessage::xinfo()).await?;
     send(&socket, &OscMessage::xremote()).await?;
     send(&socket, &OscMessage::meters("/meters/1")).await?;
+    send(&socket, &OscMessage::meters("/meters/2")).await?;
     send(&socket, &OscMessage::meters("/meters/4")).await?;
+    let mut initial_sync_sent = false;
     let mut last_sent = Some(Instant::now());
     let mut last_rx = Instant::now();
     let mut ever_received = false;
@@ -148,6 +155,7 @@ async fn serve(
     meter_tick.tick().await;
 
     let mut pending_meter: Option<MeterFrame> = None;
+    let mut pending_aux_meter: Option<MeterFrame> = None;
     let mut buf = [0u8; 4096];
 
     loop {
@@ -158,6 +166,7 @@ async fn serve(
                 let rtt = last_sent
                     .map(|sent| sent.elapsed().as_millis().min(u32::MAX as u128) as u32)
                     .unwrap_or(0);
+                let first_packet = !ever_received;
                 if !ever_received {
                     ever_received = true;
                     *backoff = Duration::from_millis(500);
@@ -166,7 +175,32 @@ async fn serve(
                 let frame = &buf[..n];
                 match OscMessage::decode(frame) {
                     Ok(message) => {
-                        handle_message(message, config, state, sink, reporter, &mut pending_meter, rtt);
+                        // The console answers `/xinfo` with `/info`. Treat that reply — or any
+                        // first inbound packet on firmware that stays silent — as the handshake
+                        // completing, then request every parameter the UI can display exactly
+                        // once. This is what turns a fresh connection into a full two-way sync.
+                        if !initial_sync_sent
+                            && (first_packet
+                                || matches!(message.address.as_str(), "/info" | "/xinfo" | "/status"))
+                        {
+                            initial_sync_sent = true;
+                            send_initial_sync(&socket).await?;
+                            last_sent = Some(Instant::now());
+                            sink.log(format!(
+                                "[console] Requested initial parameter sync ({} queries)",
+                                OscMessage::initial_sync_queries().len()
+                            ));
+                        }
+                        handle_message(
+                            message,
+                            config,
+                            state,
+                            sink,
+                            reporter,
+                            &mut pending_meter,
+                            &mut pending_aux_meter,
+                            rtt,
+                        );
                     }
                     Err(err) => {
                         // Never let one malformed datagram kill the keepalive loop.
@@ -179,6 +213,7 @@ async fn serve(
             _ = keepalive.tick() => {
                 send(&socket, &OscMessage::xremote()).await?;
                 send(&socket, &OscMessage::meters("/meters/1")).await?;
+                send(&socket, &OscMessage::meters("/meters/2")).await?;
                 send(&socket, &OscMessage::meters("/meters/4")).await?;
                 last_sent = Some(Instant::now());
             }
@@ -202,6 +237,10 @@ async fn serve(
                     sequence += 1;
                     emit_meters(frame, config, state, sink, sequence);
                 }
+                if let Some(frame) = pending_aux_meter.take() {
+                    sequence += 1;
+                    emit_aux_meters(frame, sink, sequence);
+                }
             }
             command = commands.recv() => {
                 let Some(command) = command else {
@@ -214,6 +253,15 @@ async fn serve(
     }
 }
 
+/// Send the one-shot handshake query burst. Every query is an argument-less OSC message, which is
+/// how the console reports the current value of an address back to a subscriber.
+async fn send_initial_sync(socket: &UdpSocket) -> Result<(), String> {
+    for query in OscMessage::initial_sync_queries() {
+        send(socket, &query).await?;
+    }
+    Ok(())
+}
+
 fn handle_message(
     message: OscMessage,
     config: &ConsoleConfig,
@@ -221,6 +269,7 @@ fn handle_message(
     sink: &Arc<dyn EventSink>,
     reporter: &HealthReporter,
     pending_meter: &mut Option<MeterFrame>,
+    pending_aux_meter: &mut Option<MeterFrame>,
     rtt: u32,
 ) {
     match message.address.as_str() {
@@ -229,9 +278,16 @@ fn handle_message(
             reporter.ready(format!("/info: {text}"), rtt.max(1));
             sink.log(format!("[console] {text}"));
         }
-        "/meters/1" | "/meters/2" => {
+        "/meters/1" => {
             if let Ok(frame) = parse_meters_message(&message) {
                 *pending_meter = Some(frame);
+            }
+        }
+        "/meters/2" => {
+            // Buses / matrices / mains use a different meter bank than `/meters/1`; keeping
+            // them separate avoids mislabelling bus levels as input channels.
+            if let Ok(frame) = parse_meters_message(&message) {
+                *pending_aux_meter = Some(frame);
             }
         }
         "/meters/4" => {
@@ -248,15 +304,18 @@ fn handle_message(
             }
         }
         other => {
-            // Forward live hardware parameter pushes to ConsoleFullConsoleModal (`console://osc`).
-            if let Some(first_val) = message.args.first().and_then(|a| match a {
-                OscArg::Float(v) => Some(json!(*v)),
-                OscArg::Int(v) => Some(json!(*v)),
-                OscArg::Bool(v) => Some(json!(*v)),
-                OscArg::String(s) => Some(json!(s)),
-                _ => None,
-            }) {
-                sink.emit_raw("console://osc", json!({ "address": other, "value": first_val }));
+            // Forward live hardware parameter pushes to ConsoleFullMixerModal (`console://osc`).
+            // The recorder transport is emitted below with an extra human-readable label.
+            if other != "/-stat/tape/state" {
+                if let Some(first_val) = message.args.first().and_then(|a| match a {
+                    OscArg::Float(v) => Some(json!(*v)),
+                    OscArg::Int(v) => Some(json!(*v)),
+                    OscArg::Bool(v) => Some(json!(*v)),
+                    OscArg::String(s) => Some(json!(s)),
+                    _ => None,
+                }) {
+                    sink.emit_raw("console://osc", json!({ "address": other, "value": first_val }));
+                }
             }
 
             if let Some((number, suffix)) = indexed_path(other, "/dca/") {
@@ -310,6 +369,21 @@ fn handle_message(
             } else if other == "/-action/goscene" {
                 if let Some(scene) = int_arg(&message) {
                     sink.log(format!("[console] Console recalled scene {scene}"));
+                }
+            } else if other == "/-stat/tape/state" {
+                if let Some(state) = int_arg(&message) {
+                    sink.emit_raw(
+                        "console://osc",
+                        json!({
+                            "address": other,
+                            "value": state,
+                            "label": OscMessage::usb_recorder_state_label(state),
+                        }),
+                    );
+                    sink.log(format!(
+                        "[console] USB recorder: {}",
+                        OscMessage::usb_recorder_state_label(state)
+                    ));
                 }
             } else if other.starts_with("/") && !other.starts_with("/x") && config.dca_count > 0 {
                 // Recognized-but-not-yet-mapped path. Keep the log quiet; only surface unknown
@@ -438,6 +512,42 @@ fn emit_meters(
     ));
 }
 
+/// Emit the `/meters/2` bank (buses, matrices, mains) at the same coalesced cadence as
+/// `/meters/1`, with keys that cannot collide with input-channel meters.
+fn emit_aux_meters(frame: MeterFrame, sink: &Arc<dyn EventSink>, sequence: u64) {
+    let channels = aux_meter_channels(&frame);
+    if channels.is_empty() {
+        return;
+    }
+    sink.meter(MeterEvent::new("console", "console", sequence, channels));
+}
+
+/// Map `/meters/2` bytes to stable meter keys: 16 buses, 6 matrices, then the stereo main.
+pub fn aux_meter_channels(frame: &MeterFrame) -> Vec<MeterChannel> {
+    let mut out = Vec::with_capacity(frame.levels.len());
+    for (index, byte) in frame.levels.iter().copied().enumerate() {
+        let db = meter_byte_to_db(byte);
+        let (key, label) = if index < 16 {
+            (format!("bus{:02}", index + 1), format!("Bus {}", index + 1))
+        } else if index < 22 {
+            let number = index - 15;
+            (format!("mtx{number}"), format!("Mtx {number}"))
+        } else if index == 22 {
+            ("main_st".to_string(), "Main L/R".to_string())
+        } else {
+            continue;
+        };
+        out.push(MeterChannel {
+            key,
+            label,
+            db,
+            peak: byte == 255,
+            muted: false,
+        });
+    }
+    out
+}
+
 /// Map `/meters/1` bytes to stable meter keys. Channels first, then the configured DCA window.
 pub fn meter_channels(frame: &MeterFrame, config: &ConsoleConfig) -> Vec<MeterChannel> {
     let mut out = Vec::with_capacity(frame.levels.len());
@@ -473,6 +583,7 @@ fn raw_osc_uses_int(address: &str) -> bool {
     let path = address.trim_end_matches('/');
     path == "/-action/goscene"
         || path == "/-action/clearsolo"
+        || path == "/-stat/tape/state"
         || path.starts_with("/config/mute/")
         || (path.starts_with("/headamp/") && path.ends_with("/phantom"))
         || path == "/preamp/invert"
@@ -603,9 +714,99 @@ mod tests {
         );
         let config = ConsoleConfig::new("127.0.0.1");
         let mut pending = None;
-        handle_message(message, &config, &state, &events, &reporter, &mut pending, 1);
+        let mut pending_aux = None;
+        handle_message(
+            message,
+            &config,
+            &state,
+            &events,
+            &reporter,
+            &mut pending,
+            &mut pending_aux,
+            1,
+        );
         assert!(with_state(&state, |s| s.dcas[0].muted));
         assert!(sink.snapshot().states.iter().any(|p| p.patch.get("dcas").is_some()));
+    }
+
+    #[test]
+    fn meters2_bank_maps_buses_matrices_and_main() {
+        let frame = MeterFrame {
+            levels: (0..23).map(|i| (i + 1) as u8).collect(),
+        };
+        let channels = aux_meter_channels(&frame);
+        assert_eq!(channels.len(), 23);
+        assert_eq!(channels[0].key, "bus01");
+        assert_eq!(channels[15].key, "bus16");
+        assert_eq!(channels[16].key, "mtx1");
+        assert_eq!(channels[21].key, "mtx6");
+        assert_eq!(channels[22].key, "main_st");
+    }
+
+    #[test]
+    fn meters2_message_is_kept_separate_from_channel_meters() {
+        let (state, sink) = fixture();
+        let events = sink.as_event_sink();
+        let reporter = HealthReporter::new(
+            "console",
+            "Console",
+            "Console",
+            "OSC",
+            state.clone(),
+            events.clone(),
+        );
+        let config = ConsoleConfig::new("127.0.0.1");
+        let mut pending = None;
+        let mut pending_aux = None;
+        let message = OscMessage::new(
+            "/meters/2",
+            vec![OscArg::Blob(vec![2, 0, 0, 0, 200, 100])],
+        );
+        handle_message(
+            message,
+            &config,
+            &state,
+            &events,
+            &reporter,
+            &mut pending,
+            &mut pending_aux,
+            1,
+        );
+        assert!(pending.is_none());
+        let aux = pending_aux.take().unwrap();
+        assert_eq!(aux.levels, vec![200, 100]);
+        emit_aux_meters(aux, &events, 2);
+        let channels = &sink.snapshot().meters[0].channels;
+        assert_eq!(channels[0].key, "bus01");
+        assert_eq!(channels[1].key, "bus02");
+    }
+
+    #[test]
+    fn recorder_state_push_is_reported_with_label() {
+        let (state, sink) = fixture();
+        let events = sink.as_event_sink();
+        let reporter = HealthReporter::new(
+            "console",
+            "Console",
+            "Console",
+            "OSC",
+            state.clone(),
+            events.clone(),
+        );
+        let config = ConsoleConfig::new("127.0.0.1");
+        let mut pending = None;
+        let mut pending_aux = None;
+        handle_message(
+            OscMessage::usb_recorder_state(3),
+            &config,
+            &state,
+            &events,
+            &reporter,
+            &mut pending,
+            &mut pending_aux,
+            1,
+        );
+        assert!(sink.snapshot().logs.iter().any(|line| line.contains("PauseRec")));
     }
 
     #[test]
@@ -624,6 +825,7 @@ mod tests {
         for path in [
             "/-action/goscene",
             "/-action/clearsolo",
+            "/-stat/tape/state",
             "/config/mute/3",
             "/headamp/12/phantom",
             "/preamp/invert",

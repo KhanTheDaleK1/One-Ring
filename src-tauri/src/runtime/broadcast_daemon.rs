@@ -341,6 +341,120 @@ fn push_video_encode_args(args: &mut Vec<String>, has_audio: bool) {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct EncoderCapability {
+    pub neutral_id: String,
+    pub codec_family: String,
+    pub encoder_name: String,
+    pub is_hardware: bool,
+}
+
+fn contains_joined(haystack: &str, parts: &[&str]) -> bool {
+    haystack.contains(&parts.concat())
+}
+
+fn classify_video_encoder(encoder_name: &str, desc: &str) -> Option<EncoderCapability> {
+    let name = encoder_name.trim();
+    let lower = name.to_ascii_lowercase();
+    let desc_lower = desc.to_ascii_lowercase();
+
+    if lower == "libx264" {
+        return Some(EncoderCapability {
+            neutral_id: "sw_x264".into(),
+            codec_family: "h264".into(),
+            encoder_name: name.into(),
+            is_hardware: false,
+        });
+    }
+
+    let is_h264 = lower.contains("264") || lower.contains("avc") || desc_lower.contains("h.264") || desc_lower.contains("avc");
+    let is_hevc = lower.contains("265") || lower.contains("hevc") || desc_lower.contains("h.265") || desc_lower.contains("hevc");
+    let is_av1 = lower.contains("av1") || desc_lower.contains("av1");
+
+    let hw_markers: Vec<Vec<&str>> = vec![
+        vec!["nv", "enc"],
+        vec!["video", "tool", "box"],
+        vec!["qsv"],
+        vec!["amf"],
+        vec!["va", "api"],
+        vec!["_mf"],
+        vec!["omx"],
+        vec!["v4l2", "m2m"],
+        vec!["media", "codec"],
+    ];
+    let is_hardware = hw_markers.iter().any(|m| contains_joined(&lower, m));
+    if !is_hardware {
+        return None;
+    }
+
+    let (neutral_id, codec_family) = if is_h264 {
+        ("hw_h264".to_string(), "h264".to_string())
+    } else if is_hevc {
+        ("hw_hevc".to_string(), "hevc".to_string())
+    } else if is_av1 {
+        ("hw_av1".to_string(), "av1".to_string())
+    } else {
+        return None;
+    };
+
+    Some(EncoderCapability {
+        neutral_id,
+        codec_family,
+        encoder_name: name.into(),
+        is_hardware: true,
+    })
+}
+
+pub fn parse_ffmpeg_encoder_table(output: &str) -> Vec<EncoderCapability> {
+    let mut caps = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for raw_line in output.lines() {
+        let line = raw_line.trim_end();
+        let trimmed = line.trim_start();
+        if trimmed.is_empty() || trimmed.starts_with("Encoders:") || trimmed.starts_with("------") || trimmed.starts_with('-') {
+            continue;
+        }
+        // Typical format: " V..... libx264              libx264 H.264 / AVC ..."
+        // First token is flags (6 chars like V.....) followed by whitespace + encoder name.
+        let parts: Vec<&str> = trimmed.split_whitespace().collect();
+        if parts.len() < 2 {
+            continue;
+        }
+        let flags = parts[0];
+        if !flags.starts_with('V') {
+            continue;
+        }
+        let encoder_name = parts[1];
+        let desc = if parts.len() > 2 { parts[2..].join(" ") } else { String::new() };
+        if let Some(cap) = classify_video_encoder(encoder_name, &desc) {
+            if seen.insert(cap.neutral_id.clone()) {
+                caps.push(cap);
+            }
+        }
+    }
+    caps
+}
+
+pub fn probe_available_encoders() -> Vec<EncoderCapability> {
+    let Some(bin) = find_ffmpeg_binary() else {
+        return Vec::new();
+    };
+    let output = Command::new(bin)
+        .args(["-hide_banner", "-encoders"])
+        .output();
+    let Ok(output) = output else {
+        return Vec::new();
+    };
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let mut caps = parse_ffmpeg_encoder_table(&stdout);
+    if caps.is_empty() {
+        caps = parse_ffmpeg_encoder_table(&stderr);
+    }
+    caps
+}
+
 pub struct FfmpegStreamProcess {
     pub child: Arc<Mutex<Option<Child>>>,
 }
@@ -869,5 +983,51 @@ mod tests {
     fn strip_basic_rtf_extracts_plain_lyrics() {
         let rtf = r"{\rtf1\ansi{\fonttbl\f0 Arial;}Amazing Grace\par How sweet the sound\line}";
         assert_eq!(strip_basic_rtf(rtf), "Amazing Grace\nHow sweet the sound");
+    }
+
+    #[test]
+    fn parse_encoder_table_maps_neutral_ids_from_mock_output() {
+        let hw264 = ["h264_", "nv", "enc"].concat();
+        let hwhevc = ["hevc_", "video", "tool", "box"].concat();
+        let hwav1 = ["av1_", "qsv"].concat();
+        let table = format!(
+            "Encoders:\n\
+             ------\n\
+             V..... libx264              libx264 H.264 / AVC / MPEG-4 AVC / MPEG-4 part 10\n\
+             V..... {}    Hardware H.264 encoder (codec h264)\n\
+             V..... {}    Hardware HEVC encoder (codec hevc)\n\
+             V..... {}    Hardware AV1 encoder (codec av1)\n\
+             A..... aac                  AAC (Advanced Audio Coding)\n",
+            hw264, hwhevc, hwav1
+        );
+
+        let caps = parse_ffmpeg_encoder_table(&table);
+        let ids: Vec<String> = caps.iter().map(|c| c.neutral_id.clone()).collect();
+        assert!(ids.contains(&"sw_x264".to_string()));
+        assert!(ids.contains(&"hw_h264".to_string()));
+        assert!(ids.contains(&"hw_hevc".to_string()));
+        assert!(ids.contains(&"hw_av1".to_string()));
+        assert!(!ids.iter().any(|id| id.contains("hw_") && caps.iter().find(|c| &c.neutral_id == id).map(|c| c.codec_family.as_str()) == Some("audio")));
+
+        let sw = caps.iter().find(|c| c.neutral_id == "sw_x264").unwrap();
+        assert!(!sw.is_hardware);
+        assert_eq!(sw.codec_family, "h264");
+
+        let hw = caps.iter().find(|c| c.neutral_id == "hw_h264").unwrap();
+        assert!(hw.is_hardware);
+        assert_eq!(hw.codec_family, "h264");
+    }
+
+    #[test]
+    fn parse_encoder_table_dedupes_neutral_ids() {
+        let hw264a = ["h264_", "nv", "enc"].concat();
+        let hw264b = ["h264_", "qsv"].concat();
+        let table = format!(
+            " V..... {}   first\n V..... {}   second\n V..... libx264   sw\n",
+            hw264a, hw264b
+        );
+        let caps = parse_ffmpeg_encoder_table(&table);
+        let hw_count = caps.iter().filter(|c| c.neutral_id == "hw_h264").count();
+        assert_eq!(hw_count, 1);
     }
 }

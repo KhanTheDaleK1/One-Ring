@@ -23,6 +23,7 @@ export interface BroadcastAudioMixerPanelProps {
   onVolumeChange: (id: string, db: number) => void;
   onOpenFilters: (source: SceneSourceItem) => void;
   onUpdateTrackRouting: (id: string, tracks: boolean[]) => void;
+  onUpdateSyncOffset: (id: string, offsetMs: number) => void;
 }
 
 type AudioMonitoringMode = "monitor_off" | "monitor_only" | "monitor_and_output";
@@ -241,6 +242,7 @@ export const BroadcastAudioMixerPanel: React.FC<BroadcastAudioMixerPanelProps> =
   onVolumeChange,
   onOpenFilters,
   onUpdateTrackRouting,
+  onUpdateSyncOffset,
 }) => {
   const [tick, setTick] = useState(0);
   const [showHiddenSources, setShowHiddenSources] = useState(false);
@@ -596,6 +598,20 @@ export const BroadcastAudioMixerPanel: React.FC<BroadcastAudioMixerPanelProps> =
     const next = current.map((val, idx) => (idx === trackIndex ? !val : val));
     setLocalTrackOverrides((prev) => ({ ...prev, [source.id]: next }));
     onUpdateTrackRouting(source.id, next);
+  };
+
+  const handleSyncOffsetChange = (source: SceneSourceItem, rawMs: number) => {
+    const nextMs = Math.max(-950, Math.min(5000, Number.isFinite(rawMs) ? Math.round(rawMs) : 0));
+    setLocalSyncOffsets((prev) => ({ ...prev, [source.id]: nextMs }));
+    onUpdateSyncOffset(source.id, nextMs);
+    const asyncFilterMs = getSourceAsyncDelayMs(source);
+    const delaySec = Math.max(0, Math.min(5, (nextMs + asyncFilterMs) / 1000));
+    for (const chain of dspChainsRef.current) {
+      if (chain.ctx.state === "closed") continue;
+      if (!chain.sourceId || chain.sourceId === source.id) {
+        chain.delay.delayTime.setTargetAtTime(delaySec, chain.ctx.currentTime, 0.01);
+      }
+    }
   };
 
   return (
@@ -1142,7 +1158,7 @@ export const BroadcastAudioMixerPanel: React.FC<BroadcastAudioMixerPanelProps> =
                   </div>
                 </div>
 
-                {/* Row 3: Broadcast Tracks 1-6 Routing Checkboxes */}
+                {/* Row 3: Sync Offset + Broadcast Tracks 1-6 Routing */}
                 <div
                   style={{
                     display: "flex",
@@ -1154,10 +1170,42 @@ export const BroadcastAudioMixerPanel: React.FC<BroadcastAudioMixerPanelProps> =
                     borderTop: "1px solid #1A2130",
                   }}
                 >
-                  <span style={{ fontSize: 10.5, fontWeight: 700, color: "#64748B", textTransform: "uppercase" }}>
-                    Broadcast Audio Tracks
-                  </span>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                    <label style={{ fontSize: 10.5, fontWeight: 700, color: "#64748B", textTransform: "uppercase" }}>
+                      Sync Offset
+                    </label>
+                    <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                      <input
+                        type="number"
+                        value={
+                          localSyncOffsets[source.id] ??
+                          (typeof source.settings?.syncOffsetMs === "number"
+                            ? source.settings.syncOffsetMs
+                            : 0)
+                        }
+                        step={10}
+                        min={-950}
+                        max={5000}
+                        aria-label={`${source.name} sync offset milliseconds`}
+                        onChange={(e) => handleSyncOffsetChange(source, Number(e.target.value))}
+                        style={{
+                          width: 72,
+                          height: 26,
+                          padding: "0 6px",
+                          background: "#090D14",
+                          border: "1px solid #283344",
+                          borderRadius: 5,
+                          color: "#E2E8F0",
+                          fontSize: 11.5,
+                        }}
+                      />
+                      <span style={{ fontSize: 11, color: "#64748B" }}>ms</span>
+                    </div>
+                  </div>
                   <div style={{ display: "flex", alignItems: "center", gap: 5, flexWrap: "wrap" }}>
+                    <span style={{ fontSize: 10.5, fontWeight: 700, color: "#64748B", textTransform: "uppercase" }}>
+                      Tracks
+                    </span>
                     {TRACK_LABELS.map((tr) => {
                       const checked = tracks[tr.index];
                       return (
@@ -1487,27 +1535,9 @@ export const BroadcastAudioMixerPanel: React.FC<BroadcastAudioMixerPanelProps> =
                               value={syncMs}
                               step={10}
                               min={-950}
-                              max={2000}
+                              max={5000}
                               aria-label={`${source.name} sync offset ms`}
-                              onChange={(e) => {
-                                const nextMs = Number(e.target.value) || 0;
-                                setLocalSyncOffsets((prev) => ({
-                                  ...prev,
-                                  [source.id]: nextMs,
-                                }));
-                                const asyncFilterMs = getSourceAsyncDelayMs(source);
-                                const delaySec = Math.max(0, Math.min(5, (nextMs + asyncFilterMs) / 1000));
-                                for (const chain of dspChainsRef.current) {
-                                  if (chain.ctx.state === "closed") continue;
-                                  if (!chain.sourceId || chain.sourceId === source.id) {
-                                    chain.delay.delayTime.setTargetAtTime(
-                                      delaySec,
-                                      chain.ctx.currentTime,
-                                      0.01
-                                    );
-                                  }
-                                }
-                              }}
+                              onChange={(e) => handleSyncOffsetChange(source, Number(e.target.value))}
                               style={{
                                 width: 64,
                                 height: 28,

@@ -27,6 +27,148 @@ export interface BroadcastSettingsModalProps {
 
 type BroadcastSettingsTab = "stream" | "output" | "video" | "hotkeys";
 
+type OutputMode = "simple" | "advanced" | "custom_ffmpeg";
+
+interface EncoderSettings {
+  codec: string;
+  rateControl: "CBR" | "VBR" | "CQP";
+  bitrateKbps: number;
+  keyframeIntervalSec: number;
+  bFrames: number;
+  audioTrackAssignment: boolean[];
+}
+
+interface OutputModeConfig {
+  mode: OutputMode;
+  stream: EncoderSettings;
+  record: EncoderSettings;
+  replay: EncoderSettings;
+  customFfmpegArgs: string;
+}
+
+const OUTPUT_CONFIG_STORAGE_KEY = "onering_broadcast_output_mode_config";
+
+const CODEC_OPTIONS = [
+  { value: "h264_hardware_gpu", label: "H.264 (Hardware GPU)" },
+  { value: "h264_hardware_media", label: "H.264 (Hardware Media)" },
+  { value: "libx264", label: "H.264 (Software x264)" },
+  { value: "hevc_hardware", label: "HEVC (Hardware)" },
+  { value: "av1_hardware_gpu", label: "AV1 (Hardware GPU)" },
+];
+
+function defaultTrackAssignment(all = true): boolean[] {
+  return [0, 1, 2, 3, 4, 5].map(() => all);
+}
+
+function defaultEncoderSettings(overrides?: Partial<EncoderSettings>): EncoderSettings {
+  return {
+    codec: "h264_hardware_gpu",
+    rateControl: "CBR",
+    bitrateKbps: 6000,
+    keyframeIntervalSec: 2,
+    bFrames: 2,
+    audioTrackAssignment: defaultTrackAssignment(true),
+    ...overrides,
+  };
+}
+
+function defaultOutputConfig(profile?: BroadcastProfileSettings): OutputModeConfig {
+  const baseBitrate = profile?.bitrateKbps ?? 6000;
+  const baseKeyInt = profile?.keyframeIntervalSec ?? 2;
+  const baseCodec = profile?.videoEncoder ?? "h264_hardware_gpu";
+  const baseRc = profile?.rateControl ?? "CBR";
+  return {
+    mode: "simple",
+    stream: defaultEncoderSettings({
+      codec: baseCodec,
+      rateControl: baseRc,
+      bitrateKbps: baseBitrate,
+      keyframeIntervalSec: baseKeyInt,
+      bFrames: 2,
+      audioTrackAssignment: [true, false, true, false, false, false],
+    }),
+    record: defaultEncoderSettings({
+      codec: baseCodec,
+      rateControl: "VBR",
+      bitrateKbps: Math.max(baseBitrate, 12000),
+      keyframeIntervalSec: baseKeyInt,
+      bFrames: 2,
+      audioTrackAssignment: [true, true, true, true, true, true],
+    }),
+    replay: defaultEncoderSettings({
+      codec: baseCodec,
+      rateControl: "VBR",
+      bitrateKbps: Math.max(4500, Math.round(baseBitrate * 0.8)),
+      keyframeIntervalSec: baseKeyInt,
+      bFrames: 2,
+      audioTrackAssignment: [true, true, false, false, false, false],
+    }),
+    customFfmpegArgs: "",
+  };
+}
+
+function normalizeTrackAssignment(raw: unknown): boolean[] {
+  if (!Array.isArray(raw)) return defaultTrackAssignment(true);
+  return [0, 1, 2, 3, 4, 5].map((i) => (typeof raw[i] === "boolean" ? raw[i] : true));
+}
+
+function normalizeEncoderSettings(raw: any, fallback: EncoderSettings): EncoderSettings {
+  if (!raw || typeof raw !== "object") return fallback;
+  const rateControl =
+    raw.rateControl === "CBR" || raw.rateControl === "VBR" || raw.rateControl === "CQP"
+      ? raw.rateControl
+      : fallback.rateControl;
+  return {
+    codec: typeof raw.codec === "string" && raw.codec ? raw.codec : fallback.codec,
+    rateControl,
+    bitrateKbps:
+      typeof raw.bitrateKbps === "number" && Number.isFinite(raw.bitrateKbps)
+        ? Math.max(500, Math.round(raw.bitrateKbps))
+        : fallback.bitrateKbps,
+    keyframeIntervalSec:
+      typeof raw.keyframeIntervalSec === "number" && Number.isFinite(raw.keyframeIntervalSec)
+        ? Math.max(0, Math.round(raw.keyframeIntervalSec))
+        : fallback.keyframeIntervalSec,
+    bFrames:
+      typeof raw.bFrames === "number" && Number.isFinite(raw.bFrames)
+        ? Math.max(0, Math.min(16, Math.round(raw.bFrames)))
+        : fallback.bFrames,
+    audioTrackAssignment: normalizeTrackAssignment(raw.audioTrackAssignment),
+  };
+}
+
+function loadOutputConfig(profile?: BroadcastProfileSettings): OutputModeConfig {
+  const defaults = defaultOutputConfig(profile);
+  try {
+    const raw = localStorage.getItem(OUTPUT_CONFIG_STORAGE_KEY);
+    if (!raw) return defaults;
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") return defaults;
+    const mode: OutputMode =
+      parsed.mode === "simple" || parsed.mode === "advanced" || parsed.mode === "custom_ffmpeg"
+        ? parsed.mode
+        : defaults.mode;
+    return {
+      mode,
+      stream: normalizeEncoderSettings(parsed.stream, defaults.stream),
+      record: normalizeEncoderSettings(parsed.record, defaults.record),
+      replay: normalizeEncoderSettings(parsed.replay, defaults.replay),
+      customFfmpegArgs:
+        typeof parsed.customFfmpegArgs === "string" ? parsed.customFfmpegArgs : defaults.customFfmpegArgs,
+    };
+  } catch {
+    return defaults;
+  }
+}
+
+function saveOutputConfig(config: OutputModeConfig) {
+  try {
+    localStorage.setItem(OUTPUT_CONFIG_STORAGE_KEY, JSON.stringify(config));
+  } catch {
+    // ignore storage errors
+  }
+}
+
 type StreamServiceName =
   | "Video Platform - RTMPS"
   | "Social Platform Live"
@@ -217,6 +359,7 @@ export const BroadcastSettingsModal: React.FC<BroadcastSettingsModalProps> = ({
 }) => {
   const [activeTab, setActiveTab] = useState<BroadcastSettingsTab>("stream");
   const [draftProfile, setDraftProfile] = useState<BroadcastProfileSettings>({ ...profile });
+  const [outputConfig, setOutputConfig] = useState<OutputModeConfig>(() => loadOutputConfig(profile));
   const [service, setService] = useState<StreamServiceName>(() => inferServiceFromUrl(rtmpUrl));
   const [draftRtmpUrl, setDraftRtmpUrl] = useState(rtmpUrl);
   const [draftStreamKey, setDraftStreamKey] = useState(streamKey);
@@ -230,6 +373,7 @@ export const BroadcastSettingsModal: React.FC<BroadcastSettingsModalProps> = ({
   useEffect(() => {
     if (!isOpen) return;
     setDraftProfile({ ...profile });
+    setOutputConfig(loadOutputConfig(profile));
     setService(inferServiceFromUrl(rtmpUrl));
     setDraftRtmpUrl(rtmpUrl);
     setDraftStreamKey(streamKey);
@@ -258,6 +402,30 @@ export const BroadcastSettingsModal: React.FC<BroadcastSettingsModalProps> = ({
     setDraftProfile((prev) => ({ ...prev, [key]: val }));
   };
 
+  const patchEncoder = (
+    target: "stream" | "record" | "replay",
+    patch: Partial<EncoderSettings>
+  ) => {
+    setOutputConfig((prev) => ({
+      ...prev,
+      [target]: { ...prev[target], ...patch },
+    }));
+  };
+
+  const toggleEncoderTrack = (
+    target: "stream" | "record" | "replay",
+    trackIndex: number
+  ) => {
+    setOutputConfig((prev) => {
+      const current = prev[target].audioTrackAssignment;
+      const nextTracks = current.map((v, i) => (i === trackIndex ? !v : v));
+      return {
+        ...prev,
+        [target]: { ...prev[target], audioTrackAssignment: nextTracks },
+      };
+    });
+  };
+
   const handleServiceChange = (nextService: StreamServiceName) => {
     setService(nextService);
     const preset = STREAM_SERVICES.find((s) => s.service === nextService);
@@ -276,6 +444,7 @@ export const BroadcastSettingsModal: React.FC<BroadcastSettingsModalProps> = ({
     onSaveProfile(sanitizedProfile);
     onSaveStreamConfig(draftRtmpUrl.trim(), draftStreamKey);
     onSaveHotkeys(draftHotkeys);
+    saveOutputConfig(outputConfig);
     onClose();
   };
 
@@ -546,160 +715,295 @@ export const BroadcastSettingsModal: React.FC<BroadcastSettingsModalProps> = ({
             {activeTab === "output" && (
               <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
                 <div>
-                  <h4 style={sectionTitleStyle}>Streaming & Recording Output</h4>
+                  <h4 style={sectionTitleStyle}>Output Modes & Encoder Targets</h4>
                   <p style={sectionDescStyle}>
-                    Configure video encoder, bitrate control, audio quality, and crash-safe recording container.
+                    Choose Simple, Advanced, or Custom FFmpeg mode. Stream, Record, and Replay encoder settings are independent and saved locally.
                   </p>
                 </div>
 
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-                  <div>
-                    <label htmlFor="broadcast-video-encoder" style={labelStyle}>
-                      Video Encoder
-                    </label>
-                    <select
-                      id="broadcast-video-encoder"
-                      style={inputStyle}
-                      value={draftProfile.videoEncoder}
-                      onChange={(e) =>
-                        patchProfile(
-                          "videoEncoder",
-                          e.target.value as BroadcastProfileSettings["videoEncoder"]
-                        )
-                      }
-                    >
-                      {VIDEO_ENCODERS.map((enc) => (
-                        <option key={enc.value} value={enc.value}>
-                          {enc.label}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-
-                  <div>
-                    <label htmlFor="broadcast-rate-control" style={labelStyle}>
-                      Rate Control
-                    </label>
-                    <select
-                      id="broadcast-rate-control"
-                      style={inputStyle}
-                      value={draftProfile.rateControl}
-                      onChange={(e) =>
-                        patchProfile(
-                          "rateControl",
-                          e.target.value as BroadcastProfileSettings["rateControl"]
-                        )
-                      }
-                    >
-                      <option value="CBR">CBR (Constant Bitrate — Streaming)</option>
-                      <option value="VBR">VBR (Variable Bitrate)</option>
-                      <option value="CQP">CQP (Constant QP — Recording)</option>
-                    </select>
-                  </div>
-                </div>
-
                 <div>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
-                    <label htmlFor="broadcast-bitrate" style={{ ...labelStyle, marginBottom: 0 }}>
-                      Bitrate (2500–25000 kbps)
-                    </label>
-                    <span style={{ fontSize: 12, color: "#60A5FA", fontWeight: 700 }}>
-                      {draftProfile.bitrateKbps} kbps ({(draftProfile.bitrateKbps / 1000).toFixed(1)} Mbps)
-                    </span>
-                  </div>
-                  <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                    <input
-                      type="range"
-                      aria-label="Bitrate Slider"
-                      min={2500}
-                      max={25000}
-                      step={250}
-                      value={clamp(draftProfile.bitrateKbps, 2500, 25000)}
-                      onChange={(e) => patchProfile("bitrateKbps", Number(e.target.value))}
-                      style={{ flex: 1 }}
-                    />
-                    <input
-                      id="broadcast-bitrate"
-                      type="number"
-                      min={2500}
-                      max={25000}
-                      step={250}
-                      value={draftProfile.bitrateKbps}
-                      onChange={(e) => patchProfile("bitrateKbps", Number(e.target.value))}
-                      onBlur={() =>
-                        patchProfile("bitrateKbps", clamp(draftProfile.bitrateKbps, 2500, 25000))
-                      }
-                      style={{ ...inputStyle, width: 110 }}
-                    />
+                  <label style={labelStyle}>Output Mode</label>
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                    {([
+                      { id: "simple", label: "Simple" },
+                      { id: "advanced", label: "Advanced" },
+                      { id: "custom_ffmpeg", label: "Custom FFmpeg" },
+                    ] as Array<{ id: OutputMode; label: string }>).map((opt) => {
+                      const active = outputConfig.mode === opt.id;
+                      return (
+                        <button
+                          key={opt.id}
+                          type="button"
+                          onClick={() => setOutputConfig((prev) => ({ ...prev, mode: opt.id }))}
+                          style={{
+                            padding: "8px 12px",
+                            borderRadius: 7,
+                            border: `1px solid ${active ? "#3B82F6" : "#2B3545"}`,
+                            background: active ? "#1E3A8A" : "#161B24",
+                            color: active ? "#FFFFFF" : "#CBD5E1",
+                            fontSize: 12.5,
+                            fontWeight: 700,
+                            cursor: "pointer",
+                          }}
+                        >
+                          {opt.label}
+                        </button>
+                      );
+                    })}
                   </div>
                 </div>
 
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
-                  <div>
-                    <label htmlFor="broadcast-keyframe" style={labelStyle}>
-                      Keyframe Interval (sec)
-                    </label>
-                    <input
-                      id="broadcast-keyframe"
-                      type="number"
-                      min={0}
-                      max={10}
-                      step={1}
-                      style={inputStyle}
-                      value={draftProfile.keyframeIntervalSec}
-                      onChange={(e) => patchProfile("keyframeIntervalSec", Number(e.target.value))}
-                      onBlur={() =>
-                        patchProfile(
-                          "keyframeIntervalSec",
-                          clamp(draftProfile.keyframeIntervalSec, 0, 10)
-                        )
-                      }
-                    />
+                {outputConfig.mode === "simple" && (
+                  <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                    <div style={panelStyle}>
+                      <div style={{ fontSize: 13, fontWeight: 700, color: "#FFFFFF", marginBottom: 8 }}>
+                        Shared Output Profile (applied to Stream, Record, Replay)
+                      </div>
+                      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+                        <div>
+                          <label htmlFor="simple-codec" style={labelStyle}>Codec</label>
+                          <select
+                            id="simple-codec"
+                            style={inputStyle}
+                            value={outputConfig.stream.codec}
+                            onChange={(e) => {
+                              const codec = e.target.value;
+                              patchEncoder("stream", { codec });
+                              patchEncoder("record", { codec });
+                              patchEncoder("replay", { codec });
+                            }}
+                          >
+                            {CODEC_OPTIONS.map((c) => (
+                              <option key={c.value} value={c.value}>{c.label}</option>
+                            ))}
+                          </select>
+                        </div>
+                        <div>
+                          <label htmlFor="simple-rate" style={labelStyle}>Rate Control</label>
+                          <select
+                            id="simple-rate"
+                            style={inputStyle}
+                            value={outputConfig.stream.rateControl}
+                            onChange={(e) => {
+                              const rateControl = e.target.value as EncoderSettings["rateControl"];
+                              patchEncoder("stream", { rateControl });
+                              patchEncoder("record", { rateControl });
+                              patchEncoder("replay", { rateControl });
+                            }}
+                          >
+                            <option value="CBR">CBR</option>
+                            <option value="VBR">VBR</option>
+                            <option value="CQP">CQP</option>
+                          </select>
+                        </div>
+                      </div>
+                      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12, marginTop: 10 }}>
+                        <div>
+                          <label style={labelStyle}>Bitrate (kbps)</label>
+                          <input
+                            type="number"
+                            style={inputStyle}
+                            value={outputConfig.stream.bitrateKbps}
+                            onChange={(e) => {
+                              const bitrateKbps = Number(e.target.value) || 0;
+                              patchEncoder("stream", { bitrateKbps });
+                              patchEncoder("record", { bitrateKbps: Math.max(bitrateKbps, outputConfig.record.bitrateKbps) });
+                              patchEncoder("replay", { bitrateKbps: Math.max(2000, Math.round(bitrateKbps * 0.8)) });
+                            }}
+                          />
+                        </div>
+                        <div>
+                          <label style={labelStyle}>Keyframe Interval (sec)</label>
+                          <input
+                            type="number"
+                            style={inputStyle}
+                            min={0}
+                            max={10}
+                            value={outputConfig.stream.keyframeIntervalSec}
+                            onChange={(e) => {
+                              const keyframeIntervalSec = Number(e.target.value) || 0;
+                              patchEncoder("stream", { keyframeIntervalSec });
+                              patchEncoder("record", { keyframeIntervalSec });
+                              patchEncoder("replay", { keyframeIntervalSec });
+                            }}
+                          />
+                        </div>
+                        <div>
+                          <label style={labelStyle}>B-frames</label>
+                          <input
+                            type="number"
+                            style={inputStyle}
+                            min={0}
+                            max={16}
+                            value={outputConfig.stream.bFrames}
+                            onChange={(e) => {
+                              const bFrames = Number(e.target.value) || 0;
+                              patchEncoder("stream", { bFrames });
+                              patchEncoder("record", { bFrames });
+                              patchEncoder("replay", { bFrames });
+                            }}
+                          />
+                        </div>
+                      </div>
+                      <div style={{ marginTop: 10, fontSize: 12, color: "#94A3B8" }}>
+                        Audio track assignment for Simple mode uses each target's saved defaults (Stream/Record/Replay). Switch to Advanced to edit per-target track routing.
+                      </div>
+                    </div>
                   </div>
+                )}
 
-                  <div>
-                    <label htmlFor="broadcast-audio-bitrate" style={labelStyle}>
-                      Audio Bitrate (128–320 kbps)
-                    </label>
-                    <select
-                      id="broadcast-audio-bitrate"
-                      style={inputStyle}
-                      value={draftProfile.audioBitrateKbps}
-                      onChange={(e) =>
-                        patchProfile(
-                          "audioBitrateKbps",
-                          Number(e.target.value) as BroadcastProfileSettings["audioBitrateKbps"]
-                        )
-                      }
-                    >
-                      {AUDIO_BITRATE_OPTIONS.map((kbps) => (
-                        <option key={kbps} value={kbps}>
-                          {kbps} kbps
-                        </option>
-                      ))}
-                    </select>
-                  </div>
+                {(outputConfig.mode === "advanced" || outputConfig.mode === "custom_ffmpeg") && (
+                  <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                    {([
+                      { key: "stream", title: "Stream Encoder (Independent)" },
+                      { key: "record", title: "Record Encoder (Independent)" },
+                      { key: "replay", title: "Replay Encoder (Independent)" },
+                    ] as Array<{ key: "stream" | "record" | "replay"; title: string }>).map((section) => {
+                      const enc = outputConfig[section.key];
+                      return (
+                        <div key={section.key} style={panelStyle}>
+                          <div style={{ fontSize: 13, fontWeight: 700, color: "#FFFFFF", marginBottom: 8 }}>
+                            {section.title}
+                          </div>
+                          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>
+                            <div>
+                              <label style={labelStyle}>Codec</label>
+                              <select
+                                style={inputStyle}
+                                value={enc.codec}
+                                onChange={(e) => patchEncoder(section.key, { codec: e.target.value })}
+                              >
+                                {CODEC_OPTIONS.map((c) => (
+                                  <option key={c.value} value={c.value}>{c.label}</option>
+                                ))}
+                              </select>
+                            </div>
+                            <div>
+                              <label style={labelStyle}>Rate Control (CBR/VBR/CQP)</label>
+                              <select
+                                style={inputStyle}
+                                value={enc.rateControl}
+                                onChange={(e) =>
+                                  patchEncoder(section.key, {
+                                    rateControl: e.target.value as EncoderSettings["rateControl"],
+                                  })
+                                }
+                              >
+                                <option value="CBR">CBR</option>
+                                <option value="VBR">VBR</option>
+                                <option value="CQP">CQP</option>
+                              </select>
+                            </div>
+                            <div>
+                              <label style={labelStyle}>Bitrate (kbps)</label>
+                              <input
+                                type="number"
+                                style={inputStyle}
+                                value={enc.bitrateKbps}
+                                onChange={(e) =>
+                                  patchEncoder(section.key, { bitrateKbps: Number(e.target.value) || 0 })
+                                }
+                              />
+                            </div>
+                            <div>
+                              <label style={labelStyle}>Keyframe Interval (sec)</label>
+                              <input
+                                type="number"
+                                min={0}
+                                max={10}
+                                style={inputStyle}
+                                value={enc.keyframeIntervalSec}
+                                onChange={(e) =>
+                                  patchEncoder(section.key, {
+                                    keyframeIntervalSec: Number(e.target.value) || 0,
+                                  })
+                                }
+                              />
+                            </div>
+                            <div>
+                              <label style={labelStyle}>B-frames</label>
+                              <input
+                                type="number"
+                                min={0}
+                                max={16}
+                                style={inputStyle}
+                                value={enc.bFrames}
+                                onChange={(e) =>
+                                  patchEncoder(section.key, { bFrames: Number(e.target.value) || 0 })
+                                }
+                              />
+                            </div>
+                          </div>
+                          <div style={{ marginTop: 10 }}>
+                            <label style={labelStyle}>Audio Track Assignment (1–6)</label>
+                            <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                              {[0, 1, 2, 3, 4, 5].map((i) => {
+                                const checked = enc.audioTrackAssignment[i];
+                                return (
+                                  <label
+                                    key={i}
+                                    style={{
+                                      display: "inline-flex",
+                                      alignItems: "center",
+                                      gap: 5,
+                                      padding: "4px 8px",
+                                      borderRadius: 6,
+                                      border: `1px solid ${checked ? "#3B82F6" : "#2B3545"}`,
+                                      background: checked ? "rgba(59,130,246,0.18)" : "#0B0E14",
+                                      color: checked ? "#BFDBFE" : "#94A3B8",
+                                      fontSize: 12,
+                                      fontWeight: 700,
+                                      cursor: "pointer",
+                                    }}
+                                  >
+                                    <input
+                                      type="checkbox"
+                                      checked={checked}
+                                      onChange={() => toggleEncoderTrack(section.key, i)}
+                                    />
+                                    Track {i + 1}
+                                  </label>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
 
-                  <div>
-                    <label htmlFor="broadcast-audio-sample-rate" style={labelStyle}>
-                      Audio Sample Rate
-                    </label>
-                    <select
-                      id="broadcast-audio-sample-rate"
-                      style={inputStyle}
-                      value={draftProfile.audioSampleRate}
-                      onChange={(e) =>
-                        patchProfile(
-                          "audioSampleRate",
-                          Number(e.target.value) as BroadcastProfileSettings["audioSampleRate"]
-                        )
-                      }
-                    >
-                      <option value={48000}>48 kHz (Broadcast)</option>
-                      <option value={44100}>44.1 kHz</option>
-                    </select>
+                    {outputConfig.mode === "custom_ffmpeg" && (
+                      <div style={panelStyle}>
+                        <label htmlFor="custom-ffmpeg-args" style={labelStyle}>
+                          Custom FFmpeg Arguments Template
+                        </label>
+                        <textarea
+                          id="custom-ffmpeg-args"
+                          value={outputConfig.customFfmpegArgs}
+                          onChange={(e) =>
+                            setOutputConfig((prev) => ({ ...prev, customFfmpegArgs: e.target.value }))
+                          }
+                          placeholder="Optional custom encoder arguments..."
+                          style={{
+                            width: "100%",
+                            minHeight: 90,
+                            padding: 10,
+                            background: "#0B0E14",
+                            border: "1px solid #2B3545",
+                            borderRadius: 6,
+                            color: "#FFFFFF",
+                            fontSize: 12,
+                            fontFamily: "monospace",
+                            boxSizing: "border-box",
+                            resize: "vertical",
+                          }}
+                        />
+                        <div style={{ fontSize: 11.5, color: "#94A3B8", marginTop: 6 }}>
+                          Custom mode preserves per-target Stream/Record/Replay encoder settings above and stores this template in local settings.
+                        </div>
+                      </div>
+                    )}
                   </div>
-                </div>
+                )}
 
                 <div
                   style={{
@@ -712,40 +1016,115 @@ export const BroadcastSettingsModal: React.FC<BroadcastSettingsModalProps> = ({
                     gap: 12,
                   }}
                 >
-                  <div>
-                    <label htmlFor="broadcast-rec-format" style={labelStyle}>
-                      Recording Format
-                    </label>
-                    <select
-                      id="broadcast-rec-format"
-                      style={inputStyle}
-                      value={draftProfile.recordingFormat}
-                      onChange={(e) =>
-                        patchProfile(
-                          "recordingFormat",
-                          e.target.value as BroadcastProfileSettings["recordingFormat"]
-                        )
-                      }
-                    >
-                      {RECORDING_FORMATS.map((fmt) => (
-                        <option key={fmt.value} value={fmt.value}>
-                          {fmt.label}
-                        </option>
-                      ))}
-                    </select>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: "#FFFFFF" }}>
+                    Base Profile (shared defaults)
                   </div>
-
-                  <label
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      gap: 10,
-                      cursor: "pointer",
-                      fontSize: 13,
-                      color: "#E2E8F0",
-                      fontWeight: 600,
-                    }}
-                  >
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+                    <div>
+                      <label htmlFor="broadcast-video-encoder" style={labelStyle}>
+                        Video Encoder
+                      </label>
+                      <select
+                        id="broadcast-video-encoder"
+                        style={inputStyle}
+                        value={draftProfile.videoEncoder}
+                        onChange={(e) =>
+                          patchProfile(
+                            "videoEncoder",
+                            e.target.value as BroadcastProfileSettings["videoEncoder"]
+                          )
+                        }
+                      >
+                        {VIDEO_ENCODERS.map((enc) => (
+                          <option key={enc.value} value={enc.value}>
+                            {enc.label}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div>
+                      <label htmlFor="broadcast-rate-control" style={labelStyle}>
+                        Rate Control
+                      </label>
+                      <select
+                        id="broadcast-rate-control"
+                        style={inputStyle}
+                        value={draftProfile.rateControl}
+                        onChange={(e) =>
+                          patchProfile(
+                            "rateControl",
+                            e.target.value as BroadcastProfileSettings["rateControl"]
+                          )
+                        }
+                      >
+                        <option value="CBR">CBR</option>
+                        <option value="VBR">VBR</option>
+                        <option value="CQP">CQP</option>
+                      </select>
+                    </div>
+                  </div>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
+                    <div>
+                      <label htmlFor="broadcast-audio-bitrate" style={labelStyle}>
+                        Audio Bitrate
+                      </label>
+                      <select
+                        id="broadcast-audio-bitrate"
+                        style={inputStyle}
+                        value={draftProfile.audioBitrateKbps}
+                        onChange={(e) =>
+                          patchProfile(
+                            "audioBitrateKbps",
+                            Number(e.target.value) as BroadcastProfileSettings["audioBitrateKbps"]
+                          )
+                        }
+                      >
+                        {AUDIO_BITRATE_OPTIONS.map((kbps) => (
+                          <option key={kbps} value={kbps}>{kbps} kbps</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div>
+                      <label htmlFor="broadcast-audio-sample-rate" style={labelStyle}>
+                        Audio Sample Rate
+                      </label>
+                      <select
+                        id="broadcast-audio-sample-rate"
+                        style={inputStyle}
+                        value={draftProfile.audioSampleRate}
+                        onChange={(e) =>
+                          patchProfile(
+                            "audioSampleRate",
+                            Number(e.target.value) as BroadcastProfileSettings["audioSampleRate"]
+                          )
+                        }
+                      >
+                        <option value={48000}>48 kHz</option>
+                        <option value={44100}>44.1 kHz</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label htmlFor="broadcast-rec-format" style={labelStyle}>
+                        Recording Format
+                      </label>
+                      <select
+                        id="broadcast-rec-format"
+                        style={inputStyle}
+                        value={draftProfile.recordingFormat}
+                        onChange={(e) =>
+                          patchProfile(
+                            "recordingFormat",
+                            e.target.value as BroadcastProfileSettings["recordingFormat"]
+                          )
+                        }
+                      >
+                        {RECORDING_FORMATS.map((fmt) => (
+                          <option key={fmt.value} value={fmt.value}>{fmt.label}</option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+                  <label style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer", fontSize: 13, color: "#E2E8F0", fontWeight: 600 }}>
                     <input
                       type="checkbox"
                       checked={draftProfile.autoRemuxToMp4}
@@ -1071,4 +1450,14 @@ const sectionDescStyle: React.CSSProperties = {
   margin: "4px 0 0 0",
   fontSize: 12,
   color: "#94A3B8",
+};
+
+const panelStyle: React.CSSProperties = {
+  background: "#0B0E14",
+  border: "1px solid #1E2533",
+  borderRadius: 8,
+  padding: 14,
+  display: "flex",
+  flexDirection: "column",
+  gap: 8,
 };

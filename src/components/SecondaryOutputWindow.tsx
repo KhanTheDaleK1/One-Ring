@@ -1,7 +1,58 @@
 import React, { useEffect, useState } from "react";
 import { Monitor, Radio, Tv } from "lucide-react";
-import type { SceneSourceItem, SlideState } from "../types";
+import type { SceneSourceItem, SlideCue, SlideState, SlideTheme } from "../types";
 import { ProgramCanvasRenderer, type BroadcastSceneDefinition } from "./ProgramCanvasRenderer";
+import {
+  editableSlideTextStyle,
+  isVideoBackground,
+  slideTransitionMs,
+  toEditableSlides,
+  type EditableSlide,
+} from "./SlideEditorModal";
+
+type StageLayoutMode = "classic" | "clock_focus" | "notes_focus";
+
+const STAGE_LAYOUT_KEY = "onering_stage_layout";
+const SLIDE_EXTRAS_KEY = "onering_slide_editor_extras";
+const STAGE_LAYOUT_MODES: StageLayoutMode[] = ["classic", "clock_focus", "notes_focus"];
+
+interface StoredSlideExtras {
+  slides?: EditableSlide[];
+  theme?: SlideTheme;
+  stageLayout?: StageLayoutMode;
+}
+
+function readStoredSlideExtras(): StoredSlideExtras {
+  try {
+    const raw = localStorage.getItem(SLIDE_EXTRAS_KEY);
+    return raw ? (JSON.parse(raw) as StoredSlideExtras) : {};
+  } catch {
+    return {};
+  }
+}
+
+function readStageLayout(): StageLayoutMode {
+  try {
+    const raw = localStorage.getItem(STAGE_LAYOUT_KEY);
+    if (raw && STAGE_LAYOUT_MODES.includes(raw as StageLayoutMode)) return raw as StageLayoutMode;
+  } catch {}
+  return "classic";
+}
+
+/** Overlay editor-authored overrides onto the live slide list by id, number, or exact text. */
+function withSlideExtras(
+  live: SlideCue[] | undefined,
+  extras: StoredSlideExtras
+): EditableSlide[] {
+  const authored = extras.slides || [];
+  if (!live || live.length === 0) return toEditableSlides(authored);
+  const byId = new Map(authored.map((slide) => [slide.id, slide]));
+  const byNumber = new Map(authored.map((slide) => [slide.number, slide]));
+  return toEditableSlides(live).map((slide) => {
+    const candidate = byId.get(slide.id) || byNumber.get(slide.number);
+    return candidate && candidate.text === slide.text ? { ...slide, ...candidate } : slide;
+  });
+}
 
 interface BroadcastScenesState {
   scenes: BroadcastSceneDefinition[];
@@ -92,6 +143,8 @@ export const SecondaryOutputWindow: React.FC = () => {
   const [clockText, setClockText] = useState<string>(() =>
     new Date().toLocaleTimeString([], { hour12: false })
   );
+  const [slideExtras, setSlideExtras] = useState<StoredSlideExtras>(() => readStoredSlideExtras());
+  const [stageLayout, setStageLayout] = useState<StageLayoutMode>(() => readStageLayout());
 
   useEffect(() => {
     const handleMessage = (data: any) => {
@@ -111,6 +164,21 @@ export const SecondaryOutputWindow: React.FC = () => {
       }
       if (data.type === "ACTIVE_SCENE_UPDATE" && typeof data.sceneId === "string") {
         setBroadcastScenes((prev) => ({ ...prev, activeSceneId: data.sceneId }));
+      }
+      if (
+        data.type === "STAGE_LAYOUT_UPDATE" &&
+        STAGE_LAYOUT_MODES.includes(data.layout as StageLayoutMode)
+      ) {
+        setStageLayout(data.layout as StageLayoutMode);
+      }
+      if (data.type === "SLIDE_EXTRAS_UPDATE" && Array.isArray(data.slides)) {
+        setSlideExtras({
+          slides: data.slides as EditableSlide[],
+          theme: data.theme as SlideTheme | undefined,
+          stageLayout: STAGE_LAYOUT_MODES.includes(data.stageLayout as StageLayoutMode)
+            ? (data.stageLayout as StageLayoutMode)
+            : undefined,
+        });
       }
     };
 
@@ -148,6 +216,12 @@ export const SecondaryOutputWindow: React.FC = () => {
             setSlides((prev) => prev || parsed.slides);
           }
         } catch {}
+      } else if (ev.key === STAGE_LAYOUT_KEY && ev.newValue) {
+        if (STAGE_LAYOUT_MODES.includes(ev.newValue as StageLayoutMode)) {
+          setStageLayout(ev.newValue as StageLayoutMode);
+        }
+      } else if (ev.key === SLIDE_EXTRAS_KEY && ev.newValue) {
+        setSlideExtras(readStoredSlideExtras());
       }
     };
 
@@ -545,10 +619,21 @@ export const SecondaryOutputWindow: React.FC = () => {
     );
   }
 
-  const currentArr = slides?.slides || [];
+  const currentArr = withSlideExtras(slides?.slides, slideExtras);
   const currentSlide =
     currentArr.find((s) => s.number === slides?.currentSlide) || currentArr[0];
-  const theme = slides?.theme;
+  const theme: SlideTheme | undefined = slides?.theme
+    ? { ...(slideExtras.theme || {}), ...slides.theme }
+    : slideExtras.theme;
+  const broadcastLayout = (slides?.theme as unknown as { stageLayout?: string } | undefined)
+    ?.stageLayout;
+  const effectiveStageLayout: StageLayoutMode = STAGE_LAYOUT_MODES.includes(
+    broadcastLayout as StageLayoutMode
+  )
+    ? (broadcastLayout as StageLayoutMode)
+    : slideExtras.stageLayout && STAGE_LAYOUT_MODES.includes(slideExtras.stageLayout)
+    ? slideExtras.stageLayout
+    : stageLayout;
 
   // Stage Confidence Display Layout (High Contrast Yellow / Cyan Words)
   if (outputType === "stage") {
@@ -560,6 +645,9 @@ export const SecondaryOutputWindow: React.FC = () => {
     const linkColor = slides?.connected ? "#4ADE80" : !slides || slides.adapter === "local" ? "#64748B" : "#F87171";
     const timers = slides?.timers ?? [];
     const showMessage = Boolean(slides?.stageMessageVisible && slides?.stageMessage?.trim());
+    const stageCurrentText = slides?.cleared
+      ? "[CLEARED]"
+      : currentSlide?.text || slides?.currentText || "—";
 
     return (
       <div
@@ -579,7 +667,10 @@ export const SecondaryOutputWindow: React.FC = () => {
       >
         <style>{`@keyframes oneringStageFlash { 0%,100% { opacity: 1; } 50% { opacity: 0.25; } }`}</style>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", color: "#64748B", fontSize: "2.2vh" }}>
-          <span>ONE RING STAGE CONFIDENCE • {slides?.presentationName || "Standby"}</span>
+          <span>
+            ONE RING STAGE CONFIDENCE • {slides?.presentationName || "Standby"} •{" "}
+            {effectiveStageLayout.replace("_", " ").toUpperCase()}
+          </span>
           <span style={{ display: "flex", alignItems: "center", gap: "2vw" }}>
             <span style={{ color: linkColor, fontWeight: 800 }}>{linkLabel}</span>
             <span>Slide {slides?.currentSlide || 0} / {slides?.totalSlides || 0}</span>
@@ -607,29 +698,83 @@ export const SecondaryOutputWindow: React.FC = () => {
           </div>
         )}
 
-        <div style={{ flex: 1, display: "flex", flexDirection: "column", justifyContent: "center" }}>
-          <div style={{ color: "#EAB308", fontSize: "2.4vh", fontWeight: 800, textTransform: "uppercase", marginBottom: "1vh" }}>
-            CURRENT LYRIC
+        {effectiveStageLayout === "clock_focus" ? (
+          <div
+            style={{
+              flex: 1,
+              display: "flex",
+              flexDirection: "column",
+              alignItems: "center",
+              justifyContent: "center",
+              gap: "1.4vh",
+              textAlign: "center",
+            }}
+          >
+            <div className="mono" style={{ fontSize: "14vh", fontWeight: 900, lineHeight: 1, color: "#F8FAFC", letterSpacing: "0.03em" }}>
+              {clockText}
+            </div>
+            <div style={{ color: "#EAB308", fontSize: "2vh", fontWeight: 800, letterSpacing: "0.12em", textTransform: "uppercase" }}>
+              CURRENT LYRIC
+            </div>
+            <div style={{ fontSize: "4vh", fontWeight: 800, lineHeight: 1.25, whiteSpace: "pre-line" }}>
+              {stageCurrentText}
+            </div>
+            {slides?.currentNotes && (
+              <div style={{ color: "#A3B18A", fontSize: "2vh", whiteSpace: "pre-line" }}>
+                {slides.currentNotes}
+              </div>
+            )}
           </div>
-          <div style={{ fontSize: "6.5vh", fontWeight: 800, lineHeight: 1.25, whiteSpace: "pre-line" }}>
-            {slides?.cleared ? "[CLEARED]" : currentSlide?.text || slides?.currentText || "—"}
-          </div>
-          {slides?.currentNotes && (
+        ) : effectiveStageLayout === "notes_focus" ? (
+          <div style={{ flex: 1, display: "flex", flexDirection: "column", justifyContent: "center" }}>
+            <div style={{ color: "#EAB308", fontSize: "2.2vh", fontWeight: 800, textTransform: "uppercase", marginBottom: "1vh" }}>
+              CURRENT LYRIC
+            </div>
+            <div style={{ fontSize: "4.6vh", fontWeight: 800, lineHeight: 1.25, whiteSpace: "pre-line" }}>
+              {stageCurrentText}
+            </div>
             <div
               style={{
-                marginTop: "2vh",
-                color: "#A3B18A",
-                fontSize: "2.4vh",
-                lineHeight: 1.35,
-                whiteSpace: "pre-line",
-                maxWidth: "80%",
+                marginTop: "2.5vh",
+                padding: "2vh 2.5vw",
+                border: "0.2vh solid rgba(163, 177, 138, 0.65)",
+                borderRadius: "1vh",
+                background: "rgba(163, 177, 138, 0.08)",
               }}
             >
-              <strong style={{ color: "#FBBF24" }}>NOTES: </strong>
-              {slides.currentNotes}
+              <div style={{ color: "#FBBF24", fontSize: "2.1vh", fontWeight: 800, textTransform: "uppercase", marginBottom: "0.8vh" }}>
+                Notes / Cues
+              </div>
+              <div style={{ color: "#E7E5D0", fontSize: "3.2vh", lineHeight: 1.35, whiteSpace: "pre-line" }}>
+                {slides?.currentNotes || "No notes for this slide"}
+              </div>
             </div>
-          )}
-        </div>
+          </div>
+        ) : (
+          <div style={{ flex: 1, display: "flex", flexDirection: "column", justifyContent: "center" }}>
+            <div style={{ color: "#EAB308", fontSize: "2.4vh", fontWeight: 800, textTransform: "uppercase", marginBottom: "1vh" }}>
+              CURRENT LYRIC
+            </div>
+            <div style={{ fontSize: "6.5vh", fontWeight: 800, lineHeight: 1.25, whiteSpace: "pre-line" }}>
+              {stageCurrentText}
+            </div>
+            {slides?.currentNotes && (
+              <div
+                style={{
+                  marginTop: "2vh",
+                  color: "#A3B18A",
+                  fontSize: "2.4vh",
+                  lineHeight: 1.35,
+                  whiteSpace: "pre-line",
+                  maxWidth: "80%",
+                }}
+              >
+                <strong style={{ color: "#FBBF24" }}>NOTES: </strong>
+                {slides.currentNotes}
+              </div>
+            )}
+          </div>
+        )}
 
         <div style={{ borderTop: "2px solid #262626", paddingTop: "3vh" }}>
           <div style={{ color: "#38BDF8", fontSize: "2.2vh", fontWeight: 800, textTransform: "uppercase", marginBottom: "0.8vh" }}>
@@ -717,11 +862,31 @@ export const SecondaryOutputWindow: React.FC = () => {
 
   // Default: FOH Fullscreen Congregation Display Output
   const fohBg =
-    theme?.backgroundType === "image" && theme.backgroundImage
+    theme?.backgroundType === "image" && theme.backgroundImage && !isVideoBackground(theme.backgroundImage)
       ? `url(${theme.backgroundImage}) center/cover no-repeat`
       : theme?.backgroundType === "gradient"
       ? `linear-gradient(135deg, ${theme.backgroundColor} 0%, ${theme.gradientTo || "#1E1B4B"} 100%)`
       : theme?.backgroundColor || "#05070B";
+  const fohVideo = isVideoBackground(currentSlide?.motionBackground)
+    ? (currentSlide?.motionBackground as string)
+    : isVideoBackground(theme?.backgroundImage)
+    ? (theme?.backgroundImage as string)
+    : "";
+  const fohTheme: Pick<SlideTheme, "fontFamily" | "fontSize" | "textColor"> = {
+    fontFamily: theme?.fontFamily || "Inter, system-ui, sans-serif",
+    fontSize: theme?.fontSize || 22,
+    textColor: theme?.textColor || "#FFFFFF",
+  };
+  const transition = currentSlide?.transition || "Fade";
+  const transitionMs = slideTransitionMs(currentSlide);
+  const animationName =
+    transition === "Dissolve"
+      ? "oneringSlideDissolve"
+      : transition === "Push"
+      ? "oneringSlidePush"
+      : "oneringSlideFade";
+  const fohText = currentSlide?.text || slides?.currentText || "";
+  const fohKey = `${slides?.currentSlide || 0}-${currentSlide?.id || ""}-${fohText.slice(0, 48)}`;
 
   return (
     <div
@@ -732,28 +897,48 @@ export const SecondaryOutputWindow: React.FC = () => {
         display: "flex",
         alignItems: "center",
         justifyContent: "center",
-        padding: "6vw",
-        textAlign: "center",
         boxSizing: "border-box",
         overflow: "hidden",
+        position: "relative",
       }}
     >
-      {!slides?.cleared && (currentSlide?.text || slides?.currentText) ? (
+      <style>{`
+        @keyframes oneringSlideFade { from { opacity: 0; } to { opacity: 1; } }
+        @keyframes oneringSlideDissolve { from { opacity: 0; filter: blur(8px); } to { opacity: 1; filter: blur(0); } }
+        @keyframes oneringSlidePush { from { opacity: 0; transform: translate(-38%, -50%); } to { opacity: 1; transform: translate(-50%, -50%); } }
+      `}</style>
+      {fohVideo && (
+        <video
+          autoPlay
+          loop
+          muted
+          playsInline
+          src={fohVideo}
+          style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover", pointerEvents: "none" }}
+        />
+      )}
+      {!slides?.cleared && fohText ? (
         <div
-          style={{
-            fontFamily: theme?.fontFamily || "Inter, system-ui, sans-serif",
-            fontSize: `${Math.round((theme?.fontSize || 22) * 3.1)}px`,
-            fontWeight: 800,
-            color: theme?.textColor || "#FFFFFF",
-            lineHeight: 1.35,
-            whiteSpace: "pre-line",
-            textShadow: "0 4px 20px rgba(0,0,0,0.85)",
-          }}
+          key={fohKey}
+          style={
+            {
+              ...editableSlideTextStyle(currentSlide, fohTheme, 1.05),
+              position: "absolute",
+              left: `calc(50% + ${currentSlide?.offsetX || 0}%)`,
+              top: `calc(50% + ${currentSlide?.offsetY || 0}%)`,
+              width: "86%",
+              transform: "translate(-50%, -50%)",
+              animation:
+                transition === "Cut"
+                  ? undefined
+                  : `${animationName} ${transitionMs}ms ease-in-out both`,
+            } as React.CSSProperties
+          }
         >
-          {currentSlide?.text || slides?.currentText}
+          {fohText}
         </div>
       ) : (
-        <div style={{ opacity: 0.12, display: "flex", alignItems: "center", gap: 8, color: "#FFFFFF", fontSize: 13 }}>
+        <div style={{ position: "relative", opacity: 0.12, display: "flex", alignItems: "center", gap: 8, color: "#FFFFFF", fontSize: 13 }}>
           <Monitor size={16} /> <Radio size={14} /> FOH Output Standby
         </div>
       )}

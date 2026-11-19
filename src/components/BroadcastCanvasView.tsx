@@ -2261,7 +2261,13 @@ export const BroadcastCanvasView: React.FC<BroadcastCanvasViewProps> = ({
         onUpdateTrackRouting={(id, tracks) =>
           patchSource(id, (s) => ({
             ...s,
-            settings: { ...s.settings, audioTracks: tracks },
+            settings: { ...s.settings, audioTracks: tracks, tracks },
+          }))
+        }
+        onUpdateSyncOffset={(id, offsetMs) =>
+          patchSource(id, (s) => ({
+            ...s,
+            settings: { ...s.settings, syncOffsetMs: offsetMs },
           }))
         }
       />

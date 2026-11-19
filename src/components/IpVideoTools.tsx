@@ -21,6 +21,7 @@ import {
   Square,
   Tv,
   Sparkles,
+  X,
 } from "lucide-react";
 import type { IpVideoReceiver } from "../types";
 
@@ -34,6 +35,74 @@ export interface IpVideoToolsProps {
 
 type TestPatternKind = "smpte" | "ebu" | "grid";
 type PtzMode = "recall" | "store";
+
+interface ReceiverRoute {
+  receiverId: string;
+  source: string;
+}
+
+interface RoutingPreset {
+  id: string;
+  name: string;
+  routes: ReceiverRoute[];
+  builtin?: boolean;
+}
+
+const ROUTING_PRESETS_STORAGE_KEY = "onering_ip_video_routing_presets_v1";
+
+// Built-ins stay topology-aware: their routes are resolved from the live receiver/source
+// lists at recall time, while custom presets store the exact crosspoints captured by the operator.
+const BUILTIN_ROUTING_PRESETS = [
+  {
+    id: "builtin-worship",
+    name: "Worship",
+    sourcePattern: /cam|worship|stage|sanctuary|wide/i,
+    receiverPattern: /main|program|sanctuary|house|stage/i,
+  },
+  {
+    id: "builtin-sermon",
+    name: "Sermon",
+    sourcePattern: /pulpit|lectern|close|speaker/i,
+    receiverPattern: /preview|monitor|pulpit|confidence/i,
+  },
+  {
+    id: "builtin-overflow",
+    name: "Overflow",
+    sourcePattern: /overflow|wide|congregation|room|lobby/i,
+    receiverPattern: /overflow|lobby|spare|aux/i,
+  },
+];
+
+function loadRoutingPresets(): RoutingPreset[] {
+  const builtins: RoutingPreset[] = BUILTIN_ROUTING_PRESETS.map((def) => ({
+    id: def.id,
+    name: def.name,
+    routes: [],
+    builtin: true,
+  }));
+  try {
+    const raw = localStorage.getItem(ROUTING_PRESETS_STORAGE_KEY);
+    if (!raw) return builtins;
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return builtins;
+    const custom = parsed
+      .filter(
+        (p): p is RoutingPreset =>
+          !!p && !p.builtin && typeof p.name === "string" && Array.isArray(p.routes)
+      )
+      .map((p) => ({
+        id: typeof p.id === "string" ? p.id : `custom-${p.name}`,
+        name: p.name,
+        routes: p.routes
+          .filter((r) => !!r && typeof r.receiverId === "string" && typeof r.source === "string")
+          .map((r) => ({ receiverId: r.receiverId, source: r.source })),
+        builtin: false,
+      }));
+    return [...builtins, ...custom];
+  } catch {
+    return builtins;
+  }
+}
 
 const DEFAULT_RECEIVE_GROUPS = [
   "public",
@@ -113,8 +182,16 @@ export const IpVideoTools: React.FC<IpVideoToolsProps> = ({
   const [storedPresetsBySource, setStoredPresetsBySource] = useState<Record<string, number[]>>({});
   const [statusBanner, setStatusBanner] = useState<string | null>(null);
 
+  // Multi-receiver routing presets
+  const [routingPresets, setRoutingPresets] = useState<RoutingPreset[]>(() => loadRoutingPresets());
+  const [savingRoutingPreset, setSavingRoutingPreset] = useState<boolean>(false);
+  const [newRoutingPresetName, setNewRoutingPresetName] = useState<string>("");
+  const [activeRoutingPresetId, setActiveRoutingPresetId] = useState<string | null>(null);
+  const [lastRoutingRecall, setLastRoutingRecall] = useState<string | null>(null);
+
   const joystickRef = useRef<HTMLDivElement | null>(null);
   const isDraggingJoyRef = useRef<boolean>(false);
+  const notifyTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
     if (!ptzSources.includes(selectedPtzSource)) {
@@ -122,9 +199,19 @@ export const IpVideoTools: React.FC<IpVideoToolsProps> = ({
     }
   }, [ptzSources, selectedPtzSource]);
 
+  useEffect(() => {
+    return () => {
+      if (notifyTimerRef.current !== null) window.clearTimeout(notifyTimerRef.current);
+    };
+  }, []);
+
   const notify = useCallback((msg: string) => {
     setStatusBanner(msg);
-    setTimeout(() => setStatusBanner(null), 2600);
+    if (notifyTimerRef.current !== null) window.clearTimeout(notifyTimerRef.current);
+    notifyTimerRef.current = window.setTimeout(() => {
+      setStatusBanner(null);
+      notifyTimerRef.current = null;
+    }, 2600);
   }, []);
 
   // HTML5 Canvas SMPTE / HD Color Bars & Motion Sweep loop
@@ -452,6 +539,111 @@ export const IpVideoTools: React.FC<IpVideoToolsProps> = ({
 
   const driftedCount = receivers.filter((r) => r.status === "DRIFT").length;
 
+  // Built-in presets resolve routes against the live topology; custom presets replay saved routes.
+  const resolveRoutes = useCallback(
+    (preset: RoutingPreset): ReceiverRoute[] => {
+      if (!preset.builtin && preset.routes.length > 0) return preset.routes;
+      const def = BUILTIN_ROUTING_PRESETS.find((d) => d.id === preset.id);
+      if (!def || receivers.length === 0 || sources.length === 0) return preset.routes;
+      const score = (value: string, pattern: RegExp) => (value.match(pattern) || []).length;
+      const orderedSources = sources
+        .map((source, index) => ({ source, index }))
+        .sort(
+          (a, b) =>
+            score(b.source, def.sourcePattern) - score(a.source, def.sourcePattern) ||
+            a.index - b.index
+        )
+        .map((item) => item.source);
+      const orderedReceivers = receivers
+        .map((rx, index) => ({ rx, index }))
+        .sort(
+          (a, b) =>
+            score(b.rx.receiverName, def.receiverPattern) -
+              score(a.rx.receiverName, def.receiverPattern) || a.index - b.index
+        )
+        .map((item) => item.rx);
+      return orderedReceivers.map((rx, index) => ({
+        receiverId: rx.id,
+        source: orderedSources[index % orderedSources.length],
+      }));
+    },
+    [receivers, sources]
+  );
+
+  const recallRoutingPreset = useCallback(
+    (preset: RoutingPreset) => {
+      const routes = resolveRoutes(preset);
+      let applied = 0;
+      let skipped = 0;
+      routes.forEach(({ receiverId, source }) => {
+        const rx = receivers.find((r) => r.id === receiverId);
+        if (!rx || !source) {
+          skipped += 1;
+          return;
+        }
+        const known = sources.includes(source) || rx.expectedSource === source;
+        if (!known) {
+          skipped += 1;
+          return;
+        }
+        onSwitchReceiver(receiverId, source);
+        applied += 1;
+      });
+      setActiveRoutingPresetId(preset.id);
+      setLastRoutingRecall(preset.name);
+      notify(
+        `"${preset.name}" recalled — patched ${applied} receiver(s)` +
+          (skipped > 0 ? ` · ${skipped} skipped` : "")
+      );
+    },
+    [notify, onSwitchReceiver, receivers, resolveRoutes, sources]
+  );
+
+  const saveRoutingPreset = useCallback(() => {
+    const name = newRoutingPresetName.trim();
+    if (!name) return;
+    const routes: ReceiverRoute[] = receivers
+      .filter((rx) => !!rx.subscribedSource && rx.subscribedSource.trim().length > 0)
+      .map((rx) => ({ receiverId: rx.id, source: rx.subscribedSource }));
+    const preset: RoutingPreset = {
+      id: `custom-${Date.now().toString(36)}`,
+      name,
+      routes,
+      builtin: false,
+    };
+    const next = [...routingPresets, preset];
+    setRoutingPresets(next);
+    try {
+      localStorage.setItem(
+        ROUTING_PRESETS_STORAGE_KEY,
+        JSON.stringify(next.filter((p) => !p.builtin))
+      );
+    } catch {
+      // Local storage may be unavailable; the preset still works for this session.
+    }
+    setNewRoutingPresetName("");
+    setSavingRoutingPreset(false);
+    notify(`Saved routing preset "${name}" with ${routes.length} route(s)`);
+  }, [newRoutingPresetName, notify, receivers, routingPresets]);
+
+  const deleteRoutingPreset = useCallback(
+    (id: string) => {
+      const next = routingPresets.filter((p) => p.id !== id);
+      setRoutingPresets(next);
+      try {
+        localStorage.setItem(
+          ROUTING_PRESETS_STORAGE_KEY,
+          JSON.stringify(next.filter((p) => !p.builtin))
+        );
+      } catch {
+        // Ignore storage failures.
+      }
+      if (activeRoutingPresetId === id) setActiveRoutingPresetId(null);
+      notify("Custom routing preset removed");
+    },
+    [activeRoutingPresetId, notify, routingPresets]
+  );
+
   return (
     <div
       style={{
@@ -552,6 +744,170 @@ export const IpVideoTools: React.FC<IpVideoToolsProps> = ({
               Heal {driftedCount} Drifted Receiver{driftedCount > 1 ? "s" : ""}
             </button>
           )}
+        </div>
+      </div>
+
+      {/* Multi-Receiver Routing Presets — one-click recall of a whole receiver bank */}
+      <div
+        style={{
+          background: "#0D1117",
+          border: "1px solid #1E2533",
+          borderRadius: 10,
+          padding: 14,
+          display: "flex",
+          flexDirection: "column",
+          gap: 11,
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
+          <span style={{ fontSize: 12, fontWeight: 800, color: "#94A3B8", textTransform: "uppercase", letterSpacing: "0.04em", display: "flex", alignItems: "center", gap: 6 }}>
+            <Sparkles size={14} color="#F59E0B" />
+            Multi-Receiver Routing Presets
+          </span>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            {lastRoutingRecall && (
+              <span className="mono" style={{ fontSize: 10.5, color: "#34D399" }}>
+                Last: {lastRoutingRecall}
+              </span>
+            )}
+            <button
+              type="button"
+              onClick={() => setSavingRoutingPreset((v) => !v)}
+              style={{
+                height: 28,
+                padding: "0 11px",
+                borderRadius: 6,
+                background: savingRoutingPreset ? "#92400E" : "#161B24",
+                border: `1px solid ${savingRoutingPreset ? "#F59E0B" : "#283344"}`,
+                color: "#FEF3C7",
+                fontSize: 11.5,
+                fontWeight: 700,
+                cursor: "pointer",
+                display: "flex",
+                alignItems: "center",
+                gap: 5,
+              }}
+            >
+              <Save size={12} /> Save Custom Preset
+            </button>
+          </div>
+        </div>
+
+        {savingRoutingPreset && (
+          <div style={{ display: "flex", gap: 8, background: "#12161F", border: "1px solid #283344", borderRadius: 8, padding: 9 }}>
+            <input
+              type="text"
+              value={newRoutingPresetName}
+              onChange={(e) => setNewRoutingPresetName(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") saveRoutingPreset();
+              }}
+              placeholder="Custom preset name (captures current receiver routes)"
+              style={{
+                flex: 1,
+                height: 30,
+                padding: "0 10px",
+                borderRadius: 6,
+                background: "#080B10",
+                border: "1px solid #F59E0B",
+                color: "#FFFFFF",
+                fontSize: 11.5,
+              }}
+            />
+            <button
+              type="button"
+              onClick={saveRoutingPreset}
+              style={{ height: 30, padding: "0 13px", borderRadius: 6, background: "#B45309", border: "1px solid #F59E0B", color: "#FFFFFF", fontSize: 11.5, fontWeight: 700, cursor: "pointer" }}
+            >
+              Save
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setSavingRoutingPreset(false);
+                setNewRoutingPresetName("");
+              }}
+              style={{ height: 30, padding: "0 11px", borderRadius: 6, background: "#161B24", border: "1px solid #283344", color: "#94A3B8", fontSize: 11.5, cursor: "pointer" }}
+            >
+              Cancel
+            </button>
+          </div>
+        )}
+
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 10 }}>
+          {routingPresets.map((preset) => {
+            const active = activeRoutingPresetId === preset.id;
+            const routeCount = preset.builtin ? resolveRoutes(preset).length : preset.routes.length;
+            return (
+              <div
+                key={preset.id}
+                style={{
+                  minWidth: 200,
+                  flex: "1 1 200px",
+                  background: active ? "#112038" : "#12161F",
+                  border: `1px solid ${active ? "#3B82F6" : "#283344"}`,
+                  borderRadius: 8,
+                  padding: "10px 12px",
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 8,
+                }}
+              >
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6 }}>
+                  <span style={{ fontSize: 13, fontWeight: 800, color: "#FFFFFF" }}>{preset.name}</span>
+                  <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
+                    <span
+                      style={{
+                        fontSize: 9.5,
+                        fontWeight: 800,
+                        padding: "2px 6px",
+                        borderRadius: 4,
+                        background: preset.builtin ? "#1E3A8A" : "#3F2A0A",
+                        border: `1px solid ${preset.builtin ? "#3B82F6" : "#F59E0B"}`,
+                        color: preset.builtin ? "#BFDBFE" : "#FDE68A",
+                      }}
+                    >
+                      {preset.builtin ? "BUILT-IN" : "CUSTOM"}
+                    </span>
+                    {!preset.builtin && (
+                      <button
+                        type="button"
+                        title={`Delete ${preset.name}`}
+                        onClick={() => deleteRoutingPreset(preset.id)}
+                        style={{ background: "transparent", border: "none", color: "#64748B", cursor: "pointer", display: "flex", padding: 2 }}
+                      >
+                        <X size={13} />
+                      </button>
+                    )}
+                  </div>
+                </div>
+                <div className="mono" style={{ fontSize: 10.5, color: "#64748B" }}>
+                  {routeCount} receiver{routeCount === 1 ? "" : "s"} · {preset.builtin ? "auto-matched to live sources" : "saved crosspoints"}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => recallRoutingPreset(preset)}
+                  disabled={routeCount === 0}
+                  style={{
+                    height: 30,
+                    borderRadius: 6,
+                    background: routeCount === 0 ? "#161B24" : active ? "#2563EB" : "#1E293B",
+                    border: `1px solid ${routeCount === 0 ? "#283344" : "#3B82F6"}`,
+                    color: routeCount === 0 ? "#475569" : "#FFFFFF",
+                    fontSize: 11.5,
+                    fontWeight: 800,
+                    cursor: routeCount === 0 ? "not-allowed" : "pointer",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    gap: 6,
+                  }}
+                >
+                  <Play size={12} /> Recall All
+                </button>
+              </div>
+            );
+          })}
         </div>
       </div>
 
