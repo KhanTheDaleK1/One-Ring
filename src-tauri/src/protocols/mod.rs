@@ -565,3 +565,5 @@ mod tests {
 pub mod x32_scene;
 
 pub mod midi;
+
+pub mod visca;

@@ -1137,3 +1137,44 @@ export async function dispatchObsStudioCommand(action: string, arg?: string): Pr
   }
   return `Dispatched ${action}`;
 }
+
+export async function ptzDriveCamera(
+  ip: string,
+  port: number,
+  panSpeed: number,
+  tiltSpeed: number,
+  zoomSpeed: number
+): Promise<string> {
+  if (isTauri()) {
+    return invokeTauri<string>("ptz_drive_camera", {
+      ip,
+      port,
+      panSpeed,
+      tiltSpeed,
+      zoomSpeed,
+    });
+  }
+  return `VISCA Pan(${panSpeed})/Tilt(${tiltSpeed})/Zoom(${zoomSpeed}) dispatched to ${ip}:${port}`;
+}
+
+export async function ptzRecallPreset(
+  ip: string,
+  port: number,
+  preset: number
+): Promise<string> {
+  if (isTauri()) {
+    return invokeTauri<string>("ptz_recall_preset", { ip, port, preset });
+  }
+  return `VISCA Preset ${preset} recalled on ${ip}:${port}`;
+}
+
+export async function ptzStorePreset(
+  ip: string,
+  port: number,
+  preset: number
+): Promise<string> {
+  if (isTauri()) {
+    return invokeTauri<string>("ptz_store_preset", { ip, port, preset });
+  }
+  return `VISCA Preset ${preset} saved on ${ip}:${port}`;
+}

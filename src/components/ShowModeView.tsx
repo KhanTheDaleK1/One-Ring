@@ -1,3 +1,4 @@
+import { PtzControlDeckModal } from "./PtzControlDeckModal";
 import { CcliSongSelectModal, SongSelectResult } from "./CcliSongSelectModal";
 import React, { useEffect, useRef, useState } from "react";
 import {
@@ -135,6 +136,7 @@ export const ShowModeView: React.FC<ShowModeViewProps> = ({
   const nextCue = state.cues[nextCueIndex];
   const anyLive = state.broadcasts.some((b) => b.live);
   const lastGoRef = useRef(0);
+  const [showPtzDeck, setShowPtzDeck] = useState(false);
   const [pendingMute, setPendingMute] = useState<DcaChannel | null>(null);
   const [stageSeconds, setStageSeconds] = useState(0);
   const [stageRunning, setStageRunning] = useState(false);
@@ -1425,9 +1427,28 @@ export const ShowModeView: React.FC<ShowModeViewProps> = ({
         <div className="card" style={{ padding: 14 }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
             <span style={sectionLabelStyle}>CAMERA PRESETS · TAP TO CUT</span>
-            <span className="mono" style={{ fontSize: 10, color: "#60A5FA" }}>
-              16:9 {state.obsScene} • 9:16 {state.verticalScene}
-            </span>
+            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <button
+                type="button"
+                className="btn btn-sm"
+                onClick={() => setShowPtzDeck(true)}
+                style={{
+                  fontSize: 10,
+                  fontWeight: 600,
+                  background: "rgba(59, 130, 246, 0.15)",
+                  borderColor: "#3B82F6",
+                  color: "#93C5FD",
+                  padding: "3px 8px",
+                  borderRadius: 4,
+                  cursor: "pointer"
+                }}
+              >
+                🎮 PTZ DECK
+              </button>
+              <span className="mono" style={{ fontSize: 10, color: "#60A5FA" }}>
+                16:9 {state.obsScene} • 9:16 {state.verticalScene}
+              </span>
+            </div>
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
             {state.cameras.map((cam, index) => {
@@ -1778,6 +1799,12 @@ export const ShowModeView: React.FC<ShowModeViewProps> = ({
             </div>
           </div>
         </div>
+      )}
+          {showPtzDeck && (
+        <PtzControlDeckModal
+          isOpen={showPtzDeck}
+          onClose={() => setShowPtzDeck(false)}
+        />
       )}
     </div>
   );

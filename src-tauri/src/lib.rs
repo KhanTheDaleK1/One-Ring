@@ -1185,6 +1185,69 @@ fn send_x32_osc(
     inner.clone()
 }
 
+
+#[tauri::command]
+async fn ptz_drive_camera(
+    ip: String,
+    port: u16,
+    pan_speed: i8,
+    tilt_speed: i8,
+    zoom_speed: i8,
+) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || {
+        let sock = std::net::UdpSocket::bind("0.0.0.0:0").map_err(|e| e.to_string())?;
+        sock.set_write_timeout(Some(std::time::Duration::from_millis(1500))).map_err(|e| e.to_string())?;
+        let addr = format!("{}:{}", ip, port);
+        
+        let p_spd = pan_speed.abs() as u8;
+        let t_spd = tilt_speed.abs() as u8;
+        let ptz_pkt = protocols::visca::ViscaPacket::pan_tilt_drive(1, p_spd.max(1), t_spd.max(1), pan_speed, tilt_speed).to_bytes();
+        sock.send_to(&ptz_pkt, &addr).map_err(|e| e.to_string())?;
+        
+        let z_spd = zoom_speed.abs() as u8;
+        let zoom_pkt = protocols::visca::ViscaPacket::zoom_drive(2, zoom_speed, z_spd.max(1)).to_bytes();
+        sock.send_to(&zoom_pkt, &addr).map_err(|e| e.to_string())?;
+
+        Ok(format!("VISCA PTZ commands sent to {}", addr))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn ptz_recall_preset(
+    ip: String,
+    port: u16,
+    preset: u8,
+) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || {
+        let sock = std::net::UdpSocket::bind("0.0.0.0:0").map_err(|e| e.to_string())?;
+        let addr = format!("{}:{}", ip, port);
+        let pkt = protocols::visca::ViscaPacket::recall_preset(1, preset).to_bytes();
+        sock.send_to(&pkt, &addr).map_err(|e| e.to_string())?;
+        Ok(format!("VISCA Recall Preset {} sent to {}", preset, addr))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn ptz_store_preset(
+    ip: String,
+    port: u16,
+    preset: u8,
+) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || {
+        let sock = std::net::UdpSocket::bind("0.0.0.0:0").map_err(|e| e.to_string())?;
+        let addr = format!("{}:{}", ip, port);
+        let pkt = protocols::visca::ViscaPacket::set_preset(1, preset).to_bytes();
+        sock.send_to(&pkt, &addr).map_err(|e| e.to_string())?;
+        Ok(format!("VISCA Store Preset {} sent to {}", preset, addr))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 #[tauri::command]
 fn list_open_windows() -> Vec<String> {
     let mut windows = Vec::new();
@@ -1403,6 +1466,9 @@ pub fn run() {
             start_headless_media_daemon,
             route_dante_crosspoint,
             trigger_ndi_ptz,
+            ptz_drive_camera,
+            ptz_recall_preset,
+            ptz_store_preset,
             send_x32_osc,
             open_in_browser
         ])
