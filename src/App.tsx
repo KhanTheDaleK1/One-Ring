@@ -1,5 +1,5 @@
-import React, { useEffect, useRef, useState } from "react";
-import { Cpu, Lock, AlertOctagon, FlaskConical, Settings, Pencil } from "lucide-react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
+import { Cpu, Lock, AlertOctagon, FlaskConical, Settings, Pencil, ShieldCheck } from "lucide-react";
 import {
   applyCueProgress,
   applyHealthEvent,
@@ -11,6 +11,7 @@ import {
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { AppStateSnapshot, ViewMode } from "./types";
 import { PreflightView } from "./components/PreflightView";
+import { ShowBuilderView, type BuilderIntent } from "./components/ShowBuilderView";
 import { ShowModeView } from "./components/ShowModeView";
 import { SlidesCanvasView } from "./components/SlidesCanvasView";
 import { SecondaryOutputWindow } from "./components/SecondaryOutputWindow";
@@ -33,14 +34,16 @@ export const App: React.FC = () => {
   const [availableUpdate, setAvailableUpdate] = useState<UpdateInfo | null>(null);
   const [isEditingShowName, setIsEditingShowName] = useState(false);
   const [discoveredPeer, setDiscoveredPeer] = useState<DiscoveredPeerInfo | null>(null);
+  const [showPreflight, setShowPreflight] = useState(false);
+  const [builderIntent, setBuilderIntent] = useState<BuilderIntent>(null);
   const dismissedPeersRef = useRef<Set<string>>(new Set());
+  const stateRef = useRef<AppStateSnapshot | null>(null);
   const [showWelcomeTour, setShowWelcomeTour] = useState(() => {
     return localStorage.getItem("onering_tour_completed") !== "true";
   });
 
   useEffect(() => {
     let disposed = false;
-    let unlisten: UnlistenFn | undefined;
 
     
     // Check for updates on startup
@@ -114,32 +117,201 @@ export const App: React.FC = () => {
           .catch(() => {});
       }
 
-      // Live mode hydrates once, then only listens for pushed patches. The simulator keeps
-      // its 1 Hz tick so the mock bitrate/timer still animates in the browser.
-      if (!snapshot.mockMode) {
-        subscribeEvents({
-          onHealth: (event) =>
-            setState((prev) => (prev ? applyHealthEvent(prev, event) : prev)),
-          onMeter: (event) =>
-            setState((prev) => (prev ? applyMeterEvent(prev, event) : prev)),
-          onStatePatch: (event) =>
-            setState((prev) => (prev ? applyStatePatch(prev, event) : prev)),
-          onCueProgress: (event) =>
-            setState((prev) => (prev ? applyCueProgress(prev, event) : prev)),
-        }).then((fn) => {
-          if (disposed) fn();
-          else unlisten = fn;
-        });
-      }
+    });
+
+    return () => {
+      disposed = true;
+      unlistenMenu?.();
+      clearInterval(peerTimer);
+    };
+  }, []);
+
+  // Live mode hydrates once, then only listens for pushed patches. This lives in
+  // its own effect keyed on mockMode so saving Settings (which flips mockMode
+  // from true to false) immediately subscribes to native events instead of
+  // leaving the UI on stale simulator snapshots.
+  useEffect(() => {
+    if (!state || state.mockMode) return;
+    let disposed = false;
+    let unlisten: UnlistenFn | undefined;
+
+    subscribeEvents({
+      onHealth: (event) =>
+        setState((prev) => (prev ? applyHealthEvent(prev, event) : prev)),
+      onMeter: (event) =>
+        setState((prev) => (prev ? applyMeterEvent(prev, event) : prev)),
+      onStatePatch: (event) =>
+        setState((prev) => (prev ? applyStatePatch(prev, event) : prev)),
+      onCueProgress: (event) =>
+        setState((prev) => (prev ? applyCueProgress(prev, event) : prev)),
+    }).then((fn) => {
+      if (disposed) fn();
+      else unlisten = fn;
     });
 
     return () => {
       disposed = true;
       unlisten?.();
-      unlistenMenu?.();
-      clearInterval(peerTimer);
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state?.mockMode]);
+
+  useEffect(() => {
+    stateRef.current = state;
+  }, [state]);
+
+  const executeMidiAction = useCallback((action: string, value: number) => {
+    const snapshot = stateRef.current;
+    if (!snapshot) return;
+    const apply = (task: Promise<AppStateSnapshot>) => {
+      task.then(setState).catch(() => {});
+    };
+
+    switch (action) {
+      case "cue_next": {
+        if (snapshot.cues.length === 0) break;
+        const nextIndex = Math.min(snapshot.activeCueIndex + 1, snapshot.cues.length - 1);
+        apply(bridge.triggerCue(nextIndex));
+        break;
+      }
+      case "cue_undo":
+        apply(bridge.undoLastCue());
+        break;
+      case "slide_next":
+        apply(bridge.triggerSlideAction("next"));
+        break;
+      case "slide_prev":
+        apply(bridge.triggerSlideAction("prev"));
+        break;
+      case "slide_clear":
+        apply(bridge.triggerSlideAction("clear"));
+        break;
+      case "toggle_pastor_mute": {
+        const dca =
+          snapshot.dcas.find((entry) => /pastor|speaker|preach/i.test(entry.name)) ??
+          snapshot.dcas[0];
+        if (dca) apply(bridge.toggleDcaMute(dca.id));
+        break;
+      }
+      case "set_dca_1_level": {
+        const dca = snapshot.dcas[0];
+        if (!dca) break;
+        const targetDb = -60 + (value / 127) * 70;
+        const delta = targetDb - dca.levelDb;
+        if (Math.abs(delta) > 0.25) apply(bridge.nudgeDcaLevel(dca.id, delta));
+        break;
+      }
+      case "cam_preset_1": {
+        const camera = snapshot.cameras[0];
+        if (camera) apply(bridge.recallCameraPreset(camera.id));
+        break;
+      }
+      case "cam_preset_2": {
+        const camera = snapshot.cameras[1];
+        if (camera) apply(bridge.recallCameraPreset(camera.id));
+        break;
+      }
+      default:
+        break;
+    }
   }, []);
+
+  // Global Web MIDI runtime: honour user bindings from Settings → MIDI Triggers
+  // even when the settings/mapping modal is closed.
+  useEffect(() => {
+    const STORAGE_KEY = "onering_midi_bindings_v1";
+    type Binding = {
+      id: string;
+      name?: string;
+      channel: number;
+      messageType: "NoteOn" | "ControlChange" | "ProgramChange";
+      controlOrNote: number;
+      action: string;
+    };
+
+    const readBindings = (): Binding[] => {
+      try {
+        const raw = localStorage.getItem(STORAGE_KEY);
+        if (!raw) return [];
+        const parsed = JSON.parse(raw);
+        return Array.isArray(parsed) ? (parsed as Binding[]) : [];
+      } catch {
+        return [];
+      }
+    };
+
+    let bindings = readBindings();
+    const refreshBindings = () => {
+      bindings = readBindings();
+    };
+    window.addEventListener("storage", refreshBindings);
+    window.addEventListener("onering-midi-updated", refreshBindings);
+
+    const nav = navigator as Navigator & {
+      requestMIDIAccess?: () => Promise<any>;
+    };
+    let midiAccess: any = null;
+    let disposed = false;
+    const attachedInputs = new Set<any>();
+
+    const onMidiMessage = (event: any) => {
+      const data: Uint8Array | undefined = event?.data;
+      if (!data || data.length < 2) return;
+      const status = data[0];
+      const kind = status & 0xf0;
+      const channel = (status & 0x0f) + 1;
+      const control = data[1] & 0x7f;
+      const value = data.length > 2 ? data[2] & 0x7f : 0;
+
+      let messageType: Binding["messageType"] | null = null;
+      if (kind === 0x90 && value > 0) messageType = "NoteOn";
+      else if (kind === 0xb0) messageType = "ControlChange";
+      else if (kind === 0xc0) messageType = "ProgramChange";
+      if (!messageType) return;
+
+      const binding = bindings.find(
+        (entry) =>
+          entry.channel === channel &&
+          entry.messageType === messageType &&
+          entry.controlOrNote === control
+      );
+      if (binding) executeMidiAction(binding.action, value);
+    };
+
+    const attachInputs = () => {
+      if (!midiAccess) return;
+      for (const input of Array.from(midiAccess.inputs.values()) as any[]) {
+        if (attachedInputs.has(input)) continue;
+        input.addEventListener?.("midimessage", onMidiMessage);
+        attachedInputs.add(input);
+      }
+    };
+
+    if (nav && typeof nav.requestMIDIAccess === "function") {
+      nav
+        .requestMIDIAccess()
+        .then((access: any) => {
+          if (disposed) return;
+          midiAccess = access;
+          attachInputs();
+          midiAccess.onstatechange = attachInputs;
+        })
+        .catch(() => {});
+    }
+
+    return () => {
+      disposed = true;
+      window.removeEventListener("storage", refreshBindings);
+      window.removeEventListener("onering-midi-updated", refreshBindings);
+      if (midiAccess) {
+        midiAccess.onstatechange = null;
+        for (const input of attachedInputs) {
+          input.removeEventListener?.("midimessage", onMidiMessage);
+        }
+      }
+      attachedInputs.clear();
+    };
+  }, [executeMidiAction]);
 
   const isOutputWindow = typeof window !== "undefined" && new URLSearchParams(window.location.search).has("output");
 
@@ -287,6 +459,26 @@ export const App: React.FC = () => {
           <button
             type="button"
             className="btn"
+            onClick={() => setShowPreflight(true)}
+            title="Preflight readiness and show builder"
+            style={{
+              height: 36,
+              padding: "0 12px",
+              fontSize: 13,
+              background: showPreflight ? "#2563EB" : "#1C222D",
+              borderColor: showPreflight ? "#60A5FA" : "#2E3746",
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
+            }}
+          >
+            <ShieldCheck size={14} />
+            Preflight
+          </button>
+
+          <button
+            type="button"
+            className="btn"
             onClick={() => setMode("settings")}
             style={{
               height: 36,
@@ -363,23 +555,26 @@ export const App: React.FC = () => {
             bridge.triggerSlideAction(act).then(setState);
           }}
           onImportSong={(title, importedSlides) => {
-            const songId = "song_" + Date.now();
-            const existingSongs = state.slides.songs || [];
-            const newSong = { id: songId, title, slides: importedSlides };
-            const nextSlides = {
-              ...state.slides,
-              presentationName: title,
-              activeSongId: songId,
-              songs: [...existingSongs, newSong],
-              currentSlide: 1,
-              totalSlides: importedSlides.length,
-              currentText: importedSlides[0]?.text || "",
-              nextText: importedSlides[1]?.text || "",
-              cleared: false,
-              slides: importedSlides,
-            };
-            setState((prev) => (prev ? { ...prev, slides: nextSlides } : prev));
-            bridge.syncWorkspaceState({ slides: nextSlides }).catch(() => {});
+            const songId = `song_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+            setState((prev) => {
+              if (!prev) return prev;
+              const existingSongs = prev.slides.songs || [];
+              const newSong = { id: songId, title, slides: importedSlides };
+              const nextSlides = {
+                ...prev.slides,
+                presentationName: title,
+                activeSongId: songId,
+                songs: [...existingSongs, newSong],
+                currentSlide: 1,
+                totalSlides: importedSlides.length,
+                currentText: importedSlides[0]?.text || "",
+                nextText: importedSlides[1]?.text || "",
+                cleared: false,
+                slides: importedSlides,
+              };
+              bridge.syncWorkspaceState({ slides: nextSlides }).catch(() => {});
+              return { ...prev, slides: nextSlides };
+            });
           }}
           onSelectSong={(songId) => {
             const song = (state.slides.songs || []).find((s) => s.id === songId);
@@ -506,6 +701,67 @@ export const App: React.FC = () => {
           }
           onEasyWorshipImage={(key) => bridge.getEasyWorshipImage(key)}
         />
+      )}
+
+      {showPreflight && (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            zIndex: 900,
+            overflowY: "auto",
+            background: "rgba(6,8,12,0.97)",
+          }}
+        >
+          <div style={{ maxWidth: 1120, margin: "0 auto", padding: "14px 20px 40px" }}>
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: 12,
+                padding: "8px 0 12px",
+              }}
+            >
+              <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
+                <ShieldCheck size={20} color="#10B981" />
+                <strong style={{ fontSize: 16 }}>Preflight & Show Builder</strong>
+              </div>
+              <button
+                type="button"
+                className="btn"
+                onClick={() => setShowPreflight(false)}
+                style={{ height: 34, padding: "0 14px", fontSize: 12 }}
+              >
+                Close
+              </button>
+            </div>
+            <PreflightView
+              state={state}
+              onRunProbes={() => bridge.runPreflightProbes().then(setState)}
+              onEnterShowMode={() => {
+                setShowPreflight(false);
+                setMode("master");
+              }}
+              onOpenEngineer={() => {
+                setShowPreflight(false);
+                setMode("mixing");
+              }}
+            />
+            <ShowBuilderView
+              state={state}
+              intent={builderIntent}
+              onIntentHandled={() => setBuilderIntent(null)}
+              onApplyShowFile={(show) => {
+                bridge.applyShowFile(show).then(setState);
+              }}
+              onOpenSettings={() => {
+                setShowPreflight(false);
+                setMode("settings");
+              }}
+            />
+          </div>
+        </div>
       )}
 
       <WelcomeTour

@@ -19,6 +19,7 @@ const TYPE_A: u16 = 1;
 const TYPE_PTR: u16 = 12;
 const TYPE_SRV: u16 = 33;
 const CLASS_IN: u16 = 1;
+const CLASS_MASK: u16 = 0x7FFF; // strips mDNS cache-flush bit (0x8000)
 
 /// A discovered EasyWorship remote instance with a concretely dialable endpoint.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -47,14 +48,15 @@ impl DiscoveredService {
 pub fn ptr_query() -> Vec<u8> {
     let mut out = Vec::with_capacity(64);
     out.extend_from_slice(&0u16.to_be_bytes()); // transaction id
-    out.extend_from_slice(&0x8000u16.to_be_bytes()); // QU: unicast response requested
+    out.extend_from_slice(&0x0000u16.to_be_bytes()); // standard query (QR=0, RFC 6762 §18)
     out.extend_from_slice(&1u16.to_be_bytes()); // QDCOUNT
     out.extend_from_slice(&0u16.to_be_bytes()); // ANCOUNT
     out.extend_from_slice(&0u16.to_be_bytes()); // NSCOUNT
     out.extend_from_slice(&0u16.to_be_bytes()); // ARCOUNT
     encode_name(&mut out, SERVICE_TYPE);
     out.extend_from_slice(&TYPE_PTR.to_be_bytes());
-    out.extend_from_slice(&CLASS_IN.to_be_bytes());
+    // QU (unicast-response) lives in the top bit of QCLASS, not in the DNS header flags.
+    out.extend_from_slice(&(CLASS_IN | 0x8000).to_be_bytes());
     out
 }
 
@@ -122,6 +124,8 @@ pub fn parse_response(datagram: &[u8]) -> Result<Vec<DiscoveredService>, Protoco
     }
     let qdcount = u16::from_be_bytes([datagram[4], datagram[5]]) as usize;
     let ancount = u16::from_be_bytes([datagram[6], datagram[7]]) as usize;
+    let nscount = u16::from_be_bytes([datagram[8], datagram[9]]) as usize;
+    let arcount = u16::from_be_bytes([datagram[10], datagram[11]]) as usize;
     let mut cursor = 12;
 
     // Skip questions.
@@ -138,23 +142,29 @@ pub fn parse_response(datagram: &[u8]) -> Result<Vec<DiscoveredService>, Protoco
     let mut srvs: HashMap<String, (u16, String)> = HashMap::new(); // instance -> (port, target host)
     let mut addrs: HashMap<String, Ipv4Addr> = HashMap::new(); // host -> addr
 
-    for _ in 0..ancount {
+    // Bonjour commonly places SRV/A records in the Additional section, and authority records in
+    // between. Walk all three record sections in order, ignoring authority records but collecting
+    // answers and additionals.
+    let record_count = ancount + nscount + arcount;
+    for index in 0..record_count {
         let (name, after_name) = read_name(datagram, cursor)?;
         cursor = after_name;
         if cursor + 10 > datagram.len() {
-            return Err(ProtocolError::malformed("truncated DNS answer header"));
+            return Err(ProtocolError::malformed("truncated DNS record header"));
         }
         let rtype = u16::from_be_bytes([datagram[cursor], datagram[cursor + 1]]);
         let rclass = u16::from_be_bytes([datagram[cursor + 2], datagram[cursor + 3]]);
         let rdlength = u16::from_be_bytes([datagram[cursor + 8], datagram[cursor + 9]]) as usize;
         cursor += 10;
         if cursor + rdlength > datagram.len() {
-            return Err(ProtocolError::malformed("truncated DNS answer data"));
+            return Err(ProtocolError::malformed("truncated DNS record data"));
         }
         let data_start = cursor;
         let data = &datagram[cursor..cursor + rdlength];
         cursor += rdlength;
-        if rclass != CLASS_IN {
+
+        let is_authority = index >= ancount && index < ancount + nscount;
+        if is_authority || (rclass & CLASS_MASK) != CLASS_IN {
             continue;
         }
 
@@ -222,9 +232,13 @@ mod tests {
     }
 
     fn answer(name: &str, rtype: u16, rdata: &[u8]) -> Vec<u8> {
+        answer_with_class(name, rtype, CLASS_IN, rdata)
+    }
+
+    fn answer_with_class(name: &str, rtype: u16, rclass: u16, rdata: &[u8]) -> Vec<u8> {
         let mut out = name_bytes(name);
         out.extend_from_slice(&rtype.to_be_bytes());
-        out.extend_from_slice(&CLASS_IN.to_be_bytes());
+        out.extend_from_slice(&rclass.to_be_bytes());
         out.extend_from_slice(&30u32.to_be_bytes()); // TTL
         out.extend_from_slice(&(rdata.len() as u16).to_be_bytes());
         out.extend_from_slice(rdata);
@@ -232,12 +246,16 @@ mod tests {
     }
 
     #[test]
-    fn query_is_unicast_ptr_for_ezwremote() {
+    fn query_is_standard_ptr_with_unicast_response_bit() {
         let query = ptr_query();
-        assert_eq!(&query[2..4], &0x8000u16.to_be_bytes());
+        assert_eq!(&query[2..4], &0x0000u16.to_be_bytes());
         assert_eq!(&query[4..6], &1u16.to_be_bytes());
         let parsed: Vec<u8> = name_bytes(SERVICE_TYPE);
         assert!(query[12..].starts_with(&parsed));
+        assert_eq!(
+            &query[query.len() - 2..],
+            &(CLASS_IN | 0x8000).to_be_bytes()
+        );
     }
 
     #[test]
@@ -284,6 +302,45 @@ mod tests {
         assert_eq!(services.len(), 1);
         assert_eq!(services[0].port, 60000);
         assert_eq!(services[0].endpoint(), "192.168.1.50:60000");
+    }
+
+    #[test]
+    fn parses_bonjour_additional_records_and_skips_authority() {
+        let service = "EasyWorship Remote (NAVE)._ezwremote._tcp.local";
+        let host = "nave-pc.local";
+
+        let mut response = vec![0u8; 12];
+        response[7] = 1; // ANCOUNT: PTR
+        response[9] = 1; // NSCOUNT: authority record to skip
+        response[11] = 2; // ARCOUNT: SRV + A
+        response.extend(answer(SERVICE_TYPE, TYPE_PTR, &name_bytes(service)));
+        response.extend(answer_with_class(
+            SERVICE_TYPE,
+            2, // NS
+            CLASS_IN,
+            &name_bytes("ns.local"),
+        ));
+
+        let mut srv_rdata = vec![0, 0, 0, 0];
+        srv_rdata.extend_from_slice(&55000u16.to_be_bytes());
+        srv_rdata.extend(name_bytes(host));
+        response.extend(answer_with_class(
+            service,
+            TYPE_SRV,
+            CLASS_IN | 0x8000, // cache-flush bit set by Bonjour
+            &srv_rdata,
+        ));
+        response.extend(answer_with_class(
+            host,
+            TYPE_A,
+            CLASS_IN | 0x8000,
+            &[10, 0, 0, 8],
+        ));
+
+        let services = parse_response(&response).unwrap();
+        assert_eq!(services.len(), 1);
+        assert_eq!(services[0].instance, "EasyWorship Remote (NAVE)");
+        assert_eq!(services[0].endpoint(), "10.0.0.8:55000");
     }
 
     #[test]

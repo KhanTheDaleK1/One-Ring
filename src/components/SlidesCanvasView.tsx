@@ -18,7 +18,7 @@ import {
 import type { AppStateSnapshot, ServiceSong, SlideCue, SlideTheme } from "../types";
 import { LyricImportModal } from "./LyricImportModal";
 import { CcliSongSelectModal, type SongSelectResult } from "./CcliSongSelectModal";
-import { importEwsxSchedule } from "../bridge";
+import { importEwsxSchedule, bridge } from "../bridge";
 import { BibleLookupModal } from "./BibleLookupModal";
 import { TimersAndAlertsModal } from "./TimersAndAlertsModal";
 
@@ -944,8 +944,45 @@ export const SlidesCanvasView: React.FC<SlidesCanvasViewProps> = ({
         onBroadcastAlert={(msg, active) => {
           setStageAlertMsg(msg);
           setStageAlertActive(active);
+          bridge.setStageMessage(active ? msg : null).catch(() => {});
+          try {
+            const ch = new BroadcastChannel("onering_display_sync");
+            ch.postMessage({
+              type: "SLIDES_UPDATE",
+              slides: {
+                ...state.slides,
+                stageMessage: active ? msg : "",
+                stageMessageVisible: Boolean(active && msg.trim()),
+              },
+            });
+            ch.close();
+          } catch {}
         }}
-        onUpdateTimerLabel={setTimerLabel}
+        onUpdateTimerLabel={(label) => {
+          setTimerLabel(label);
+          try {
+            const ch = new BroadcastChannel("onering_display_sync");
+            ch.postMessage({
+              type: "SLIDES_UPDATE",
+              slides: {
+                ...state.slides,
+                timers: state.slides.timers?.length
+                  ? state.slides.timers
+                  : [
+                      {
+                        id: "stage-timer",
+                        name: "Stage Timer",
+                        state: "running",
+                        time: 0,
+                        formatted: label,
+                        countdown: false,
+                      },
+                    ],
+              },
+            });
+            ch.close();
+          } catch {}
+        }}
       />
 
       {/* Lyric Import Modal */}

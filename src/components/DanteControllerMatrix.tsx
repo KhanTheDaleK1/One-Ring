@@ -117,10 +117,9 @@ const DEFAULT_PREVIEW_ROUTES: DanteRoute[] = [
   },
 ];
 
-function extractIpFromLabel(name: string, fallbackIndex: number): string {
+function extractIpFromLabel(name: string): string {
   const match = name.match(/\b(\d{1,3}(?:\.\d{1,3}){3})\b/);
-  if (match) return match[1];
-  return `192.168.1.${101 + (fallbackIndex % 120)}`;
+  return match ? match[1] : "";
 }
 
 function parseChanNumber(channelLabel: string, fallbackIndex: number): number {
@@ -200,8 +199,8 @@ export const DanteControllerMatrix: React.FC<DanteControllerMatrixProps> = ({
     }
 
     const ipMap: Record<string, string> = {};
-    devOrder.forEach((dev, idx) => {
-      ipMap[dev] = deviceConfigs[dev]?.ip || extractIpFromLabel(dev, idx);
+    devOrder.forEach((dev) => {
+      ipMap[dev] = deviceConfigs[dev]?.ip || extractIpFromLabel(dev);
     });
 
     const q = searchQuery.trim().toLowerCase();
@@ -305,6 +304,13 @@ export const DanteControllerMatrix: React.FC<DanteControllerMatrixProps> = ({
       return;
     }
 
+    if (!row.rxIp.trim()) {
+      showNotice(
+        `No IP configured for ${row.device} — add the device IP in Settings before patching Dante routes`
+      );
+      return;
+    }
+
     const isSame = row.txDevice === col.device && row.txChannel === col.channel;
     if (isSame) {
       setOptimisticPatches((prev) => ({
@@ -324,6 +330,12 @@ export const DanteControllerMatrix: React.FC<DanteControllerMatrixProps> = ({
   };
 
   const triggerIdentify = (devName: string, ip: string) => {
+    if (!ip.trim()) {
+      showNotice(
+        `No IP configured for ${devName} — add the device IP in Settings before sending IDENTIFY`
+      );
+      return;
+    }
     setIdentifyingLocal((prev) => ({ ...prev, [devName]: !prev[devName] }));
     onIdentifyDevice(ip);
     showNotice(`Sent Dante IDENTIFY (0x0063) to ${devName} (${ip})`);

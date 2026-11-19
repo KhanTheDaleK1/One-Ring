@@ -87,6 +87,30 @@ const ROUTING_CONFIG: Record<
   },
 };
 
+// X32 OSC expects normalized 0..1 values for continuous controls and a
+// discrete 0..11 index for the compressor ratio.
+const X32_COMP_RATIO_STEPS = [1.1, 1.3, 1.5, 1.7, 2.0, 2.5, 3.0, 4.0, 5.0, 7.0, 10.0, 20.0];
+
+const oscUnit = (value: number): number => Math.max(0, Math.min(1, value));
+
+const headampGainToOsc = (db: number): number => oscUnit((db + 12) / 72);
+const gateThresholdToOsc = (db: number): number => oscUnit((db + 80) / 80);
+const gateRangeToOsc = (db: number): number => oscUnit((db - 3) / 57);
+const compThresholdToOsc = (db: number): number => oscUnit((db + 60) / 60);
+
+function compRatioToOscIndex(ratio: number): number {
+  let closest = 0;
+  let bestDistance = Number.POSITIVE_INFINITY;
+  for (let i = 0; i < X32_COMP_RATIO_STEPS.length; i += 1) {
+    const distance = Math.abs(X32_COMP_RATIO_STEPS[i] - ratio);
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      closest = i;
+    }
+  }
+  return closest;
+}
+
 const FX_EFFECT_TYPES = [
   "Hall Reverb",
   "Plate Reverb",
@@ -779,7 +803,7 @@ export const X32FullConsoleModal: React.FC<X32FullConsoleModalProps> = ({
               ch.headampIndex !== null
                 ? `/headamp/${String(ch.headampIndex).padStart(3, "0")}/gain`
                 : `${ch.oscPrefix}/preamp/trim`;
-            emitOsc(addr, nextGain);
+            emitOsc(addr, headampGainToOsc(nextGain));
           }}
           onRenameChannel={(chId, nextName) => {
             const ch = channels.find((c) => c.id === chId);

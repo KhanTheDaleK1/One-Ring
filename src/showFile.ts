@@ -80,6 +80,7 @@ export function applyShowFileToSnapshot(
     cameras: nextCameras,
     canvases,
     broadcasts: show.broadcasts ?? [],
+    sources: show.sources ?? [],
     recordChapters: show.recordChapters ?? [],
     danteRoutes: show.danteRoutes ?? [],
     ndiReceivers: show.ndiReceivers ?? [],

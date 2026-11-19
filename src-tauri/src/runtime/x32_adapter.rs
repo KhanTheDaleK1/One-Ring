@@ -375,8 +375,8 @@ async fn handle_command(
             }
         }
         X32Command::RawOsc { address, value } => {
-            let arg = if address.ends_with("/on") || address.ends_with("/insert/on") {
-                OscArg::Int(if value >= 0.5 { 1 } else { 0 })
+            let arg = if raw_osc_uses_int(&address) {
+                OscArg::Int(value.round() as i32)
             } else {
                 OscArg::Float(value)
             };
@@ -465,6 +465,23 @@ pub fn meter_channels(frame: &MeterFrame, config: &X32Config) -> Vec<MeterChanne
         }
     }
     out
+}
+
+/// X32 OSC endpoints that require an `i32` argument rather than a float. The console treats
+/// non-integer values on these paths as malformed (or silently rounds them itself).
+fn raw_osc_uses_int(address: &str) -> bool {
+    let path = address.trim_end_matches('/');
+    path == "/-action/goscene"
+        || path == "/-action/clearsolo"
+        || path.starts_with("/config/mute/")
+        || (path.starts_with("/headamp/") && path.ends_with("/phantom"))
+        || path == "/preamp/invert"
+        || path.ends_with("/preamp/invert")
+        || (path.starts_with("/preamp/") && path.ends_with("/invert"))
+        || path == "/mix/solo"
+        || path.ends_with("/mix/solo")
+        || path == "/config/sync"
+        || path.ends_with("/on")
 }
 
 fn indexed_path<'a>(address: &'a str, prefix: &str) -> Option<(u8, &'a str)> {
@@ -600,5 +617,32 @@ mod tests {
         assert_eq!(float_arg(&message), Some(1.0));
         assert_eq!(int_arg(&message), Some(1));
         assert_eq!(string_arg(&message), None);
+    }
+
+    #[test]
+    fn raw_osc_integer_endpoints_are_classified() {
+        for path in [
+            "/-action/goscene",
+            "/-action/clearsolo",
+            "/config/mute/3",
+            "/headamp/12/phantom",
+            "/preamp/invert",
+            "/preamp/4/invert",
+            "/mix/solo",
+            "/ch/01/mix/solo",
+            "/config/sync",
+            "/ch/01/mix/on",
+            "/ch/01/insert/on",
+        ] {
+            assert!(raw_osc_uses_int(path), "{path} should use an int argument");
+        }
+        for path in [
+            "/ch/01/mix/fader",
+            "/main/mix/fader",
+            "/ch/01/mix/pan",
+            "/config/sync/interval",
+        ] {
+            assert!(!raw_osc_uses_int(path), "{path} should use a float argument");
+        }
     }
 }

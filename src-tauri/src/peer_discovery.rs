@@ -1,10 +1,14 @@
+use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use std::net::{SocketAddr, UdpSocket};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+use tokio::net::TcpListener;
+use tokio_tungstenite::tungstenite::Message;
 
 pub const DISCOVERY_PORT: u16 = 47888;
 pub const BROADCAST_ADDR: &str = "255.255.255.255:47888";
+pub const WS_SYNC_PORT: u16 = 47800;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -61,6 +65,45 @@ impl PeerRegistry {
     }
 }
 
+/// Minimal WebSocket sync endpoint. Paired stations use this only for the handshake/health echo;
+/// richer show-data sync remains at the protocol layer.
+async fn handle_ws_sync_connection(stream: tokio::net::TcpStream) {
+    let mut ws = match tokio_tungstenite::accept_async(stream).await {
+        Ok(ws) => ws,
+        Err(e) => {
+            eprintln!("[discovery] WebSocket sync handshake failed: {e}");
+            return;
+        }
+    };
+
+    while let Some(frame) = ws.next().await {
+        match frame {
+            Ok(Message::Text(text)) => {
+                let reply = serde_json::json!({
+                    "type": "sync.ack",
+                    "echo": text,
+                })
+                .to_string();
+                if ws.send(Message::Text(reply)).await.is_err() {
+                    break;
+                }
+            }
+            Ok(Message::Binary(bytes)) => {
+                if ws.send(Message::Binary(bytes)).await.is_err() {
+                    break;
+                }
+            }
+            Ok(Message::Ping(payload)) => {
+                if ws.send(Message::Pong(payload)).await.is_err() {
+                    break;
+                }
+            }
+            Ok(Message::Close(_)) | Err(_) => break,
+            Ok(_) => {}
+        }
+    }
+}
+
 pub fn start_peer_discovery(
     my_id: String,
     station_name: String,
@@ -106,7 +149,39 @@ pub fn start_peer_discovery(
         }
     });
 
-    // 2. Spawner for beacon transmitter
+    // 2. WebSocket sync listener: announcements advertise ws://<ip>:47800, so accept real
+    // handshakes there instead of leaving that port closed.
+    std::thread::spawn(move || {
+        let runtime = match tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+        {
+            Ok(runtime) => runtime,
+            Err(e) => {
+                eprintln!("[discovery] Failed to start WebSocket sync runtime: {e}");
+                return;
+            }
+        };
+        runtime.block_on(async move {
+            let listener = match TcpListener::bind(("0.0.0.0", WS_SYNC_PORT)).await {
+                Ok(listener) => listener,
+                Err(e) => {
+                    eprintln!("[discovery] Failed to bind WebSocket sync port {WS_SYNC_PORT}: {e}");
+                    return;
+                }
+            };
+            loop {
+                match listener.accept().await {
+                    Ok((stream, _addr)) => {
+                        tokio::spawn(handle_ws_sync_connection(stream));
+                    }
+                    Err(e) => eprintln!("[discovery] WebSocket sync accept failed: {e}"),
+                }
+            }
+        });
+    });
+
+    // 3. Spawner for beacon transmitter
     std::thread::spawn(move || {
         let socket = match UdpSocket::bind("0.0.0.0:0") {
             Ok(s) => s,
@@ -120,7 +195,7 @@ pub fn start_peer_discovery(
                 station_name: station_name.clone(),
                 canvas_title: canvas_title.clone(),
                 ip_address: "".to_string(),
-                ws_sync_port: 47800,
+                ws_sync_port: WS_SYNC_PORT,
                 version: version.clone(),
             };
             if let Ok(bytes) = serde_json::to_vec(&msg) {

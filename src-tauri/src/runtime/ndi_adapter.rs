@@ -60,7 +60,7 @@ pub fn spawn(
     state: SharedState,
     sink: Arc<dyn EventSink>,
     mut rx: mpsc::UnboundedReceiver<NdiCommand>,
-) {
+) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let health = HealthReporter::new(
             "ndi",
@@ -202,7 +202,7 @@ pub fn spawn(
                 }
             }
         }
-    });
+    })
 }
 
 

@@ -414,6 +414,24 @@ export const NdiStudioTools: React.FC<NdiStudioToolsProps> = ({
     onPanTilt(selectedPtzSource, 0, 0);
   }, [onPanTilt, selectedPtzSource]);
 
+  const stopNudgeMotion = useCallback(() => {
+    onPanTilt(selectedPtzSource, 0, 0);
+  }, [onPanTilt, selectedPtzSource]);
+
+  // If a nudge button loses the pointer (drag off, window blur, multi-touch
+  // cancel) send a full PTZ stop so the motors can never stay latched on.
+  useEffect(() => {
+    const stop = () => stopNudgeMotion();
+    window.addEventListener("pointerup", stop);
+    window.addEventListener("pointercancel", stop);
+    window.addEventListener("blur", stop);
+    return () => {
+      window.removeEventListener("pointerup", stop);
+      window.removeEventListener("pointercancel", stop);
+      window.removeEventListener("blur", stop);
+    };
+  }, [stopNudgeMotion]);
+
   const handlePresetClick = (presetIdx: number) => {
     if (ptzMode === "store") {
       setStoredPresetsBySource((prev) => {
@@ -421,9 +439,10 @@ export const NdiStudioTools: React.FC<NdiStudioToolsProps> = ({
         const next = existing.includes(presetIdx) ? existing : [...existing, presetIdx];
         return { ...prev, [selectedPtzSource]: next };
       });
-      onPtzPreset(selectedPtzSource, presetIdx);
+      // Store mode must never recall the old preset. Keep the marker local and
+      // tell the operator explicitly that the camera was not moved.
       setPtzMode("recall");
-      notify(`Stored Preset #${presetIdx} on ${selectedPtzSource}`);
+      notify(`Stored locally: Preset #${presetIdx} on ${selectedPtzSource} (not recalled)`);
     } else {
       setActivePresetBySource((prev) => ({ ...prev, [selectedPtzSource]: presetIdx }));
       onPtzPreset(selectedPtzSource, presetIdx);
@@ -1272,6 +1291,8 @@ export const NdiStudioTools: React.FC<NdiStudioToolsProps> = ({
                   type="button"
                   onPointerDown={() => onPanTilt(selectedPtzSource, 0, ptzSpeed)}
                   onPointerUp={() => onPanTilt(selectedPtzSource, 0, 0)}
+                  onPointerLeave={stopNudgeMotion}
+                  onPointerCancel={stopNudgeMotion}
                   style={{
                     height: 36,
                     borderRadius: 6,
@@ -1292,6 +1313,8 @@ export const NdiStudioTools: React.FC<NdiStudioToolsProps> = ({
                   type="button"
                   onPointerDown={() => onPanTilt(selectedPtzSource, -ptzSpeed, 0)}
                   onPointerUp={() => onPanTilt(selectedPtzSource, 0, 0)}
+                  onPointerLeave={stopNudgeMotion}
+                  onPointerCancel={stopNudgeMotion}
                   style={{
                     height: 36,
                     borderRadius: 6,
@@ -1332,6 +1355,8 @@ export const NdiStudioTools: React.FC<NdiStudioToolsProps> = ({
                   type="button"
                   onPointerDown={() => onPanTilt(selectedPtzSource, ptzSpeed, 0)}
                   onPointerUp={() => onPanTilt(selectedPtzSource, 0, 0)}
+                  onPointerLeave={stopNudgeMotion}
+                  onPointerCancel={stopNudgeMotion}
                   style={{
                     height: 36,
                     borderRadius: 6,
@@ -1352,6 +1377,8 @@ export const NdiStudioTools: React.FC<NdiStudioToolsProps> = ({
                   type="button"
                   onPointerDown={() => onPanTilt(selectedPtzSource, 0, -ptzSpeed)}
                   onPointerUp={() => onPanTilt(selectedPtzSource, 0, 0)}
+                  onPointerLeave={stopNudgeMotion}
+                  onPointerCancel={stopNudgeMotion}
                   style={{
                     height: 36,
                     borderRadius: 6,

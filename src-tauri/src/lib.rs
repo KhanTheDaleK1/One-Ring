@@ -12,12 +12,13 @@ use runtime::easyworship_adapter::EasyWorshipCommand;
 use runtime::ndi_adapter::NdiCommand;
 use runtime::obs_adapter::ObsCommand;
 use runtime::propresenter_adapter::ProPresenterCommand;
+use runtime::streamlabs_adapter::StreamlabsCommand;
 use runtime::x32_adapter::X32Command;
 use runtime::{AdapterCommand, AdapterRegistry, RuntimeConfig};
 use state::{
     recompute_derived_alerts, with_state, AppSettings, AppStateSnapshot, CueVerificationReport,
-    CueVerificationStep, ManagedState, SceneSourceItem, ServiceCue, SharedState, ShowFile,
-    SlideState, UndoEntry,
+    CueVerificationStep, DanteRoute, ManagedState, SceneSourceItem, ServiceCue, SharedState,
+    ShowFile, SlideState, UndoEntry,
 };
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
@@ -508,6 +509,30 @@ fn recall_camera_preset(preset_id: String, state: State<ManagedState>) -> AppSta
     snapshot
 }
 
+/// Keep the displayed current/next text aligned with `current_slide` after any local slide move.
+fn refresh_slide_texts(slides: &mut SlideState) {
+    let target = slides.current_slide;
+    let texts = slides.slides.as_ref().and_then(|slide_list| {
+        slide_list
+            .iter()
+            .find(|slide| slide.number == target)
+            .map(|slide| {
+                (
+                    slide.text.clone(),
+                    slide_list
+                        .iter()
+                        .find(|slide| slide.number == target + 1)
+                        .map(|slide| slide.text.clone())
+                        .unwrap_or_default(),
+                )
+            })
+    });
+    if let Some((current_text, next_text)) = texts {
+        slides.current_text = current_text;
+        slides.next_text = next_text;
+    }
+}
+
 #[tauri::command]
 fn trigger_slide_action(action: String, state: State<ManagedState>) -> AppStateSnapshot {
     let mut inner = state.inner.lock().unwrap();
@@ -517,6 +542,7 @@ fn trigger_slide_action(action: String, state: State<ManagedState>) -> AppStateS
             if inner.slides.current_slide < inner.slides.total_slides {
                 inner.slides.current_slide += 1;
             }
+            refresh_slide_texts(&mut inner.slides);
             dispatch(
                 &state,
                 AdapterCommand::ProPresenter(ProPresenterCommand::Next),
@@ -531,6 +557,7 @@ fn trigger_slide_action(action: String, state: State<ManagedState>) -> AppStateS
             if inner.slides.current_slide > 1 {
                 inner.slides.current_slide -= 1;
             }
+            refresh_slide_texts(&mut inner.slides);
             dispatch(
                 &state,
                 AdapterCommand::ProPresenter(ProPresenterCommand::Previous),
@@ -563,25 +590,7 @@ fn go_to_slide(slide_number: u32, state: State<ManagedState>) -> AppStateSnapsho
     let target = slide_number.max(1).min(total);
     inner.slides.current_slide = target;
     inner.slides.cleared = false;
-    let texts = inner.slides.slides.as_ref().and_then(|slides| {
-        slides
-            .iter()
-            .find(|slide| slide.number == target)
-            .map(|slide| {
-                (
-                    slide.text.clone(),
-                    slides
-                        .iter()
-                        .find(|slide| slide.number == target + 1)
-                        .map(|slide| slide.text.clone())
-                        .unwrap_or_default(),
-                )
-            })
-    });
-    if let Some((current_text, next_text)) = texts {
-        inner.slides.current_text = current_text;
-        inner.slides.next_text = next_text;
-    }
+    refresh_slide_texts(&mut inner.slides);
     // ProPresenter's cue index is zero-based while One Ring's UI and EasyWorship's
     // `gotoSlide<N>` action are one-based.
     dispatch(
@@ -883,6 +892,25 @@ fn set_broadcast_state(
     state: State<ManagedState>,
 ) -> AppStateSnapshot {
     let mut inner = state.inner.lock().unwrap();
+    let stream_target = target_id != "record";
+    let previous_stream_live: Vec<bool> = if target_id == "all" {
+        inner
+            .broadcasts
+            .iter()
+            .filter(|b| b.id != "record")
+            .map(|b| b.live)
+            .collect()
+    } else {
+        inner
+            .broadcasts
+            .iter()
+            .filter(|b| b.id == target_id)
+            .map(|b| b.live)
+            .collect()
+    };
+    let stream_changed =
+        previous_stream_live.is_empty() || previous_stream_live.iter().any(|was| *was != live);
+
     for b in &mut inner.broadcasts {
         if target_id == "all" || b.id == target_id {
             b.live = live;
@@ -897,33 +925,42 @@ fn set_broadcast_state(
             };
         }
     }
-    let commands: Vec<ObsCommand> = match target_id.as_str() {
-        "all" => {
-            let mut commands = vec![if live {
-                ObsCommand::StartStream
-            } else {
-                ObsCommand::StopStream
-            }];
-            commands.push(if live {
-                ObsCommand::StartRecord
-            } else {
-                ObsCommand::StopRecord
-            });
-            commands
+
+    let stream_command = || {
+        if live {
+            ObsCommand::StartStream
+        } else {
+            ObsCommand::StopStream
         }
-        "record" => vec![if live {
+    };
+    let record_command = || {
+        if live {
             ObsCommand::StartRecord
         } else {
             ObsCommand::StopRecord
-        }],
-        other => vec![if live {
-            ObsCommand::StartOutput(other.to_string())
-        } else {
-            ObsCommand::StopOutput(other.to_string())
-        }],
+        }
+    };
+    let commands: Vec<ObsCommand> = match target_id.as_str() {
+        "all" => vec![stream_command(), record_command()],
+        "record" => vec![record_command()],
+        // YouTube, Facebook, a generic "stream" target, and custom RTMP destination IDs all
+        // share the same OBS output. `StartOutput("youtube")` is not a valid OBS output name.
+        _ => vec![stream_command()],
     };
     for command in commands {
         dispatch(&state, AdapterCommand::Obs(command));
+    }
+
+    if stream_target && stream_changed {
+        let streamlabs_active = live_registry(&state)
+            .map(|registry| registry.has(protocols::DeviceKind::Streamlabs))
+            .unwrap_or(false);
+        if streamlabs_active {
+            dispatch(
+                &state,
+                AdapterCommand::Streamlabs(StreamlabsCommand::ToggleStreaming),
+            );
+        }
     }
     inner.clone()
 }
@@ -1011,10 +1048,14 @@ fn flash_dante_identify(route_id: String, state: State<ManagedState>) -> AppStat
         None
     };
 
-    if let Some(dev) = matched_label {
+    if let Some(target_ip) = resolved_ip.as_ref() {
         inner.push_event_log(format!(
             "[dante-conmon] Sent IDENTIFY_QUERY (opcode 0x0063) to {} on UDP :8700",
-            dev
+            target_ip
+        ));
+    } else if let Some(dev) = matched_label.as_ref() {
+        inner.push_event_log(format!(
+            "[dante-conmon] No IP configured for '{dev}'; IDENTIFY_QUERY not sent"
         ));
     }
     let snapshot = inner.clone();
@@ -1048,13 +1089,15 @@ fn update_settings(
         );
     }
 
+    // Drop the previous registry (and abort its adapter tasks) before replacing it so stale
+    // sockets are released before the new adapters try to bind the same ports.
+    *state.runtime.lock().unwrap() = None;
+
     if config.live {
         let shared = state.inner.clone();
         let sink: Arc<dyn EventSink> = Arc::new(TauriEventSink::new(app, shared.clone()));
         let registry = AdapterRegistry::start(&config, shared, sink);
         *state.runtime.lock().unwrap() = Some(Arc::new(registry));
-    } else {
-        *state.runtime.lock().unwrap() = None;
     }
 
     if let Err(err) = state.save_settings() {
@@ -1299,8 +1342,47 @@ fn route_dante_crosspoint(
         }),
     );
     let mut inner = state.inner.lock().unwrap();
+    let rx_channel = rx_chan_id.to_string();
+    let matched = inner
+        .dante_routes
+        .iter()
+        .position(|route| {
+            (route.id == rx_ip || route.rx_device == rx_ip) && route.rx_channel == rx_channel
+        })
+        .or_else(|| {
+            inner
+                .dante_routes
+                .iter()
+                .position(|route| route.id == rx_ip || route.rx_device == rx_ip)
+        })
+        .or_else(|| {
+            inner.dante_routes.iter().position(|route| {
+                route.rx_channel == rx_channel && route.tx_device == tx_dev
+            })
+        });
+
+    if let Some(index) = matched {
+        let route = &mut inner.dante_routes[index];
+        route.rx_device = rx_ip.clone();
+        route.rx_channel = rx_channel.clone();
+        route.tx_device = tx_dev.clone();
+        route.tx_channel = tx_chan.clone();
+        route.rx_status = "PREPARING".into();
+    } else {
+        inner.dante_routes.push(DanteRoute {
+            id: format!("{rx_ip}:{rx_chan_id}"),
+            rx_device: rx_ip.clone(),
+            rx_channel: rx_channel.clone(),
+            tx_device: tx_dev.clone(),
+            tx_channel: tx_chan.clone(),
+            rx_status: "PREPARING".into(),
+            signal_dbfs: -60,
+            identify_flashing: false,
+        });
+    }
+
     inner.push_event_log(format!(
-        "[dante-arc] Crosspoint ch {} <- {}@{}",
+        "[dante-arc] Crosspoint ch {} <- {}@{} (state snapshot updated)",
         rx_chan_id, tx_chan, tx_dev
     ));
     inner.clone()

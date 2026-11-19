@@ -1,5 +1,5 @@
 import { MidiTriggerModal } from "./MidiTriggerModal";
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   Camera,
   Eye,
@@ -124,9 +124,16 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ state, onSave, onChe
     () => JSON.stringify(state.settings),
     [state.settings]
   );
+  const lastSavedSettingsRef = useRef<string | null>(null);
+
   useEffect(() => {
     setDraft(cloneSettings(state.settings));
-    setSaveNote(null);
+    // A save round-trip echoes the same settings object back through the
+    // simulator/IPC. Don't wipe the "Saved" confirmation in that case.
+    if (lastSavedSettingsRef.current !== incomingSettings) {
+      setSaveNote(null);
+    }
+    lastSavedSettingsRef.current = null;
   }, [incomingSettings]);
 
   const dirty = useMemo(
@@ -148,6 +155,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ state, onSave, onChe
 
   const handleSave = () => {
     if (!pinValid || !x32Valid) return;
+    lastSavedSettingsRef.current = JSON.stringify(draft);
     onSave(cloneSettings(draft));
     setSaveNote("Saved to AppState — persisted by the Rust backend.");
   };

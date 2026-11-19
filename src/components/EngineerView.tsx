@@ -356,7 +356,7 @@ export const EngineerView: React.FC<EngineerViewProps> = ({
           <DanteControllerMatrix
             routes={state.danteRoutes}
             onRoutePatch={(rxIp, rxChanId, txChan, txDev) => {
-              routeDanteCrosspoint(rxIp, rxChanId, txChan, txDev);
+              routeDanteCrosspoint(rxIp, rxChanId, txChan, txDev).catch(() => {});
             }}
             onIdentifyDevice={(deviceIp) => onFlashDanteIdentify(deviceIp)}
           />

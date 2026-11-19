@@ -37,6 +37,7 @@ use propresenter_adapter::{ProPresenterCommand, ProPresenterConfig};
 use std::sync::{Arc, Mutex};
 use streamlabs_adapter::{StreamlabsCommand, StreamlabsConfig};
 use tokio::sync::mpsc;
+use tokio::task::JoinHandle;
 use x32_adapter::{X32Command, X32Config};
 
 #[derive(Debug, Clone, Default)]
@@ -69,10 +70,7 @@ impl RuntimeConfig {
             config
         });
 
-        let obs = Some(ObsConfig::new(
-            std::env::var("RING_OBS_URL").unwrap_or_else(|_| "ws://127.0.0.1:4455".into()),
-            std::env::var("RING_OBS_PASSWORD").ok(),
-        ));
+        let obs = Some(obs_config_from_env());
 
         let streamlabs = Some(StreamlabsConfig::new(
             std::env::var("RING_SLOBS_ADDR").unwrap_or_else(|_| "127.0.0.1:28194".into()),
@@ -152,8 +150,22 @@ impl RuntimeConfig {
                 ..DanteConfig::default()
             });
         }
+        // Broadcast destinations still need an OBS adapter even when RING_LIVE is not set, so
+        // the Settings UI can drive real streams. Do this after the Dante decision so a
+        // broadcast-only setup does not also bind the Dante Conmon port.
+        if cfg.obs.is_none() && (!settings.broadcast.destinations.is_empty() || cfg.live) {
+            cfg.obs = Some(obs_config_from_env());
+            cfg.live = true;
+        }
         cfg
     }
+}
+
+fn obs_config_from_env() -> ObsConfig {
+    ObsConfig::new(
+        std::env::var("RING_OBS_URL").unwrap_or_else(|_| "ws://127.0.0.1:4455".into()),
+        std::env::var("RING_OBS_PASSWORD").ok(),
+    )
 }
 
 fn env_flag(name: &str) -> bool {
@@ -191,6 +203,7 @@ pub struct AdapterRegistry {
     image_cache: Arc<Mutex<EasyWorshipImageCache>>,
     dante: Option<mpsc::UnboundedSender<DanteCommand>>,
     ndi: Option<mpsc::UnboundedSender<NdiCommand>>,
+    tasks: Vec<JoinHandle<()>>,
     devices: Vec<DeviceStatus>,
 }
 
@@ -210,12 +223,14 @@ impl AdapterRegistry {
             image_cache: Arc::new(Mutex::new(EasyWorshipImageCache::default())),
             dante: None,
             ndi: None,
+            tasks: Vec::new(),
             devices: Vec::new(),
         };
 
         if let Some(x32) = &config.x32 {
             let (tx, rx) = mpsc::unbounded_channel();
-            x32_adapter::spawn(x32.clone(), state.clone(), sink.clone(), rx);
+            let handle = x32_adapter::spawn(x32.clone(), state.clone(), sink.clone(), rx);
+            registry.tasks.push(handle);
             registry.x32 = Some(tx);
             registry.devices.push(DeviceStatus {
                 id: "x32",
@@ -230,7 +245,8 @@ impl AdapterRegistry {
 
         if let Some(obs) = &config.obs {
             let (tx, rx) = mpsc::unbounded_channel();
-            obs_adapter::spawn(obs.clone(), state.clone(), sink.clone(), rx);
+            let handle = obs_adapter::spawn(obs.clone(), state.clone(), sink.clone(), rx);
+            registry.tasks.push(handle);
             registry.obs = Some(tx);
             registry.devices.push(DeviceStatus {
                 id: "yt",
@@ -242,7 +258,9 @@ impl AdapterRegistry {
 
         if let Some(streamlabs) = &config.streamlabs {
             let (tx, rx) = mpsc::unbounded_channel();
-            streamlabs_adapter::spawn(streamlabs.clone(), state.clone(), sink.clone(), rx);
+            let handle =
+                streamlabs_adapter::spawn(streamlabs.clone(), state.clone(), sink.clone(), rx);
+            registry.tasks.push(handle);
             registry.streamlabs = Some(tx);
             registry.devices.push(DeviceStatus {
                 id: "slobs",
@@ -257,7 +275,9 @@ impl AdapterRegistry {
 
         if let Some(propresenter) = &config.propresenter {
             let (tx, rx) = mpsc::unbounded_channel();
-            propresenter_adapter::spawn(propresenter.clone(), state.clone(), sink.clone(), rx);
+            let handle =
+                propresenter_adapter::spawn(propresenter.clone(), state.clone(), sink.clone(), rx);
+            registry.tasks.push(handle);
             registry.propresenter = Some(tx);
             registry.devices.push(DeviceStatus {
                 id: "slides",
@@ -272,13 +292,14 @@ impl AdapterRegistry {
 
         if let Some(easyworship) = &config.easyworship {
             let (tx, rx) = mpsc::unbounded_channel();
-            easyworship_adapter::spawn(
+            let handle = easyworship_adapter::spawn(
                 easyworship.clone(),
                 state.clone(),
                 sink.clone(),
                 registry.image_cache.clone(),
                 rx,
             );
+            registry.tasks.push(handle);
             registry.easyworship = Some(tx);
             registry.devices.push(DeviceStatus {
                 id: "slides-ew",
@@ -293,7 +314,8 @@ impl AdapterRegistry {
 
         if let Some(dante) = &config.dante {
             let (tx, rx) = mpsc::unbounded_channel();
-            dante_adapter::spawn(dante.clone(), state.clone(), sink.clone(), rx);
+            let handle = dante_adapter::spawn(dante.clone(), state.clone(), sink.clone(), rx);
+            registry.tasks.push(handle);
             registry.dante = Some(tx);
             registry.devices.push(DeviceStatus {
                 id: "dante",
@@ -305,7 +327,8 @@ impl AdapterRegistry {
 
         if let Some(ndi) = &config.ndi {
             let (tx, rx) = mpsc::unbounded_channel();
-            ndi_adapter::spawn(ndi.clone(), state.clone(), sink.clone(), rx);
+            let handle = ndi_adapter::spawn(ndi.clone(), state.clone(), sink.clone(), rx);
+            registry.tasks.push(handle);
             registry.ndi = Some(tx);
             registry.devices.push(DeviceStatus {
                 id: "ndi",
@@ -370,6 +393,14 @@ impl AdapterRegistry {
                 .as_ref()
                 .map(|tx| tx.send(command).is_ok())
                 .unwrap_or(false),
+        }
+    }
+}
+
+impl Drop for AdapterRegistry {
+    fn drop(&mut self) {
+        for handle in &self.tasks {
+            handle.abort();
         }
     }
 }

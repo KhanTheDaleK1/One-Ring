@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useCallback, useEffect } from "react";
 import {
   Camera,
   Video,
@@ -13,7 +13,7 @@ import {
 } from "lucide-react";
 import type { AppStateSnapshot } from "../types";
 import { NdiStudioTools } from "./NdiStudioTools";
-import { triggerNdiPtz } from "../bridge";
+import { ptzDriveCamera, triggerNdiPtz } from "../bridge";
 
 interface VideoCanvasViewProps {
   state: AppStateSnapshot;
@@ -28,6 +28,40 @@ export const VideoCanvasView: React.FC<VideoCanvasViewProps> = ({
 }) => {
   const cameras = state.cameras || [];
   const activeCamera = cameras.find((c) => c.id === state.activeCameraPresetId) || cameras[0];
+
+  const ptzIp =
+    state.ndiReceivers.find(
+      (receiver) =>
+        receiver.subscribedSource === activeCamera?.cameraId ||
+        receiver.subscribedSource === activeCamera?.name
+    )?.ip ||
+    state.settings?.ndiPtz?.discoveryRangeStart ||
+    "192.168.1.50";
+  const ptzPort = state.settings?.ndiPtz?.viscaPort || 52381;
+
+  const drivePtz = useCallback(
+    (pan: number, tilt: number, zoom: number) => {
+      ptzDriveCamera(ptzIp, ptzPort, pan, tilt, zoom).catch(() => {});
+    },
+    [ptzIp, ptzPort]
+  );
+
+  const stopPtz = useCallback(() => {
+    drivePtz(0, 0, 0);
+  }, [drivePtz]);
+
+  // Safety net: if the pointer is released outside a button or the window loses
+  // focus, always send a full stop so PTZ motors never keep spinning.
+  useEffect(() => {
+    window.addEventListener("pointerup", stopPtz);
+    window.addEventListener("pointercancel", stopPtz);
+    window.addEventListener("blur", stopPtz);
+    return () => {
+      window.removeEventListener("pointerup", stopPtz);
+      window.removeEventListener("pointercancel", stopPtz);
+      window.removeEventListener("blur", stopPtz);
+    };
+  }, [stopPtz]);
 
   return (
     <div
@@ -226,107 +260,83 @@ export const VideoCanvasView: React.FC<VideoCanvasViewProps> = ({
           </div>
 
           {/* D-Pad Directional Controller */}
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns: "repeat(3, 1fr)",
-              gap: 8,
-              maxWidth: 200,
-              margin: "12px auto",
-            }}
-          >
-            <div />
-            <button
-              type="button"
-              style={{
-                height: 50,
-                background: "#1E2533",
-                border: "1px solid #3B82F6",
-                borderRadius: 8,
-                color: "#60A5FA",
-                cursor: "pointer",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-              }}
-            >
-              <ChevronUp size={24} />
-            </button>
-            <div />
+          {(() => {
+            const padStyle: React.CSSProperties = {
+              height: 50,
+              background: "#1E2533",
+              border: "1px solid #3B82F6",
+              borderRadius: 8,
+              color: "#60A5FA",
+              cursor: "pointer",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              touchAction: "none",
+            };
+            const stop = () => stopPtz();
+            const hold = (pan: number, tilt: number) => ({
+              onPointerDown: () => drivePtz(pan, tilt, 0),
+              onPointerUp: stop,
+              onPointerLeave: stop,
+              onPointerCancel: stop,
+            });
+            return (
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "repeat(3, 1fr)",
+                  gap: 8,
+                  maxWidth: 200,
+                  margin: "12px auto",
+                }}
+              >
+                <div />
+                <button type="button" style={padStyle} aria-label="Tilt up" {...hold(0, 0.75)}>
+                  <ChevronUp size={24} />
+                </button>
+                <div />
 
-            <button
-              type="button"
-              style={{
-                height: 50,
-                background: "#1E2533",
-                border: "1px solid #3B82F6",
-                borderRadius: 8,
-                color: "#60A5FA",
-                cursor: "pointer",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-              }}
-            >
-              <ChevronLeft size={24} />
-            </button>
-            <div
-              style={{
-                height: 50,
-                background: "#0F131A",
-                border: "1px solid #232D3F",
-                borderRadius: 8,
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                color: "#64748B",
-                fontSize: 10,
-                fontWeight: 700,
-              }}
-            >
-              PTZ
-            </div>
-            <button
-              type="button"
-              style={{
-                height: 50,
-                background: "#1E2533",
-                border: "1px solid #3B82F6",
-                borderRadius: 8,
-                color: "#60A5FA",
-                cursor: "pointer",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-              }}
-            >
-              <ChevronRight size={24} />
-            </button>
+                <button type="button" style={padStyle} aria-label="Pan left" {...hold(-0.75, 0)}>
+                  <ChevronLeft size={24} />
+                </button>
+                <div
+                  style={{
+                    height: 50,
+                    background: "#0F131A",
+                    border: "1px solid #232D3F",
+                    borderRadius: 8,
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    color: "#64748B",
+                    fontSize: 10,
+                    fontWeight: 700,
+                  }}
+                >
+                  PTZ
+                </div>
+                <button type="button" style={padStyle} aria-label="Pan right" {...hold(0.75, 0)}>
+                  <ChevronRight size={24} />
+                </button>
 
-            <div />
-            <button
-              type="button"
-              style={{
-                height: 50,
-                background: "#1E2533",
-                border: "1px solid #3B82F6",
-                borderRadius: 8,
-                color: "#60A5FA",
-                cursor: "pointer",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-              }}
-            >
-              <ChevronDown size={24} />
-            </button>
-            <div />
-          </div>
+                <div />
+                <button type="button" style={padStyle} aria-label="Tilt down" {...hold(0, -0.75)}>
+                  <ChevronDown size={24} />
+                </button>
+                <div />
+              </div>
+            );
+          })()}
 
           {/* Zoom Buttons */}
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
             <button
               type="button"
+              aria-label="Zoom in"
+              onPointerDown={() => drivePtz(0, 0, 0.75)}
+              onPointerUp={stopPtz}
+              onPointerLeave={stopPtz}
+              onPointerCancel={stopPtz}
               style={{
                 height: 40,
                 background: "#161B24",
@@ -335,12 +345,18 @@ export const VideoCanvasView: React.FC<VideoCanvasViewProps> = ({
                 color: "#E2E8F0",
                 fontWeight: 600,
                 cursor: "pointer",
+                touchAction: "none",
               }}
             >
               Zoom In (+)
             </button>
             <button
               type="button"
+              aria-label="Zoom out"
+              onPointerDown={() => drivePtz(0, 0, -0.75)}
+              onPointerUp={stopPtz}
+              onPointerLeave={stopPtz}
+              onPointerCancel={stopPtz}
               style={{
                 height: 40,
                 background: "#161B24",
@@ -349,6 +365,7 @@ export const VideoCanvasView: React.FC<VideoCanvasViewProps> = ({
                 color: "#E2E8F0",
                 fontWeight: 600,
                 cursor: "pointer",
+                touchAction: "none",
               }}
             >
               Zoom Out (-)

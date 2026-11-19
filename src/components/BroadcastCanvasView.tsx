@@ -38,6 +38,7 @@ import {
   startDirectFfmpegStream,
   stopDirectFfmpegStream,
   startReplayBuffer,
+  stopReplayBuffer,
   saveReplayBuffer,
   remuxRecordingToMp4,
   type MediaEngineStatus,
@@ -297,6 +298,7 @@ export const BroadcastCanvasView: React.FC<BroadcastCanvasViewProps> = ({
   const sources = state.sources || [];
   const broadcasts = state.broadcasts || [];
   const anyLive = broadcasts.some((b) => b.live);
+  const isRecording = broadcasts.some((b) => b.id === "record" && b.live);
 
   const notify = useCallback((msg: string) => {
     setToastMsg(msg);
@@ -438,7 +440,43 @@ export const BroadcastCanvasView: React.FC<BroadcastCanvasViewProps> = ({
     setPreviewSceneId(sceneId);
     onSetAllSources(target.sources);
     persistScenesToStorage(updated, sceneId, sceneId);
+    invoke("dispatch_obs_studio_command", {
+      action: "set_current_program_scene",
+      arg: target.name,
+    }).catch(() => {});
   };
+
+  // Keep the multiview output window in sync and let its tiles switch Program.
+  const handleSelectSceneRef = useRef<(sceneId: string) => void>(() => {});
+  handleSelectSceneRef.current = handleSelectScene;
+
+  useEffect(() => {
+    const channel = new BroadcastChannel("onering_display_sync");
+    channel.onmessage = (event) => {
+      const data = event.data;
+      if (data?.type === "SELECT_SCENE" && typeof data.sceneId === "string") {
+        handleSelectSceneRef.current(data.sceneId);
+      }
+    };
+    return () => {
+      channel.onmessage = null;
+      channel.close();
+    };
+  }, []);
+
+  useEffect(() => {
+    try {
+      const channel = new BroadcastChannel("onering_display_sync");
+      channel.postMessage({
+        type: "BROADCAST_SCENES_UPDATE",
+        payload: { scenes: sceneList, activeSceneId, previewSceneId },
+      });
+      channel.postMessage({ type: "ACTIVE_SCENE_UPDATE", sceneId: activeSceneId });
+      channel.close();
+    } catch {
+      // BroadcastChannel is optional in constrained webviews.
+    }
+  }, [sceneList, activeSceneId, previewSceneId]);
 
   const handleAddScene = () => {
     const num = sceneList.length + 1;
@@ -670,6 +708,15 @@ export const BroadcastCanvasView: React.FC<BroadcastCanvasViewProps> = ({
     }
   }, [replayBufferActive, notify]);
 
+  const handleStopReplay = useCallback(() => {
+    stopReplayBuffer()
+      .then((msg) => {
+        setReplayBufferActive(false);
+        notify(msg);
+      })
+      .catch((e) => notify(String(e)));
+  }, [notify]);
+
   const handleToggleRecordPause = useCallback(() => {
     const nextPaused = !recordPaused;
     setRecordPaused(nextPaused);
@@ -752,7 +799,7 @@ export const BroadcastCanvasView: React.FC<BroadcastCanvasViewProps> = ({
       handleToggleStream();
     } else if (matchHotkey("Start/Stop Recording")) {
       e.preventDefault();
-      handleToggleRecordPause();
+      onBroadcastToggle("record", !isRecording);
     } else if (matchHotkey("Mute Mic")) {
       e.preventDefault();
       handleMutePrimaryMic();
@@ -2146,6 +2193,25 @@ export const BroadcastCanvasView: React.FC<BroadcastCanvasViewProps> = ({
               >
                 {replayBufferActive ? "Save Instant Replay" : "Start Replay Buffer"}
               </button>
+
+              {replayBufferActive && (
+                <button
+                  type="button"
+                  onClick={handleStopReplay}
+                  style={{
+                    height: 32,
+                    background: "#161B24",
+                    border: "1px solid #7F1D1D",
+                    color: "#FCA5A5",
+                    borderRadius: 6,
+                    cursor: "pointer",
+                    fontSize: 11.5,
+                    fontWeight: 700,
+                  }}
+                >
+                  Stop Replay Buffer
+                </button>
+              )}
             </div>
 
             {anyLive && (

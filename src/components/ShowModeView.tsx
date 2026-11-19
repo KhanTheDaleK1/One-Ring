@@ -213,6 +213,17 @@ export const ShowModeView: React.FC<ShowModeViewProps> = ({
         return;
       }
 
+      // While the PTZ control deck is open it owns the keyboard. Escape closes
+      // it; every other shortcut (Space, arrows, 1-8, M, T) is ignored so it
+      // cannot fire a cue/camera change behind the modal.
+      if (showPtzDeck) {
+        if (e.key === "Escape") {
+          e.preventDefault();
+          setShowPtzDeck(false);
+        }
+        return;
+      }
+
       if (pendingMute) {
         if (e.key === "Escape") {
           e.preventDefault();
@@ -252,6 +263,7 @@ export const ShowModeView: React.FC<ShowModeViewProps> = ({
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [
     pendingMute,
+    showPtzDeck,
     state.activeCueIndex,
     state.cues.length,
     state.canUndo,

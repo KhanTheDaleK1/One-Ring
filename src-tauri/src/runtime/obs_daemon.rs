@@ -572,13 +572,18 @@ pub fn parse_easyworship_ewsx(file_path: &str) -> Result<Vec<ImportedSongPayload
         .unwrap_or(false);
 
     #[cfg(target_os = "windows")]
+    let archive_path = tmp_dir.join("archive.zip");
+    #[cfg(target_os = "windows")]
+    std::fs::copy(p, &archive_path)
+        .map_err(|e| format!("Failed to stage .ewsx as archive.zip: {e}"))?;
+    #[cfg(target_os = "windows")]
     let unpack_ok = Command::new("powershell")
         .args([
             "-NoProfile",
             "-Command",
             &format!(
                 "Expand-Archive -Path '{}' -DestinationPath '{}' -Force",
-                file_path.replace('\'', "''"),
+                archive_path.to_string_lossy().replace('\'', "''"),
                 tmp_dir.to_string_lossy().replace('\'', "''")
             ),
         ])
@@ -677,6 +682,16 @@ impl ReplayBufferProcess {
             "FFmpeg binary not found for Replay Buffer".to_string()
         })?;
         let _ = std::fs::create_dir_all(&self.buffer_dir);
+        // Remove segments left behind by a previous run so a fresh ring never mixes stale clips.
+        if let Ok(entries) = std::fs::read_dir(&self.buffer_dir) {
+            for entry in entries.flatten() {
+                let name = entry.file_name();
+                let name = name.to_string_lossy();
+                if name.starts_with("seg_") && name.ends_with(".ts") {
+                    let _ = std::fs::remove_file(entry.path());
+                }
+            }
+        }
         // Use MPEG-TS segments so every closed segment can be losslessly concatenated without corruption.
         let seg_pattern = self.buffer_dir.join("seg_%02d.ts").to_string_lossy().to_string();
 
@@ -748,21 +763,34 @@ impl ReplayBufferProcess {
             let list_path = self.buffer_dir.join(format!("concat_{ts}.txt"));
             let mut list_content = String::new();
             for (_, seg) in &segments {
-                let escaped = seg.to_string_lossy().replace('\'', "'\\''");
+                // FFmpeg's concat demuxer treats backslashes as escapes; Windows paths must use
+                // forward slashes even though `PathBuf` renders them with backslashes.
+                let normalized = seg.to_string_lossy().replace('\\', "/");
+                let escaped = normalized.replace('\'', "'\\''");
                 list_content.push_str(&format!("file '{}'\n", escaped));
             }
             std::fs::write(&list_path, &list_content)
                 .map_err(|e| format!("Failed to write replay concat list: {e}"))?;
+            let mut ffmpeg_args: Vec<String> = vec![
+                "-y".into(),
+                "-f".into(),
+                "concat".into(),
+                "-safe".into(),
+                "0".into(),
+                "-i".into(),
+                list_path.to_string_lossy().to_string(),
+                "-c".into(),
+                "copy".into(),
+            ];
+            #[cfg(target_os = "macos")]
+            ffmpeg_args.extend(["-bsf:a".into(), "aac_adtstoasc".into()]);
+            ffmpeg_args.extend([
+                "-movflags".into(),
+                "+faststart".into(),
+                out_path.to_string_lossy().to_string(),
+            ]);
             let status = Command::new(&bin)
-                .args([
-                    "-y",
-                    "-f", "concat",
-                    "-safe", "0",
-                    "-i", &list_path.to_string_lossy(),
-                    "-c", "copy",
-                    "-movflags", "+faststart",
-                    &out_path.to_string_lossy(),
-                ])
+                .args(&ffmpeg_args)
                 .output()
                 .map_err(|e| format!("Failed to assemble replay clip: {e}"))?;
             let _ = std::fs::remove_file(&list_path);

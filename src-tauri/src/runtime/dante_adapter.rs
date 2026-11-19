@@ -54,7 +54,7 @@ pub fn spawn(
     state: SharedState,
     sink: Arc<dyn EventSink>,
     mut rx: mpsc::UnboundedReceiver<DanteCommand>,
-) {
+) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let health = HealthReporter::new(
             "dante",
@@ -74,7 +74,13 @@ pub fn spawn(
                 Some(sock)
             }
             Err(e) => {
-                health.degraded(format!("Conmon :{} bind failed ({})", config.meter_port, e));
+                let bind_addr = SocketAddrV4::new(config.bind_ip, config.meter_port);
+                sink.log(format!(
+                    "[dante-conmon] Could not bind UDP {bind_addr} ({e}); using an ephemeral UDP source port so ARC control commands remain available"
+                ));
+                health.degraded(format!(
+                    "Conmon {bind_addr} bind failed ({e}); ephemeral fallback active"
+                ));
                 UdpSocket::bind("0.0.0.0:0").await.ok()
             }
         };
@@ -172,5 +178,5 @@ pub fn spawn(
                 }
             }
         }
-    });
+    })
 }
