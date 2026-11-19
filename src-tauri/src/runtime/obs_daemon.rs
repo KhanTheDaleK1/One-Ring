@@ -1,13 +1,15 @@
-//! Option 2: Headless Media Engine Supervisor (`libobs` / FFmpeg) & OS Plugin/Device Discovery.
+//! Headless Media Engine Supervisor (`libobs` / FFmpeg) & OS Plugin/Device Discovery.
 //!
 //! Provides native filesystem scanning for VST3 / VST2 / Audio Unit (AU) plugins, hardware
 //! capture device discovery, and subprocess supervision for standalone headless video encoding
 //! and streaming when external OBS Desktop is not open.
 
 use serde::{Deserialize, Serialize};
-use std::path::Path;
-use std::process::{Child, Command};
+use std::io::Write;
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -27,6 +29,39 @@ pub struct MediaEngineStatus {
     pub daemon_running: bool,
 }
 
+fn find_in_path(names: &[&str]) -> Option<String> {
+    let path_var = std::env::var_os("PATH")?;
+    for dir in std::env::split_paths(&path_var) {
+        for name in names {
+            let candidate = dir.join(name);
+            if candidate.is_file() {
+                return Some(candidate.to_string_lossy().to_string());
+            }
+        }
+    }
+    None
+}
+
+/// Gracefully request FFmpeg to finalize its container (`q\n` on stdin), waiting briefly
+/// before falling back to SIGKILL so MP4 `moov` atoms are not corrupted.
+fn stop_child_gracefully(child: &mut Child, send_quit_key: bool) {
+    if send_quit_key {
+        if let Some(mut stdin) = child.stdin.take() {
+            let _ = stdin.write_all(b"q\n");
+            let _ = stdin.flush();
+        }
+        for _ in 0..20 {
+            match child.try_wait() {
+                Ok(Some(_)) => return,
+                Ok(None) => std::thread::sleep(Duration::from_millis(100)),
+                Err(_) => break,
+            }
+        }
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
 pub struct ObsDaemonSupervisor {
     child: Arc<Mutex<Option<Child>>>,
 }
@@ -36,6 +71,12 @@ impl Default for ObsDaemonSupervisor {
         Self {
             child: Arc::new(Mutex::new(None)),
         }
+    }
+}
+
+impl Drop for ObsDaemonSupervisor {
+    fn drop(&mut self) {
+        self.stop();
     }
 }
 
@@ -56,8 +97,7 @@ impl ObsDaemonSupervisor {
     pub fn stop(&self) {
         let mut guard = self.child.lock().unwrap();
         if let Some(mut child) = guard.take() {
-            let _ = child.kill();
-            let _ = child.wait();
+            stop_child_gracefully(&mut child, false);
         }
     }
 
@@ -91,7 +131,7 @@ pub fn find_obs_binary() -> Option<String> {
             return Some(c.to_string());
         }
     }
-    None
+    find_in_path(&["obs", "obs64.exe", "OBS"])
 }
 
 pub fn find_ffmpeg_binary() -> Option<String> {
@@ -106,7 +146,7 @@ pub fn find_ffmpeg_binary() -> Option<String> {
             return Some(c.to_string());
         }
     }
-    None
+    find_in_path(&["ffmpeg", "ffmpeg.exe"])
 }
 
 /// Scans standard OS plugin directories for VST3, VST2, and macOS Audio Unit (.component) bundles.
@@ -154,7 +194,7 @@ pub fn scan_installed_audio_plugins() -> Vec<InstalledAudioPlugin> {
         }
     }
 
-    results.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    results.sort_by_key(|a| a.name.to_lowercase());
     results
 }
 
@@ -179,6 +219,7 @@ pub struct HostMediaDevice {
 }
 
 pub fn list_host_audio_devices() -> Vec<HostMediaDevice> {
+    #[allow(unused_mut)]
     let mut devices = Vec::new();
     #[cfg(target_os = "macos")]
     {
@@ -232,6 +273,7 @@ pub fn list_host_audio_devices() -> Vec<HostMediaDevice> {
 }
 
 pub fn list_host_video_devices() -> Vec<HostMediaDevice> {
+    #[allow(unused_mut)]
     let mut devices = Vec::new();
     #[cfg(target_os = "macos")]
     {
@@ -269,6 +311,25 @@ pub fn list_host_video_devices() -> Vec<HostMediaDevice> {
     devices
 }
 
+fn push_video_encode_args(args: &mut Vec<String>, has_audio: bool) {
+    #[cfg(target_os = "macos")]
+    args.extend([
+        "-c:v".into(), "h264_videotoolbox".into(),
+        "-b:v".into(), "4500k".into(),
+        "-pix_fmt".into(), "yuv420p".into(),
+    ]);
+    #[cfg(not(target_os = "macos"))]
+    args.extend([
+        "-c:v".into(), "libx264".into(),
+        "-preset".into(), "veryfast".into(),
+        "-b:v".into(), "4500k".into(),
+        "-pix_fmt".into(), "yuv420p".into(),
+    ]);
+    if has_audio {
+        args.extend(["-c:a".into(), "aac".into(), "-b:a".into(), "160k".into()]);
+    }
+}
+
 pub struct FfmpegStreamProcess {
     pub child: Arc<Mutex<Option<Child>>>,
 }
@@ -276,6 +337,12 @@ pub struct FfmpegStreamProcess {
 impl Default for FfmpegStreamProcess {
     fn default() -> Self {
         Self { child: Arc::new(Mutex::new(None)) }
+    }
+}
+
+impl Drop for FfmpegStreamProcess {
+    fn drop(&mut self) {
+        self.stop();
     }
 }
 
@@ -294,33 +361,35 @@ impl FfmpegStreamProcess {
     pub fn stop(&self) {
         let mut guard = self.child.lock().unwrap();
         if let Some(mut c) = guard.take() {
-            let _ = c.kill();
-            let _ = c.wait();
+            stop_child_gracefully(&mut c, true);
         }
     }
 
-    /// Starts native standalone FFmpeg screen/audio capture -> RTMP/RTMPS + local MKV/MP4 tee
+    /// Starts native standalone FFmpeg screen/audio capture -> RTMP/RTMPS and/or local MKV/MP4.
     pub fn start_stream(&self, rtmp_url: &str, record_path: Option<&str>) -> Result<String, String> {
         if self.is_running() {
             return Ok("FFmpeg native encoder already streaming".into());
         }
+        let rec_clean = record_path.map(str::trim).filter(|s| !s.is_empty());
+        let rtmp_clean = rtmp_url.trim();
+        if rec_clean.is_none() && rtmp_clean.is_empty() {
+            return Err("No RTMP URL or local recording path configured for standalone FFmpeg".into());
+        }
+
         let bin = find_ffmpeg_binary().ok_or_else(|| {
             "FFmpeg binary not found. Install ffmpeg (Homebrew / winget) for direct standalone RTMP encoding.".to_string()
         })?;
 
         let mut args: Vec<String> = Vec::new();
+        let has_audio: bool;
         #[cfg(target_os = "macos")]
         {
             args.extend([
                 "-f".into(), "avfoundation".into(),
                 "-framerate".into(), "30".into(),
                 "-i".into(), "Capture screen 0:0".into(),
-                "-c:v".into(), "h264_videotoolbox".into(),
-                "-b:v".into(), "4500k".into(),
-                "-pix_fmt".into(), "yuv420p".into(),
-                "-c:a".into(), "aac".into(),
-                "-b:a".into(), "160k".into(),
             ]);
+            has_audio = true;
         }
         #[cfg(target_os = "windows")]
         {
@@ -328,36 +397,52 @@ impl FfmpegStreamProcess {
                 "-f".into(), "gdigrab".into(),
                 "-framerate".into(), "30".into(),
                 "-i".into(), "desktop".into(),
-                "-c:v".into(), "libx264".into(),
-                "-preset".into(), "veryfast".into(),
-                "-b:v".into(), "4500k".into(),
-                "-pix_fmt".into(), "yuv420p".into(),
-                "-c:a".into(), "aac".into(),
-                "-b:a".into(), "160k".into(),
             ]);
+            has_audio = false;
         }
         #[cfg(target_os = "linux")]
         {
             args.extend([
                 "-f".into(), "x11grab".into(),
+                "-framerate".into(), "30".into(),
                 "-i".into(), ":0.0".into(),
-                "-c:v".into(), "libx264".into(),
-                "-preset".into(), "veryfast".into(),
-                "-b:v".into(), "4500k".into(),
             ]);
+            has_audio = false;
         }
 
-        if let Some(rec) = record_path {
-            if !rec.trim().is_empty() {
-                args.extend(["-f".into(), "mp4".into(), rec.to_string()]);
+        // Apply codec options explicitly per output so multi-output streams never fall back to flv1/mp3.
+        if let Some(rec) = rec_clean {
+            if let Some(parent) = Path::new(rec).parent() {
+                if !parent.as_os_str().is_empty() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+            }
+            push_video_encode_args(&mut args, has_audio);
+            let ext = Path::new(rec)
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("mp4")
+                .to_ascii_lowercase();
+            match ext.as_str() {
+                "mkv" => args.extend(["-f".into(), "matroska".into(), rec.to_string()]),
+                "flv" => args.extend(["-f".into(), "flv".into(), rec.to_string()]),
+                _ => args.extend([
+                    "-movflags".into(),
+                    "+frag_keyframe+empty_moov".into(),
+                    "-f".into(),
+                    "mp4".into(),
+                    rec.to_string(),
+                ]),
             }
         }
-        if !rtmp_url.trim().is_empty() {
-            args.extend(["-f".into(), "flv".into(), rtmp_url.to_string()]);
+        if !rtmp_clean.is_empty() {
+            push_video_encode_args(&mut args, has_audio);
+            args.extend(["-f".into(), "flv".into(), rtmp_clean.to_string()]);
         }
 
         let child = Command::new(&bin)
             .args(&args)
+            .stdin(Stdio::piped())
             .spawn()
             .map_err(|e| format!("Failed to spawn FFmpeg encoder: {e}"))?;
         *self.child.lock().unwrap() = Some(child);
@@ -372,16 +457,112 @@ pub struct ImportedSongPayload {
     pub raw_lyrics: String,
 }
 
+struct TempDirGuard(PathBuf);
+impl Drop for TempDirGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// Strip basic RTF control words (`\par`, `\line`, `{\fonttbl...}`, etc.) to readable lyrics text.
+fn strip_basic_rtf(input: &str) -> String {
+    if !input.trim_start().starts_with("{\\rtf") {
+        return input.to_string();
+    }
+    let mut out = String::with_capacity(input.len());
+    let chars: Vec<char> = input.chars().collect();
+    let mut i = 0;
+    let mut skip_group_depth = 0usize;
+    let mut depth = 0usize;
+    while i < chars.len() {
+        let c = chars[i];
+        match c {
+            '{' => {
+                depth += 1;
+                if skip_group_depth == 0 {
+                    let rest: String = chars[i + 1..chars.len().min(i + 16)].iter().collect();
+                    if rest.starts_with("\\fonttbl")
+                        || rest.starts_with("\\colortbl")
+                        || rest.starts_with("\\stylesheet")
+                        || rest.starts_with("\\*")
+                    {
+                        skip_group_depth = depth;
+                    }
+                }
+                i += 1;
+            }
+            '}' => {
+                if skip_group_depth == depth {
+                    skip_group_depth = 0;
+                }
+                depth = depth.saturating_sub(1);
+                i += 1;
+            }
+            '\\' => {
+                i += 1;
+                if i >= chars.len() {
+                    break;
+                }
+                let next = chars[i];
+                if next == '\\' || next == '{' || next == '}' {
+                    if skip_group_depth == 0 {
+                        out.push(next);
+                    }
+                    i += 1;
+                } else if next == '\'' && i + 2 < chars.len() {
+                    let hex: String = chars[i + 1..i + 3].iter().collect();
+                    if skip_group_depth == 0 {
+                        if let Ok(b) = u8::from_str_radix(&hex, 16) {
+                            out.push(b as char);
+                        }
+                    }
+                    i += 3;
+                } else {
+                    let start = i;
+                    while i < chars.len() && chars[i].is_ascii_alphabetic() {
+                        i += 1;
+                    }
+                    let word: String = chars[start..i].iter().collect();
+                    while i < chars.len() && (chars[i].is_ascii_digit() || chars[i] == '-') {
+                        i += 1;
+                    }
+                    if i < chars.len() && chars[i] == ' ' {
+                        i += 1;
+                    }
+                    if skip_group_depth == 0 && (word == "par" || word == "line") {
+                        out.push('\n');
+                    }
+                }
+            }
+            '\r' | '\n' => {
+                i += 1;
+            }
+            other => {
+                if skip_group_depth == 0 {
+                    out.push(other);
+                }
+                i += 1;
+            }
+        }
+    }
+    out.trim().to_string()
+}
+
 /// Clean-room EasyWorship `.ewsx` schedule extractor:
 /// `.ewsx` is a standard ZIP archive containing `main.db` (SQLite) per `docs/re-findings/easyworship.md`.
-/// Extracts `main.db` to a temp file and queries item titles/slides via `sqlite3` or readable RTF text fallback.
+/// Uses unique temp directories and JSON SQLite output so multi-line lyrics are preserved intact.
 pub fn parse_easyworship_ewsx(file_path: &str) -> Result<Vec<ImportedSongPayload>, String> {
     let p = Path::new(file_path);
     if !p.exists() {
         return Err(format!("File not found: {file_path}"));
     }
-    let tmp_dir = std::env::temp_dir().join(format!("onering_ewsx_{}", std::process::id()));
-    let _ = std::fs::create_dir_all(&tmp_dir);
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let tmp_dir = std::env::temp_dir().join(format!("onering_ewsx_{}_{}", std::process::id(), nonce));
+    std::fs::create_dir_all(&tmp_dir).map_err(|e| format!("Failed to create temp dir: {e}"))?;
+    let _cleanup = TempDirGuard(tmp_dir.clone());
 
     #[cfg(not(target_os = "windows"))]
     let unpack_ok = Command::new("unzip")
@@ -397,8 +578,8 @@ pub fn parse_easyworship_ewsx(file_path: &str) -> Result<Vec<ImportedSongPayload
             "-Command",
             &format!(
                 "Expand-Archive -Path '{}' -DestinationPath '{}' -Force",
-                file_path.replace("'", "''"),
-                tmp_dir.to_string_lossy().replace("'", "''")
+                file_path.replace('\'', "''"),
+                tmp_dir.to_string_lossy().replace('\'', "''")
             ),
         ])
         .output()
@@ -412,25 +593,34 @@ pub fn parse_easyworship_ewsx(file_path: &str) -> Result<Vec<ImportedSongPayload
     let db_path = tmp_dir.join("main.db");
     let mut results = Vec::new();
     if db_path.exists() {
-        // Attempt sqlite3 CLI read if installed on host
+        let db_str = db_path.to_string_lossy();
+        // Prefer JSON mode in sqlite3 so multi-line RTF/text columns never split across rows.
         if let Ok(out) = Command::new("sqlite3")
             .args([
-                &db_path.to_string_lossy().to_string(),
-                "SELECT title, COALESCE(words, '') FROM song;",
+                "-json",
+                db_str.as_ref(),
+                "SELECT title, COALESCE(words, '') AS words FROM song;",
             ])
             .output()
         {
             if out.status.success() {
-                let s = String::from_utf8_lossy(&out.stdout);
-                for line in s.lines() {
-                    let mut parts = line.splitn(2, '|');
-                    let title = parts.next().unwrap_or("EasyWorship Song").trim();
-                    let words = parts.next().unwrap_or("").trim();
-                    if !title.is_empty() {
-                        results.push(ImportedSongPayload {
-                            title: title.to_string(),
-                            raw_lyrics: words.to_string(),
-                        });
+                if let Ok(rows) = serde_json::from_slice::<Vec<serde_json::Value>>(&out.stdout) {
+                    for row in rows {
+                        let title = row
+                            .get("title")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .trim();
+                        let words = row
+                            .get("words")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("");
+                        if !title.is_empty() {
+                            results.push(ImportedSongPayload {
+                                title: title.to_string(),
+                                raw_lyrics: strip_basic_rtf(words),
+                            });
+                        }
                     }
                 }
             }
@@ -442,11 +632,9 @@ pub fn parse_easyworship_ewsx(file_path: &str) -> Result<Vec<ImportedSongPayload
                 .file_stem()
                 .map(|x| x.to_string_lossy().to_string())
                 .unwrap_or_else(|| "EasyWorship Schedule".into()),
-            raw_lyrics: "Imported EasyWorship Archive
-Select or paste song text to reflow".into(),
+            raw_lyrics: "Imported EasyWorship Archive\nSelect or paste song text to reflow".into(),
         });
     }
-    let _ = std::fs::remove_dir_all(&tmp_dir);
     Ok(results)
 }
 
@@ -454,8 +642,6 @@ pub struct ReplayBufferProcess {
     pub child: Arc<Mutex<Option<Child>>>,
     pub buffer_dir: PathBuf,
 }
-
-use std::path::PathBuf;
 
 impl Default for ReplayBufferProcess {
     fn default() -> Self {
@@ -466,7 +652,20 @@ impl Default for ReplayBufferProcess {
     }
 }
 
+impl Drop for ReplayBufferProcess {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
+
 impl ReplayBufferProcess {
+    pub fn stop(&self) {
+        let mut guard = self.child.lock().unwrap();
+        if let Some(mut c) = guard.take() {
+            stop_child_gracefully(&mut c, true);
+        }
+    }
+
     pub fn start(&self) -> Result<String, String> {
         let mut guard = self.child.lock().unwrap();
         if let Some(c) = guard.as_mut() {
@@ -478,7 +677,8 @@ impl ReplayBufferProcess {
             "FFmpeg binary not found for Replay Buffer".to_string()
         })?;
         let _ = std::fs::create_dir_all(&self.buffer_dir);
-        let seg_pattern = self.buffer_dir.join("seg_%02d.mp4").to_string_lossy().to_string();
+        // Use MPEG-TS segments so every closed segment can be losslessly concatenated without corruption.
+        let seg_pattern = self.buffer_dir.join("seg_%02d.ts").to_string_lossy().to_string();
 
         let mut args: Vec<String> = Vec::new();
         #[cfg(target_os = "macos")]
@@ -491,18 +691,20 @@ impl ReplayBufferProcess {
         }
         #[cfg(target_os = "linux")]
         {
-            args.extend(["-f".into(), "x11grab".into(), "-i".into(), ":0.0".into(), "-c:v".into(), "libx264".into(), "-preset".into(), "veryfast".into()]);
+            args.extend(["-f".into(), "x11grab".into(), "-framerate".into(), "30".into(), "-i".into(), ":0.0".into(), "-c:v".into(), "libx264".into(), "-preset".into(), "veryfast".into()]);
         }
         args.extend([
             "-f".into(), "segment".into(),
+            "-segment_format".into(), "mpegts".into(),
             "-segment_time".into(), "5".into(),
-            "-segment_wrap".into(), "6".into(),
+            "-segment_wrap".into(), "7".into(),
             "-reset_timestamps".into(), "1".into(),
             seg_pattern,
         ]);
 
         let child = Command::new(&bin)
             .args(&args)
+            .stdin(Stdio::piped())
             .spawn()
             .map_err(|e| format!("Replay Buffer spawn failed: {e}"))?;
         *guard = Some(child);
@@ -510,37 +712,100 @@ impl ReplayBufferProcess {
     }
 
     pub fn save_clip(&self) -> Result<String, String> {
-        let out_name = format!("replay_{}.mp4", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0));
-        let out_path = std::env::temp_dir().join(&out_name);
-        // Copy newest segment as instant replay clip
-        let mut newest: Option<(std::time::SystemTime, PathBuf)> = None;
+        let ts = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let out_path = std::env::temp_dir().join(format!("replay_{ts}.mp4"));
+
+        let mut segments: Vec<(SystemTime, PathBuf)> = Vec::new();
         if let Ok(entries) = std::fs::read_dir(&self.buffer_dir) {
             for e in entries.flatten() {
+                let path = e.path();
+                if path.extension().and_then(|x| x.to_str()) != Some("ts") {
+                    continue;
+                }
                 if let Ok(meta) = e.metadata() {
-                    if let Ok(mod_t) = meta.modified() {
-                        if newest.as_ref().map(|(t, _)| mod_t > *t).unwrap_or(true) {
-                            newest = Some((mod_t, e.path()));
+                    if meta.len() > 0 {
+                        if let Ok(mod_t) = meta.modified() {
+                            segments.push((mod_t, path));
                         }
                     }
                 }
             }
         }
-        if let Some((_, src)) = newest {
-            let _ = std::fs::copy(&src, &out_path);
-            return Ok(format!("Saved Instant Replay clip -> {}", out_path.display()));
+        segments.sort_by_key(|(t, _)| *t);
+
+        // Exclude the most recently modified segment while FFmpeg is still actively writing to it.
+        if segments.len() >= 2 {
+            segments.pop();
         }
-        Ok("Replay Buffer armed — waiting for first 5s segment".into())
+        if segments.is_empty() {
+            return Ok("Replay Buffer armed — waiting for first completed 5s segment".into());
+        }
+
+        if let Some(bin) = find_ffmpeg_binary() {
+            let list_path = self.buffer_dir.join(format!("concat_{ts}.txt"));
+            let mut list_content = String::new();
+            for (_, seg) in &segments {
+                let escaped = seg.to_string_lossy().replace('\'', "'\\''");
+                list_content.push_str(&format!("file '{}'\n", escaped));
+            }
+            std::fs::write(&list_path, &list_content)
+                .map_err(|e| format!("Failed to write replay concat list: {e}"))?;
+            let status = Command::new(&bin)
+                .args([
+                    "-y",
+                    "-f", "concat",
+                    "-safe", "0",
+                    "-i", &list_path.to_string_lossy(),
+                    "-c", "copy",
+                    "-movflags", "+faststart",
+                    &out_path.to_string_lossy(),
+                ])
+                .output()
+                .map_err(|e| format!("Failed to assemble replay clip: {e}"))?;
+            let _ = std::fs::remove_file(&list_path);
+            if status.status.success() {
+                return Ok(format!(
+                    "Saved {}s Instant Replay clip -> {}",
+                    segments.len() * 5,
+                    out_path.display()
+                ));
+            }
+        }
+
+        // Fallback: copy last completed segment directly and surface any I/O error.
+        let (_, src) = segments.last().unwrap();
+        let fallback_out = std::env::temp_dir().join(format!("replay_{ts}.ts"));
+        std::fs::copy(src, &fallback_out)
+            .map_err(|e| format!("Failed to copy replay segment: {e}"))?;
+        Ok(format!("Saved Instant Replay clip -> {}", fallback_out.display()))
     }
 }
 
-/// Clean-room FFmpeg fast lossless container remux (`mkv`/`flv` -> `mp4` `-c copy -movflags +faststart`)
+/// Clean-room FFmpeg fast lossless container remux (`mkv`/`flv` -> `mp4` `-c copy -movflags +faststart`).
+/// Never overwrites the input file in-place.
 pub fn remux_mkv_to_mp4(input_path: &str) -> Result<String, String> {
     let bin = find_ffmpeg_binary().ok_or_else(|| "FFmpeg binary not found for auto-remux".to_string())?;
     let p = Path::new(input_path);
     if !p.exists() {
         return Err(format!("Recording not found: {input_path}"));
     }
-    let out = p.with_extension("mp4");
+    let out = if p
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.eq_ignore_ascii_case("mp4"))
+        .unwrap_or(false)
+    {
+        let stem = p
+            .file_stem()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| "recording".into());
+        p.with_file_name(format!("{stem}_faststart.mp4"))
+    } else {
+        p.with_extension("mp4")
+    };
     let status = Command::new(&bin)
         .args([
             "-y",
@@ -555,4 +820,15 @@ pub fn remux_mkv_to_mp4(input_path: &str) -> Result<String, String> {
         return Err(format!("FFmpeg remux failed: {}", String::from_utf8_lossy(&status.stderr)));
     }
     Ok(format!("Remuxed cleanly to {}", out.display()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn strip_basic_rtf_extracts_plain_lyrics() {
+        let rtf = r"{\rtf1\ansi{\fonttbl\f0 Arial;}Amazing Grace\par How sweet the sound\line}";
+        assert_eq!(strip_basic_rtf(rtf), "Amazing Grace\nHow sweet the sound");
+    }
 }

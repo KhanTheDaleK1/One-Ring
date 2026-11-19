@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { Cpu, Lock, AlertOctagon, FlaskConical, Settings, Pencil } from "lucide-react";
 import {
   applyCueProgress,
@@ -33,7 +33,7 @@ export const App: React.FC = () => {
   const [availableUpdate, setAvailableUpdate] = useState<UpdateInfo | null>(null);
   const [isEditingShowName, setIsEditingShowName] = useState(false);
   const [discoveredPeer, setDiscoveredPeer] = useState<DiscoveredPeerInfo | null>(null);
-  const [dismissedPeers, setDismissedPeers] = useState<Set<string>>(new Set());
+  const dismissedPeersRef = useRef<Set<string>>(new Set());
   const [showWelcomeTour, setShowWelcomeTour] = useState(() => {
     return localStorage.getItem("onering_tour_completed") !== "true";
   });
@@ -83,7 +83,7 @@ export const App: React.FC = () => {
     const peerTimer = setInterval(async () => {
       const peers = await getDiscoveredPeers();
       if (!disposed && peers && peers.length > 0) {
-        const unhandled = peers.find((p) => !dismissedPeers.has(p.instanceId));
+        const unhandled = peers.find((p) => !dismissedPeersRef.current.has(p.instanceId));
         if (unhandled) {
           setDiscoveredPeer(unhandled);
         }
@@ -92,19 +92,27 @@ export const App: React.FC = () => {
 
     bridge.getAppState().then((snapshot) => {
       if (disposed) return;
+      let hydratedFromLocal = false;
       try {
         const savedRaw = localStorage.getItem("onering_workspace_autosave_v1");
         if (savedRaw) {
           const saved = JSON.parse(savedRaw);
           if (saved.slides && (!snapshot.slides.slides || snapshot.slides.slides.length === 0)) {
             snapshot.slides = { ...snapshot.slides, ...saved.slides };
+            hydratedFromLocal = true;
           }
           if (Array.isArray(saved.sources) && saved.sources.length > 0 && (!snapshot.sources || snapshot.sources.length === 0)) {
             snapshot.sources = saved.sources;
+            hydratedFromLocal = true;
           }
         }
       } catch {}
       setState(snapshot);
+      if (hydratedFromLocal) {
+        bridge
+          .syncWorkspaceState({ slides: snapshot.slides, sources: snapshot.sources })
+          .catch(() => {});
+      }
 
       // Live mode hydrates once, then only listens for pushed patches. The simulator keeps
       // its 1 Hz tick so the mock bitrate/timer still animates in the browser.
@@ -147,7 +155,7 @@ export const App: React.FC = () => {
       ch.postMessage({ type: "SLIDES_UPDATE", slides: state.slides });
       ch.close();
     } catch {}
-  }, [state?.slides, isOutputWindow]);
+  }, [state?.slides, state?.sources, isOutputWindow]);
 
   if (isOutputWindow) {
     return <SecondaryOutputWindow />;
@@ -349,126 +357,71 @@ export const App: React.FC = () => {
         <SlidesCanvasView
           state={state}
           onSelectSlide={(slideNumber) => {
-            setState((prev) => {
-              if (!prev) return prev;
-              const arr = prev.slides.slides || [];
-              if (arr.length > 0) {
-                const idx = Math.max(0, Math.min(arr.length - 1, slideNumber - 1));
-                return {
-                  ...prev,
-                  slides: {
-                    ...prev.slides,
-                    currentSlide: idx + 1,
-                    totalSlides: arr.length,
-                    currentText: arr[idx]?.text || "",
-                    nextText: arr[idx + 1]?.text || "",
-                    cleared: false,
-                  },
-                };
-              }
-              bridge.goToSlide(slideNumber).then(setState);
-              return prev;
-            });
+            bridge.goToSlide(slideNumber).then(setState);
           }}
           onSlideAction={(act) => {
-            setState((prev) => {
-              if (!prev) return prev;
-              const arr = prev.slides.slides || [];
-              if (arr.length > 0) {
-                if (act === "clear") {
-                  return { ...prev, slides: { ...prev.slides, cleared: !prev.slides.cleared } };
-                }
-                const curr = prev.slides.currentSlide || 1;
-                const nextNum =
-                  act === "next"
-                    ? Math.min(arr.length, curr + 1)
-                    : Math.max(1, curr - 1);
-                return {
-                  ...prev,
-                  slides: {
-                    ...prev.slides,
-                    currentSlide: nextNum,
-                    totalSlides: arr.length,
-                    currentText: arr[nextNum - 1]?.text || "",
-                    nextText: arr[nextNum]?.text || "",
-                    cleared: false,
-                  },
-                };
-              }
-              bridge.triggerSlideAction(act).then(setState);
-              return prev;
-            });
+            bridge.triggerSlideAction(act).then(setState);
           }}
           onImportSong={(title, importedSlides) => {
-            setState((prev) => {
-              if (!prev) return prev;
-              const songId = "song_" + Date.now();
-              const existingSongs = prev.slides.songs || [];
-              const newSong = { id: songId, title, slides: importedSlides };
-              return {
-                ...prev,
-                slides: {
-                  ...prev.slides,
-                  presentationName: title,
-                  activeSongId: songId,
-                  songs: [...existingSongs, newSong],
-                  currentSlide: 1,
-                  totalSlides: importedSlides.length,
-                  currentText: importedSlides[0]?.text || "",
-                  nextText: importedSlides[1]?.text || "",
-                  cleared: false,
-                  slides: importedSlides,
-                },
-              };
-            });
+            const songId = "song_" + Date.now();
+            const existingSongs = state.slides.songs || [];
+            const newSong = { id: songId, title, slides: importedSlides };
+            const nextSlides = {
+              ...state.slides,
+              presentationName: title,
+              activeSongId: songId,
+              songs: [...existingSongs, newSong],
+              currentSlide: 1,
+              totalSlides: importedSlides.length,
+              currentText: importedSlides[0]?.text || "",
+              nextText: importedSlides[1]?.text || "",
+              cleared: false,
+              slides: importedSlides,
+            };
+            setState((prev) => (prev ? { ...prev, slides: nextSlides } : prev));
+            bridge.syncWorkspaceState({ slides: nextSlides }).catch(() => {});
           }}
           onSelectSong={(songId) => {
-            setState((prev) => {
-              if (!prev) return prev;
-              const song = (prev.slides.songs || []).find((s) => s.id === songId);
-              if (!song) return prev;
-              return {
-                ...prev,
-                slides: {
-                  ...prev.slides,
-                  presentationName: song.title,
-                  activeSongId: song.id,
-                  currentSlide: 1,
-                  totalSlides: song.slides.length,
-                  currentText: song.slides[0]?.text || "",
-                  nextText: song.slides[1]?.text || "",
-                  cleared: false,
-                  slides: song.slides,
-                },
-              };
-            });
+            const song = (state.slides.songs || []).find((s) => s.id === songId);
+            if (!song) return;
+            const nextSlides = {
+              ...state.slides,
+              presentationName: song.title,
+              activeSongId: song.id,
+              currentSlide: 1,
+              totalSlides: song.slides.length,
+              currentText: song.slides[0]?.text || "",
+              nextText: song.slides[1]?.text || "",
+              cleared: false,
+              slides: song.slides,
+            };
+            setState((prev) => (prev ? { ...prev, slides: nextSlides } : prev));
+            bridge.syncWorkspaceState({ slides: nextSlides }).catch(() => {});
           }}
           onRemoveSong={(songId) => {
-            setState((prev) => {
-              if (!prev) return prev;
-              const remaining = (prev.slides.songs || []).filter((s) => s.id !== songId);
-              const nextActive =
-                prev.slides.activeSongId === songId ? remaining[0] : remaining.find((s) => s.id === prev.slides.activeSongId);
-              return {
-                ...prev,
-                slides: {
-                  ...prev.slides,
-                  songs: remaining,
-                  activeSongId: nextActive?.id,
-                  presentationName: nextActive?.title || "Untitled Presentation",
-                  slides: nextActive?.slides || [],
-                  currentSlide: 1,
-                  totalSlides: nextActive?.slides.length || 0,
-                  currentText: nextActive?.slides[0]?.text || "",
-                  nextText: nextActive?.slides[1]?.text || "",
-                },
-              };
-            });
+            const remaining = (state.slides.songs || []).filter((s) => s.id !== songId);
+            const nextActive =
+              state.slides.activeSongId === songId
+                ? remaining[0]
+                : remaining.find((s) => s.id === state.slides.activeSongId);
+            const nextSlides = {
+              ...state.slides,
+              songs: remaining,
+              activeSongId: nextActive?.id,
+              presentationName: nextActive?.title || "Untitled Presentation",
+              slides: nextActive?.slides || [],
+              currentSlide: 1,
+              totalSlides: nextActive?.slides.length || 0,
+              currentText: nextActive?.slides[0]?.text || "",
+              nextText: nextActive?.slides[1]?.text || "",
+            };
+            setState((prev) => (prev ? { ...prev, slides: nextSlides } : prev));
+            bridge.syncWorkspaceState({ slides: nextSlides }).catch(() => {});
           }}
           onUpdateTheme={(theme) => {
-            setState((prev) =>
-              prev ? { ...prev, slides: { ...prev.slides, theme } } : prev
-            );
+            const nextSlides = { ...state.slides, theme };
+            setState((prev) => (prev ? { ...prev, slides: nextSlides } : prev));
+            bridge.syncWorkspaceState({ slides: nextSlides }).catch(() => {});
           }}
         />
       )}
@@ -478,58 +431,39 @@ export const App: React.FC = () => {
           state={state}
           onBroadcastToggle={(id, live) => bridge.setBroadcastState(id, live).then(setState)}
           onAddSource={(source) => {
-            setState((prev) => {
-              if (!prev) return prev;
-              return {
-                ...prev,
-                sources: [...(prev.sources || []), source],
-              };
-            });
+            const nextSources = [...(state.sources || []), source];
+            setState((prev) => (prev ? { ...prev, sources: nextSources } : prev));
+            bridge.syncWorkspaceState({ sources: nextSources }).catch(() => {});
           }}
           onRemoveSource={(id) => {
-            setState((prev) => {
-              if (!prev) return prev;
-              return {
-                ...prev,
-                sources: (prev.sources || []).filter((s) => s.id !== id),
-              };
-            });
+            const nextSources = (state.sources || []).filter((s) => s.id !== id);
+            setState((prev) => (prev ? { ...prev, sources: nextSources } : prev));
+            bridge.syncWorkspaceState({ sources: nextSources }).catch(() => {});
           }}
           onToggleSourceVisibility={(id) => {
-            setState((prev) => {
-              if (!prev) return prev;
-              return {
-                ...prev,
-                sources: (prev.sources || []).map((s) =>
-                  s.id === id ? { ...s, enabled: !s.enabled } : s
-                ),
-              };
-            });
+            const nextSources = (state.sources || []).map((s) =>
+              s.id === id ? { ...s, enabled: !s.enabled } : s
+            );
+            setState((prev) => (prev ? { ...prev, sources: nextSources } : prev));
+            bridge.syncWorkspaceState({ sources: nextSources }).catch(() => {});
           }}
           onToggleSourceLock={(id) => {
-            setState((prev) => {
-              if (!prev) return prev;
-              return {
-                ...prev,
-                sources: (prev.sources || []).map((s) =>
-                  s.id === id ? { ...s, locked: !s.locked } : s
-                ),
-              };
-            });
+            const nextSources = (state.sources || []).map((s) =>
+              s.id === id ? { ...s, locked: !s.locked } : s
+            );
+            setState((prev) => (prev ? { ...prev, sources: nextSources } : prev));
+            bridge.syncWorkspaceState({ sources: nextSources }).catch(() => {});
           }}
           onSetAllSources={(updatedSources) => {
             setState((prev) => (prev ? { ...prev, sources: updatedSources } : prev));
+            bridge.syncWorkspaceState({ sources: updatedSources }).catch(() => {});
           }}
           onUpdateSourceSettings={(id, newSettings, newName) => {
-            setState((prev) => {
-              if (!prev) return prev;
-              return {
-                ...prev,
-                sources: (prev.sources || []).map((s) =>
-                  s.id === id ? { ...s, settings: newSettings, name: newName } : s
-                ),
-              };
-            });
+            const nextSources = (state.sources || []).map((s) =>
+              s.id === id ? { ...s, settings: newSettings, name: newName } : s
+            );
+            setState((prev) => (prev ? { ...prev, sources: nextSources } : prev));
+            bridge.syncWorkspaceState({ sources: nextSources }).catch(() => {});
           }}
         />
       )}
@@ -581,8 +515,19 @@ export const App: React.FC = () => {
           setShowWelcomeTour(false);
         }}
         onNavigateTab={(tabKey) => {
-          if (["preflight", "show", "engineer", "settings"].includes(tabKey)) {
-            setMode(tabKey as ViewMode);
+          const map: Record<string, ViewMode> = {
+            preflight: "master",
+            show: "master",
+            engineer: "mixing",
+            mixing: "mixing",
+            video: "video",
+            slides: "slides",
+            broadcast: "broadcast",
+            master: "master",
+            settings: "settings",
+          };
+          if (tabKey in map) {
+            setMode(map[tabKey]);
           }
         }}
       />
@@ -603,10 +548,11 @@ export const App: React.FC = () => {
               };
               bridge.saveSettings(updated).then(setState);
             }
+            dismissedPeersRef.current.add(p.instanceId);
             setDiscoveredPeer(null);
           }}
           onDismiss={() => {
-            setDismissedPeers((prev) => new Set(prev).add(discoveredPeer.instanceId));
+            dismissedPeersRef.current.add(discoveredPeer.instanceId);
             setDiscoveredPeer(null);
           }}
         />
@@ -616,7 +562,8 @@ export const App: React.FC = () => {
         currentName={state.serviceName || "Untitled Show"}
         isOpen={isEditingShowName}
         onSave={(name) => {
-          setState((prev) => prev ? { ...prev, serviceName: name } : prev);
+          setState((prev) => (prev ? { ...prev, serviceName: name } : prev));
+          bridge.syncWorkspaceState({ serviceName: name }).catch(() => {});
         }}
         onClose={() => setIsEditingShowName(false)}
       />

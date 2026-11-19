@@ -52,7 +52,8 @@ impl OscArg {
             OscArg::Float(_) => 'f',
             OscArg::String(_) => 's',
             OscArg::Blob(_) => 'b',
-            OscArg::Bool(_) => 'T',
+            OscArg::Bool(true) => 'T',
+            OscArg::Bool(false) => 'F',
             OscArg::Nil => 'N',
         }
     }
@@ -174,6 +175,12 @@ impl OscMessage {
     /// `/xremote` — subscribe to asynchronous updates. Refresh every [`XREMOTE_INTERVAL_MS`].
     pub fn xremote() -> Self {
         Self::new("/xremote", vec![])
+    }
+
+    /// `/meters ,s "<sub_path>"` — subscribe to meter pushes (e.g. `"/meters/1"`).
+    /// Expires after ~10 s on the console, so refresh alongside `/xremote`.
+    pub fn meters(sub_path: &str) -> Self {
+        Self::new("/meters", vec![OscArg::String(sub_path.to_string())])
     }
 
     /// `/xinfo` — request console identity/version.
@@ -596,6 +603,21 @@ mod tests {
         let msg = OscMessage::new("/meters/1", vec![OscArg::Blob(vec![2, 0, 0, 0, 200, 10])]);
         let frame = parse_meters_message(&msg).unwrap();
         assert_eq!(frame.levels, vec![200, 10]);
+    }
+
+    #[test]
+    fn bool_false_encodes_as_f_tag_and_roundtrips() {
+        let msg = OscMessage::new("/test/bool", vec![OscArg::Bool(true), OscArg::Bool(false)]);
+        let bytes = msg.encode();
+        assert_eq!(OscMessage::decode(&bytes).unwrap(), msg);
+    }
+
+    #[test]
+    fn meters_subscription_encodes_path() {
+        let msg = OscMessage::meters("/meters/1");
+        let decoded = OscMessage::decode(&msg.encode()).unwrap();
+        assert_eq!(decoded.address, "/meters");
+        assert_eq!(decoded.args, vec![OscArg::String("/meters/1".into())]);
     }
 
     #[test]

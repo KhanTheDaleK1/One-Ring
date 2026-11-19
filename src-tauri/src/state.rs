@@ -232,6 +232,15 @@ pub struct PlaybackState {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
+pub struct ServiceSong {
+    pub id: String,
+    pub title: String,
+    #[serde(default)]
+    pub slides: Vec<SlideCue>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
 pub struct SlideState {
     pub app: String,
     pub playlist_name: String,
@@ -273,6 +282,12 @@ pub struct SlideState {
     pub adapter: String,
     #[serde(default)]
     pub slides: Option<Vec<SlideCue>>,
+    #[serde(default)]
+    pub songs: Option<Vec<ServiceSong>>,
+    #[serde(default)]
+    pub active_song_id: Option<String>,
+    #[serde(default)]
+    pub theme: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -396,7 +411,7 @@ impl Default for BroadcastSettings {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DisplayAssignments {
     pub foh_window: String,
@@ -404,32 +419,12 @@ pub struct DisplayAssignments {
     pub ndi_alpha_output: String,
 }
 
-impl Default for DisplayAssignments {
-    fn default() -> Self {
-        Self {
-            foh_window: String::new(),
-            stage_display_window: String::new(),
-            ndi_alpha_output: String::new(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SlidesSettings {
     pub songselect_client_id: String,
     pub songselect_client_secret: String,
     pub display_assignments: DisplayAssignments,
-}
-
-impl Default for SlidesSettings {
-    fn default() -> Self {
-        Self {
-            songselect_client_id: String::new(),
-            songselect_client_secret: String::new(),
-            display_assignments: DisplayAssignments::default(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -460,16 +455,37 @@ impl Default for NdiPtzSettings {
     }
 }
 
+fn default_canvas_title() -> String {
+    "Main Sanctuary".into()
+}
+
+fn default_canvas_tabs() -> Vec<CanvasTabConfig> {
+    vec![
+        CanvasTabConfig { id: CanvasId::Mixing, label: "Mixing".into(), enabled: true },
+        CanvasTabConfig { id: CanvasId::Video, label: "Video".into(), enabled: true },
+        CanvasTabConfig { id: CanvasId::Slides, label: "Slides".into(), enabled: true },
+        CanvasTabConfig { id: CanvasId::Broadcast, label: "Broadcast".into(), enabled: true },
+        CanvasTabConfig { id: CanvasId::Master, label: "Master".into(), enabled: true },
+    ]
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GeneralSettings {
+    #[serde(default = "default_canvas_title")]
+    pub canvas_title: String,
+    #[serde(default = "default_canvas_tabs")]
+    pub canvas_tabs: Vec<CanvasTabConfig>,
     /// PIN required to unlock Engineer Mode from Volunteer Show Mode.
+    #[serde(default)]
     pub engineer_pin: String,
 }
 
 impl Default for GeneralSettings {
     fn default() -> Self {
         Self {
+            canvas_title: default_canvas_title(),
+            canvas_tabs: default_canvas_tabs(),
             engineer_pin: String::new(),
         }
     }
@@ -526,32 +542,25 @@ impl Default for SyncSettings {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppSettings {
+    #[serde(default)]
     pub x32: X32Settings,
+    #[serde(default)]
     pub dante: DanteSettings,
+    #[serde(default)]
     pub broadcast: BroadcastSettings,
+    #[serde(default)]
     pub slides: SlidesSettings,
+    #[serde(default)]
     pub ndi_ptz: NdiPtzSettings,
+    #[serde(default)]
     pub general: GeneralSettings,
+    #[serde(default)]
     pub station: StationSettings,
+    #[serde(default)]
     pub sync: SyncSettings,
-}
-
-impl Default for AppSettings {
-    fn default() -> Self {
-        Self {
-            x32: X32Settings::default(),
-            dante: DanteSettings::default(),
-            broadcast: BroadcastSettings::default(),
-            slides: SlidesSettings::default(),
-            ndi_ptz: NdiPtzSettings::default(),
-            general: GeneralSettings::default(),
-            station: StationSettings::default(),
-            sync: SyncSettings::default(),
-        }
-    }
 }
 
 /// Another One Ring node discovered on the LAN.
@@ -1155,6 +1164,14 @@ impl AppStateSnapshot {
             .collect();
 
         if !self.settings.broadcast.recording_path.trim().is_empty() {
+            let ext = self.settings.broadcast.recording_format.to_lowercase();
+            let raw = self.settings.broadcast.recording_path.trim().trim_end_matches(['/', '\\', '.']);
+            let suffix = format!(".{ext}");
+            let endpoint = if raw.to_ascii_lowercase().ends_with(&suffix) {
+                raw.to_string()
+            } else {
+                format!("{raw}/recording.{ext}")
+            };
             next.push(BroadcastTarget {
                 id: "record".into(),
                 platform: format!(
@@ -1165,11 +1182,7 @@ impl AppStateSnapshot {
                 bitrate_kbps: 0,
                 dropped_frames: 0,
                 elapsed_sec: 0,
-                endpoint: format!(
-                    "{}.{}",
-                    self.settings.broadcast.recording_path.trim_end_matches('.'),
-                    self.settings.broadcast.recording_format.to_lowercase()
-                ),
+                endpoint,
                 canvas: "Program".into(),
             });
         }
@@ -1231,10 +1244,7 @@ pub fn recompute_derived_alerts(state: &mut AppStateSnapshot) {
             .or_else(|| state.dcas.first())
             .map(|d| d.id.clone());
         for dca in &mut state.dcas {
-            if Some(&dca.id) == fault_id.as_ref() && state.beltpack_fault_simulated {
-                dca.signal_db = -90.0;
-                dca.signal_present = false;
-            } else if dca.muted {
+            if (Some(&dca.id) == fault_id.as_ref() && state.beltpack_fault_simulated) || dca.muted {
                 dca.signal_db = -90.0;
                 dca.signal_present = false;
             } else {
@@ -1270,7 +1280,7 @@ pub fn recompute_derived_alerts(state: &mut AppStateSnapshot) {
 
 pub fn default_simulator_state() -> AppStateSnapshot {
     let mut state = AppStateSnapshot {
-        mock_mode: false,
+        mock_mode: true,
         rehearsal_mode: false,
         service_name: "Untitled Show".into(),
         active_cue_index: 0,
@@ -1321,6 +1331,9 @@ pub fn default_simulator_state() -> AppStateSnapshot {
             last_update_ms: 0,
             adapter: "local".into(),
             slides: Some(Vec::new()),
+            songs: None,
+            active_song_id: None,
+            theme: None,
         },
         cues: Vec::new(),
         last_verification: None,
@@ -1361,6 +1374,7 @@ mod tests {
     #[test]
     fn presentation_preflight_detects_missing_and_stale_live_links() {
         let mut state = default_simulator_state();
+        state.mock_mode = false;
         state.sync_presentation_preflight();
         let check = state
             .preflight

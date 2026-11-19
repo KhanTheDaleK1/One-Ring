@@ -81,9 +81,23 @@ pub fn timer_operation_path(operation: &str) -> Option<String> {
     }
 }
 
+/// Percent-encode a single URL path segment so spaces/control characters never corrupt HTTP/1.1 request lines.
+fn encode_path_segment(segment: &str) -> String {
+    let mut out = String::with_capacity(segment.len());
+    for b in segment.bytes() {
+        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~') {
+            out.push(b as char);
+        } else {
+            out.push_str(&format!("%{:02X}", b));
+        }
+    }
+    out
+}
+
 /// Trigger a named clear group.
 pub fn clear_group_path(id: &str) -> String {
-    format!("/v1/clear/group/{id}/trigger")
+    let encoded = encode_path_segment(id.trim());
+    format!("/v1/clear/group/{encoded}/trigger")
 }
 
 /// Resource ids are UUID-like tokens from the catalog endpoints. Reject path separators so a

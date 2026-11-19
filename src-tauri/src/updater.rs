@@ -1,4 +1,4 @@
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 pub const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const GITHUB_REPO: &str = "KhanTheDaleK1/One-Ring";
@@ -37,27 +37,68 @@ struct GitHubRelease {
     body: Option<String>,
     published_at: Option<String>,
     html_url: String,
+    #[serde(default, deserialize_with = "deserialize_one_or_many")]
     assets: Vec<GitHubAsset>,
 }
 
-fn parse_semver_tuple(v: &str) -> (u32, u32, u32) {
-    let clean = v.trim().trim_start_matches('v');
-    let main_part = clean.split('-').next().unwrap_or("0.0.0");
+/// PowerShell's `ConvertTo-Json` unwraps 1-element arrays into bare objects; accept either.
+fn deserialize_one_or_many<'de, D, T>(deserializer: D) -> Result<Vec<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum OneOrMany<T> {
+        Many(Vec<T>),
+        One(T),
+        Null,
+    }
+    match Option::<OneOrMany<T>>::deserialize(deserializer)? {
+        Some(OneOrMany::Many(v)) => Ok(v),
+        Some(OneOrMany::One(v)) => Ok(vec![v]),
+        Some(OneOrMany::Null) | None => Ok(Vec::new()),
+    }
+}
+
+fn parse_releases_json(bytes: &[u8]) -> Result<Vec<GitHubRelease>, String> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum ReleasesPayload {
+        Many(Vec<GitHubRelease>),
+        One(Box<GitHubRelease>),
+    }
+    match serde_json::from_slice::<ReleasesPayload>(bytes) {
+        Ok(ReleasesPayload::Many(v)) => Ok(v),
+        Ok(ReleasesPayload::One(r)) => Ok(vec![*r]),
+        Err(e) => Err(format!("Failed to parse GitHub release response: {e}")),
+    }
+}
+
+/// Returns `((major, minor, patch), is_stable, prerelease_tag)` so `0.3.2` > `0.3.2-alpha`.
+fn parse_semver(v: &str) -> ((u32, u32, u32), bool, String) {
+    let clean = v.trim().trim_start_matches('v').trim_start_matches('V');
+    let (main_part, pre) = match clean.split_once('-') {
+        Some((m, p)) => (m, Some(p.to_ascii_lowercase())),
+        None => (clean, None),
+    };
     let parts: Vec<u32> = main_part
         .split('.')
         .map(|s| s.parse::<u32>().unwrap_or(0))
         .collect();
-    (
-        parts.get(0).copied().unwrap_or(0),
+    let core = (
+        parts.first().copied().unwrap_or(0),
         parts.get(1).copied().unwrap_or(0),
         parts.get(2).copied().unwrap_or(0),
-    )
+    );
+    match pre {
+        None => (core, true, String::new()),
+        Some(tag) => (core, false, tag),
+    }
 }
 
 fn is_newer(remote_tag: &str, current: &str) -> bool {
-    let remote_tuple = parse_semver_tuple(remote_tag);
-    let current_tuple = parse_semver_tuple(current);
-    remote_tuple > current_tuple
+    parse_semver(remote_tag) > parse_semver(current)
 }
 
 pub fn check_for_updates() -> Result<Option<UpdateInfo>, String> {
@@ -67,20 +108,24 @@ pub fn check_for_updates() -> Result<Option<UpdateInfo>, String> {
     let mut cmd = {
         let mut c = std::process::Command::new("powershell");
         let script = format!(
-            "Invoke-RestMethod -Uri '{}' -Headers @{{'User-Agent'='One-Ring-App'}} | ConvertTo-Json -Depth 5",
+            "ConvertTo-Json -InputObject @(Invoke-RestMethod -TimeoutSec 10 -Uri '{}' -Headers @{{'User-Agent'='One-Ring-App'}}) -Depth 5",
             url
         );
-        c.args(&["-NoProfile", "-Command", &script]);
+        c.args(["-NoProfile", "-Command", &script]);
         c
     };
 
     #[cfg(not(target_os = "windows"))]
     let mut cmd = {
         let mut c = std::process::Command::new("curl");
-        c.arg("-sL")
-            .arg("-H")
-            .arg("User-Agent: One-Ring-Production-Suite")
-            .arg(&url);
+        c.args([
+            "-sL",
+            "--max-time",
+            "10",
+            "-H",
+            "User-Agent: One-Ring-Production-Suite",
+            &url,
+        ]);
         c
     };
 
@@ -92,8 +137,7 @@ pub fn check_for_updates() -> Result<Option<UpdateInfo>, String> {
         return Err("Update check returned non-zero exit code".to_string());
     }
 
-    let releases: Vec<GitHubRelease> = serde_json::from_slice(&output.stdout)
-        .map_err(|e| format!("Failed to parse GitHub release response: {e}"))?;
+    let releases = parse_releases_json(&output.stdout)?;
 
     let latest = match releases.into_iter().next() {
         Some(r) => r,
@@ -140,4 +184,27 @@ pub fn check_for_updates() -> Result<Option<UpdateInfo>, String> {
         update_available,
         assets,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn semver_handles_prereleases_properly() {
+        assert!(is_newer("v0.3.2", "0.3.2-alpha"));
+        assert!(is_newer("v0.3.2-beta", "0.3.2-alpha"));
+        assert!(!is_newer("v0.3.2-alpha", "0.3.2"));
+        assert!(is_newer("v0.3.3-alpha", "0.3.2"));
+        assert!(!is_newer("v0.3.2", "0.3.2"));
+    }
+
+    #[test]
+    fn parses_single_release_object_and_single_asset_object() {
+        let ps_json = br#"{"tag_name":"v0.4.0","html_url":"https://example.com","assets":{"name":"OneRing.msi","browser_download_url":"https://example.com/a.msi","size":42}}"#;
+        let releases = parse_releases_json(ps_json).unwrap();
+        assert_eq!(releases.len(), 1);
+        assert_eq!(releases[0].assets.len(), 1);
+        assert_eq!(releases[0].assets[0].name, "OneRing.msi");
+    }
 }

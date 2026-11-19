@@ -171,6 +171,9 @@ pub trait EventSink: Send + Sync + 'static {
     fn cue_progress(&self, event: CueProgressEvent);
     /// Append an operator-facing log line (adapters never write to stdout for this).
     fn log(&self, line: String);
+
+    /// Emit a domain-specific custom event channel (e.g. `x32://osc`, `x32://rta`).
+    fn emit_raw(&self, _channel: &str, _payload: Value) {}
 }
 
 /// Convenience: emit a `state://<domain>` patch built from an explicit JSON object.

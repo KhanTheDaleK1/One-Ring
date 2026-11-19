@@ -27,6 +27,40 @@ interface X32FxRackModalProps {
   onEmitOsc?: (address: string, val: number | string) => void;
 }
 
+interface ParamSpec {
+  min: number;
+  max: number;
+  step: number;
+  unit: string;
+}
+
+const PARAM_SPECS: Record<string, ParamSpec> = {
+  decayTime: { min: 0.2, max: 10.0, step: 0.1, unit: "s" },
+  preDelayMs: { min: 0, max: 200, step: 1, unit: "ms" },
+  highCutKhz: { min: 1.0, max: 20.0, step: 0.5, unit: "kHz" },
+  highDampKhz: { min: 1.0, max: 20.0, step: 0.5, unit: "kHz" },
+  lowCutHz: { min: 20, max: 400, step: 5, unit: "Hz" },
+  wetMix: { min: 0, max: 100, step: 1, unit: "%" },
+  delayMs: { min: 1, max: 1000, step: 5, unit: "ms" },
+  feedbackPct: { min: 0, max: 100, step: 1, unit: "%" },
+  speedHz: { min: 0.1, max: 10.0, step: 0.1, unit: "Hz" },
+  depthPct: { min: 0, max: 100, step: 1, unit: "%" },
+  phaseDeg: { min: 0, max: 180, step: 5, unit: "°" },
+  gainDb: { min: -15, max: 15, step: 0.5, unit: "dB" },
+  frequencyKhz: { min: 1.0, max: 16.0, step: 0.1, unit: "kHz" },
+  thresholdDb: { min: -60, max: 0, step: 0.5, unit: "dB" },
+  ratio: { min: 1.0, max: 20.0, step: 0.5, unit: ":1" },
+  ceilingDb: { min: -18, max: 0, step: 0.1, unit: "dB" },
+  releaseMs: { min: 10, max: 1000, step: 10, unit: "ms" },
+  driveDb: { min: 0, max: 18, step: 0.5, unit: "dB" },
+  densityPct: { min: 0, max: 100, step: 1, unit: "%" },
+  speed: { min: 0, max: 10, step: 0.5, unit: "" },
+};
+
+function getParamSpec(paramName: string): ParamSpec {
+  return PARAM_SPECS[paramName] ?? { min: 0, max: 100, step: 1, unit: "" };
+}
+
 export const X32FxRackModal: React.FC<X32FxRackModalProps> = ({
   isOpen,
   onClose,
@@ -125,16 +159,21 @@ export const X32FxRackModal: React.FC<X32FxRackModalProps> = ({
     );
   };
 
-  const handleParamChange = (paramKey: string, val: number) => {
+  const handleParamChange = (paramKey: string, val: number, paramIndex: number) => {
+    const spec = getParamSpec(paramKey);
+    const clamped = Math.max(spec.min, Math.min(spec.max, val));
     setSlots((prev) =>
       prev.map((s) => {
         if (s.slotId === currentSlot.slotId) {
-          return { ...s, parameters: { ...s.parameters, [paramKey]: val } };
+          return { ...s, parameters: { ...s.parameters, [paramKey]: clamped } };
         }
         return s;
       })
     );
-    onEmitOsc?.(`/fx/${currentSlot.slotId}/par/${paramKey}`, val);
+    const normalized =
+      spec.max > spec.min ? (clamped - spec.min) / (spec.max - spec.min) : 0;
+    const parNum = String(paramIndex + 1).padStart(2, "0");
+    onEmitOsc?.(`/fx/${currentSlot.slotId}/par/${parNum}`, Math.max(0, Math.min(1, normalized)));
   };
 
   return (
@@ -312,36 +351,39 @@ export const X32FxRackModal: React.FC<X32FxRackModalProps> = ({
               gap: 20,
             }}
           >
-            {Object.entries(currentSlot.parameters).map(([paramName, val]) => (
-              <div
-                key={paramName}
-                style={{
-                  display: "flex",
-                  flexDirection: "column",
-                  alignItems: "center",
-                  padding: 16,
-                  borderRadius: 8,
-                  backgroundColor: "#1F2937",
-                  border: "1px solid #374151",
-                }}
-              >
-                <span style={{ fontSize: 12, fontWeight: 600, color: "#9CA3AF", textTransform: "capitalize", marginBottom: 8 }}>
-                  {paramName.replace(/([A-Z])/g, " $1")}
-                </span>
-                <span className="mono" style={{ fontSize: 20, fontWeight: 700, color: "#38BDF8", marginBottom: 12 }}>
-                  {val}
-                </span>
-                <input
-                  type="range"
-                  min={0}
-                  max={paramName.includes("Ms") ? 1000 : paramName.includes("Pct") || paramName.includes("Mix") ? 100 : 20}
-                  step={0.1}
-                  value={val}
-                  onChange={(e) => handleParamChange(paramName, parseFloat(e.target.value))}
-                  style={{ width: "100%", accentColor: "#38BDF8", cursor: "pointer" }}
-                />
-              </div>
-            ))}
+            {Object.entries(currentSlot.parameters).map(([paramName, val], paramIndex) => {
+              const spec = getParamSpec(paramName);
+              return (
+                <div
+                  key={paramName}
+                  style={{
+                    display: "flex",
+                    flexDirection: "column",
+                    alignItems: "center",
+                    padding: 16,
+                    borderRadius: 8,
+                    backgroundColor: "#1F2937",
+                    border: "1px solid #374151",
+                  }}
+                >
+                  <span style={{ fontSize: 12, fontWeight: 600, color: "#9CA3AF", textTransform: "capitalize", marginBottom: 8 }}>
+                    {paramName.replace(/([A-Z])/g, " $1")}
+                  </span>
+                  <span className="mono" style={{ fontSize: 20, fontWeight: 700, color: "#38BDF8", marginBottom: 12 }}>
+                    {val}{spec.unit ? ` ${spec.unit}` : ""}
+                  </span>
+                  <input
+                    type="range"
+                    min={spec.min}
+                    max={spec.max}
+                    step={spec.step}
+                    value={val}
+                    onChange={(e) => handleParamChange(paramName, parseFloat(e.target.value), paramIndex)}
+                    style={{ width: "100%", accentColor: "#38BDF8", cursor: "pointer" }}
+                  />
+                </div>
+              );
+            })}
           </div>
         </div>
 

@@ -15,7 +15,9 @@ export const PreflightView: React.FC<PreflightViewProps> = ({
   onEnterShowMode,
   onOpenEngineer,
 }) => {
-  const allPass = state.preflight.every((p) => p.status === "pass");
+  const passedCount = state.preflight.filter((p) => p.status === "pass").length;
+  const totalCount = state.preflight.length;
+  const allPass = totalCount > 0 && passedCount === totalCount;
 
   return (
     <div style={{ maxWidth: 1040, margin: "24px auto", padding: "0 20px" }}>
@@ -51,7 +53,11 @@ export const PreflightView: React.FC<PreflightViewProps> = ({
                 border: `1px solid ${allPass ? "#065F46" : "#78350F"}`,
               }}
             >
-              {allPass ? "6/6 PROBES VERIFIED" : "ATTENTION NEEDED"}
+              {allPass
+                ? `${passedCount}/${totalCount} PROBES VERIFIED`
+                : totalCount === 0
+                ? "NO PROBES RUN"
+                : `${passedCount}/${totalCount} PASSED — ATTENTION NEEDED`}
             </span>
           </div>
         </div>

@@ -114,6 +114,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ state, onSave, onChe
   const [tab, setTab] = useState<SettingsTab>("x32");
   const [draft, setDraft] = useState<AppSettings>(() => cloneSettings(state.settings));
   const [showSecret, setShowSecret] = useState(false);
+  const [showMidiModal, setShowMidiModal] = useState(false);
   const [saveNote, setSaveNote] = useState<string | null>(null);
 
   // Re-hydrate the form whenever the authoritative AppState settings actually
@@ -251,6 +252,14 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ state, onSave, onChe
               UNSAVED CHANGES
             </span>
           )}
+          <button
+            type="button"
+            className="btn"
+            onClick={() => setShowMidiModal(true)}
+            style={{ height: 38, padding: "0 12px", fontSize: 12 }}
+          >
+            MIDI Surface
+          </button>
           <button
             type="button"
             className="btn"
@@ -815,6 +824,11 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ state, onSave, onChe
           </SubSection>
         </div>
       )}
+      <MidiTriggerModal
+        isOpen={showMidiModal}
+        onClose={() => setShowMidiModal(false)}
+        onSaveBindings={() => setSaveNote("Saved MIDI control surface mappings.")}
+      />
     </div>
   );
 };

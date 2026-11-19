@@ -94,7 +94,7 @@ async fn run(
     let mut backoff = Duration::from_millis(500);
     loop {
         reporter.connecting(format!("Opening OSC {}", config.endpoint()));
-        let result = serve(&config, &state, &sink, &reporter, &mut commands).await;
+        let result = serve(&config, &state, &sink, &reporter, &mut commands, &mut backoff).await;
         match result {
             Ok(()) => {
                 reporter.offline("OSC command channel closed");
@@ -116,6 +116,7 @@ async fn serve(
     sink: &Arc<dyn EventSink>,
     reporter: &HealthReporter,
     commands: &mut mpsc::UnboundedReceiver<X32Command>,
+    backoff: &mut Duration,
 ) -> Result<(), String> {
     let socket = UdpSocket::bind("0.0.0.0:0")
         .await
@@ -127,6 +128,8 @@ async fn serve(
 
     send(&socket, &OscMessage::xinfo()).await?;
     send(&socket, &OscMessage::xremote()).await?;
+    send(&socket, &OscMessage::meters("/meters/1")).await?;
+    send(&socket, &OscMessage::meters("/meters/4")).await?;
     let mut last_sent = Some(Instant::now());
     let mut last_rx = Instant::now();
     let mut ever_received = false;
@@ -157,6 +160,7 @@ async fn serve(
                     .unwrap_or(0);
                 if !ever_received {
                     ever_received = true;
+                    *backoff = Duration::from_millis(500);
                     reporter.ready(format!("OSC live on {}", config.endpoint()), rtt.max(1));
                 }
                 let frame = &buf[..n];
@@ -174,6 +178,8 @@ async fn serve(
             }
             _ = keepalive.tick() => {
                 send(&socket, &OscMessage::xremote()).await?;
+                send(&socket, &OscMessage::meters("/meters/1")).await?;
+                send(&socket, &OscMessage::meters("/meters/4")).await?;
                 last_sent = Some(Instant::now());
             }
             _ = health_tick.tick() => {
@@ -228,7 +234,31 @@ fn handle_message(
                 *pending_meter = Some(frame);
             }
         }
+        "/meters/4" => {
+            if let Ok(frame) = parse_meters_message(&message) {
+                let bands: Vec<f32> = frame
+                    .levels
+                    .iter()
+                    .take(100)
+                    .map(|&b| (b as f32 / 255.0).clamp(0.0, 1.0))
+                    .collect();
+                if !bands.is_empty() {
+                    sink.emit_raw("x32://rta", json!({ "bands": bands }));
+                }
+            }
+        }
         other => {
+            // Forward live hardware parameter pushes to X32FullConsoleModal (`x32://osc`).
+            if let Some(first_val) = message.args.first().and_then(|a| match a {
+                OscArg::Float(v) => Some(json!(*v)),
+                OscArg::Int(v) => Some(json!(*v)),
+                OscArg::Bool(v) => Some(json!(*v)),
+                OscArg::String(s) => Some(json!(s)),
+                _ => None,
+            }) {
+                sink.emit_raw("x32://osc", json!({ "address": other, "value": first_val }));
+            }
+
             if let Some((number, suffix)) = indexed_path(other, "/dca/") {
                 match suffix {
                     "on" => {
@@ -302,41 +332,55 @@ async fn handle_command(
     match command {
         X32Command::SetDcaMute { number, muted } => {
             if number == 0 || number > config.dca_count {
-                return Err(format!("DCA {number} outside configured 1..={}", config.dca_count));
+                sink.log(format!("[x32] Ignored invalid DCA {number} (valid 1..={})", config.dca_count));
+                return Ok(());
             }
-            send(socket, &OscMessage::dca_on(number, !muted).map_err(|e| e.to_string())?).await?;
-            emit_dcas(state, sink, number, Some(muted), None, "optimistic DCA mute");
+            if let Ok(msg) = OscMessage::dca_on(number, !muted) {
+                send(socket, &msg).await?;
+                emit_dcas(state, sink, number, Some(muted), None, "optimistic DCA mute");
+            }
         }
         X32Command::SetDcaLevel { number, db } => {
             if number == 0 || number > config.dca_count {
-                return Err(format!("DCA {number} outside configured 1..={}", config.dca_count));
+                sink.log(format!("[x32] Ignored invalid DCA {number} (valid 1..={})", config.dca_count));
+                return Ok(());
             }
             let fader = db_to_fader(db);
-            send(socket, &OscMessage::dca_fader(number, fader).map_err(|e| e.to_string())?).await?;
-            emit_dcas(state, sink, number, None, fader_to_db(fader), "optimistic DCA level");
+            if let Ok(msg) = OscMessage::dca_fader(number, fader) {
+                send(socket, &msg).await?;
+                emit_dcas(state, sink, number, None, fader_to_db(fader), "optimistic DCA level");
+            }
         }
         X32Command::SetChannelMute { channel, muted } => {
-            send(
-                socket,
-                &OscMessage::channel_on(channel, !muted).map_err(|e| e.to_string())?,
-            )
-            .await?;
+            match OscMessage::channel_on(channel, !muted) {
+                Ok(msg) => send(socket, &msg).await?,
+                Err(e) => sink.log(format!("[x32] Ignored invalid channel mute: {e}")),
+            }
         }
         X32Command::SetChannelFader { channel, fader } => {
-            send(
-                socket,
-                &OscMessage::channel_fader(channel, fader).map_err(|e| e.to_string())?,
-            )
-            .await?;
+            match OscMessage::channel_fader(channel, fader) {
+                Ok(msg) => send(socket, &msg).await?,
+                Err(e) => sink.log(format!("[x32] Ignored invalid channel fader: {e}")),
+            }
         }
         X32Command::RecallScene { scene } => {
-            send(socket, &OscMessage::go_scene(scene).map_err(|e| e.to_string())?).await?;
-            sink.log(format!(
-                "[x32] Sent /-action/goscene {scene} (high-impact; confirmation enforced by cue engine)"
-            ));
+            match OscMessage::go_scene(scene) {
+                Ok(msg) => {
+                    send(socket, &msg).await?;
+                    sink.log(format!(
+                        "[x32] Sent /-action/goscene {scene} (high-impact; confirmation enforced by cue engine)"
+                    ));
+                }
+                Err(e) => sink.log(format!("[x32] Ignored invalid scene recall: {e}")),
+            }
         }
         X32Command::RawOsc { address, value } => {
-            send(socket, &OscMessage::new(address, vec![OscArg::Float(value)])).await?
+            let arg = if address.ends_with("/on") || address.ends_with("/insert/on") {
+                OscArg::Int(if value >= 0.5 { 1 } else { 0 })
+            } else {
+                OscArg::Float(value)
+            };
+            send(socket, &OscMessage::new(address, vec![arg])).await?
         }
         X32Command::Identify => {
             send(socket, &OscMessage::xinfo()).await?;
@@ -380,10 +424,9 @@ fn emit_meters(
 
     let (dcas, silent) = with_state(state, |snapshot| {
         for number in 1..=config.dca_count {
-            if let Some(index) = dca_meter_index(number, config) {
-                if let Some(channel) = channels.get(index) {
-                    snapshot.apply_dca_meter(number, channel.db);
-                }
+            let key = format!("dca{number}");
+            if let Some(channel) = channels.iter().find(|c| c.key == key) {
+                snapshot.apply_dca_meter(number, channel.db);
             }
         }
         recompute_derived_alerts(snapshot);
@@ -422,11 +465,6 @@ pub fn meter_channels(frame: &MeterFrame, config: &X32Config) -> Vec<MeterChanne
         }
     }
     out
-}
-
-fn dca_meter_index(number: u8, config: &X32Config) -> Option<usize> {
-    let index = config.dca_meter_offset + (number as usize - 1);
-    Some(index)
 }
 
 fn indexed_path<'a>(address: &'a str, prefix: &str) -> Option<(u8, &'a str)> {

@@ -258,6 +258,8 @@ export const ObsAudioMixerPanel: React.FC<ObsAudioMixerPanelProps> = ({
   const audioCtxRef = React.useRef<AudioContext | null>(null);
   const micStreamRef = React.useRef<MediaStream | null>(null);
   const sysStreamRef = React.useRef<MediaStream | null>(null);
+  const micRafRef = React.useRef<number | null>(null);
+  const sysRafRef = React.useRef<number | null>(null);
   const dspChainsRef = React.useRef<DspChainNodes[]>([]);
 
   const [viewMode, setViewMode] = useState<"mixer" | "matrix">("mixer");
@@ -270,7 +272,35 @@ export const ObsAudioMixerPanel: React.FC<ObsAudioMixerPanelProps> = ({
     const id = window.setInterval(() => {
       setTick((t) => (t + 1) % 10000);
     }, 90);
-    return () => window.clearInterval(id);
+    return () => {
+      window.clearInterval(id);
+      if (micRafRef.current !== null) {
+        cancelAnimationFrame(micRafRef.current);
+        micRafRef.current = null;
+      }
+      if (sysRafRef.current !== null) {
+        cancelAnimationFrame(sysRafRef.current);
+        sysRafRef.current = null;
+      }
+      if (micStreamRef.current) {
+        micStreamRef.current.getTracks().forEach((t) => t.stop());
+        micStreamRef.current = null;
+      }
+      if (sysStreamRef.current) {
+        sysStreamRef.current.getTracks().forEach((t) => t.stop());
+        sysStreamRef.current = null;
+      }
+      for (const chain of dspChainsRef.current) {
+        try {
+          chain.gainNode.disconnect();
+        } catch {}
+      }
+      dspChainsRef.current = [];
+      if (audioCtxRef.current) {
+        audioCtxRef.current.close().catch(() => {});
+        audioCtxRef.current = null;
+      }
+    };
   }, []);
 
   const allAudioSources = useMemo(
@@ -476,6 +506,14 @@ export const ObsAudioMixerPanel: React.FC<ObsAudioMixerPanelProps> = ({
 
   const enableLivePcMicCapture = async (targetSourceId?: string) => {
     try {
+      if (micRafRef.current !== null) {
+        cancelAnimationFrame(micRafRef.current);
+        micRafRef.current = null;
+      }
+      if (micStreamRef.current) {
+        micStreamRef.current.getTracks().forEach((t) => t.stop());
+        micStreamRef.current = null;
+      }
       const ctx = audioCtxRef.current || new AudioContext();
       audioCtxRef.current = ctx;
       if (ctx.state === "suspended") await ctx.resume();
@@ -492,7 +530,7 @@ export const ObsAudioMixerPanel: React.FC<ObsAudioMixerPanelProps> = ({
       setLiveAudioActive(true);
 
       const poll = () => {
-        if (!micStreamRef.current) return;
+        if (micStreamRef.current !== stream) return;
         analyser.getFloatTimeDomainData(buf);
         let peak = 0;
         for (let i = 0; i < buf.length; i++) {
@@ -501,18 +539,28 @@ export const ObsAudioMixerPanel: React.FC<ObsAudioMixerPanelProps> = ({
         }
         const db = peak > 0.0001 ? Math.max(-60, Math.min(0, 20 * Math.log10(peak))) : -60;
         setLiveMicDb(db);
-        requestAnimationFrame(poll);
+        micRafRef.current = requestAnimationFrame(poll);
       };
-      requestAnimationFrame(poll);
+      micRafRef.current = requestAnimationFrame(poll);
     } catch {}
   };
 
   const enableLiveSystemAudioCapture = async (targetSourceId?: string) => {
     try {
+      if (sysRafRef.current !== null) {
+        cancelAnimationFrame(sysRafRef.current);
+        sysRafRef.current = null;
+      }
+      if (sysStreamRef.current) {
+        sysStreamRef.current.getTracks().forEach((t) => t.stop());
+        sysStreamRef.current = null;
+      }
       const ctx = audioCtxRef.current || new AudioContext();
       audioCtxRef.current = ctx;
       if (ctx.state === "suspended") await ctx.resume();
       const stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
+      // Stop unused video capture tracks immediately; we only meter/process system audio.
+      stream.getVideoTracks().forEach((t) => t.stop());
       sysStreamRef.current = stream;
       if (stream.getAudioTracks().length > 0) {
         const src = ctx.createMediaStreamSource(stream);
@@ -526,7 +574,7 @@ export const ObsAudioMixerPanel: React.FC<ObsAudioMixerPanelProps> = ({
         connectWithDspChain(ctx, src, analyser, matchedSys?.id);
         const buf = new Float32Array(analyser.fftSize);
         const poll = () => {
-          if (!sysStreamRef.current) return;
+          if (sysStreamRef.current !== stream) return;
           analyser.getFloatTimeDomainData(buf);
           let peak = 0;
           for (let i = 0; i < buf.length; i++) {
@@ -535,9 +583,9 @@ export const ObsAudioMixerPanel: React.FC<ObsAudioMixerPanelProps> = ({
           }
           const db = peak > 0.0001 ? Math.max(-60, Math.min(0, 20 * Math.log10(peak))) : -60;
           setLiveSystemDb(db);
-          requestAnimationFrame(poll);
+          sysRafRef.current = requestAnimationFrame(poll);
         };
-        requestAnimationFrame(poll);
+        sysRafRef.current = requestAnimationFrame(poll);
       }
       setLiveAudioActive(true);
     } catch {}

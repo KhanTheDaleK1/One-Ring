@@ -16,9 +16,13 @@ use runtime::x32_adapter::X32Command;
 use runtime::{AdapterCommand, AdapterRegistry, RuntimeConfig};
 use state::{
     recompute_derived_alerts, with_state, AppSettings, AppStateSnapshot, CueVerificationReport,
-    CueVerificationStep, ManagedState, ServiceCue, SharedState, ShowFile, UndoEntry,
+    CueVerificationStep, ManagedState, SceneSourceItem, ServiceCue, SharedState, ShowFile,
+    SlideState, UndoEntry,
 };
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
+
+static VISCA_SEQ: AtomicU32 = AtomicU32::new(1);
 use tauri::{Emitter, Manager, State};
 
 /// Tauri implementation of the adapter event surface.
@@ -61,6 +65,10 @@ impl EventSink for TauriEventSink {
             "state://log",
             StatePatch::new("log", serde_json::json!({ "eventLogEntry": snapshot })),
         );
+    }
+
+    fn emit_raw(&self, channel: &str, payload: serde_json::Value) {
+        let _ = self.app.emit(channel, payload);
     }
 }
 
@@ -146,8 +154,11 @@ fn trigger_cue(
             }
         }
 
-        // If cue 2 ("Countdown & Go Live"), start broadcasts & recording
-        if cue.index == 2 {
+        let triggers_broadcast = cue.actions.iter().any(|a| {
+            let low = a.to_ascii_lowercase();
+            low.contains("start_stream") || low.contains("go live") || low.contains("start broadcast")
+        });
+        if triggers_broadcast {
             for b in &mut inner.broadcasts {
                 b.live = true;
                 b.bitrate_kbps = if b.id == "record" { 12000 } else { 5800 };
@@ -160,8 +171,13 @@ fn trigger_cue(
             inner.record_chapters.push(chapter_entry);
         }
 
+        let cam_target = inner
+            .cameras
+            .iter()
+            .find(|c| c.id == cue.camera_preset_id)
+            .map(|c| (c.camera_id.clone(), c.preset_index));
         // Fan the same plan out to live adapters (no-op in simulator mode).
-        dispatch_cue_actions(&state, &cue);
+        dispatch_cue_actions(&state, &cue, cam_target);
     }
 
     let mut steps = verification_steps(&cue, mode_tag);
@@ -175,16 +191,13 @@ fn trigger_cue(
     });
 
     let mode_label = if inner.rehearsal_mode { "DRY-RUN" } else { "EXECUTED" };
-    inner.event_log.insert(
-        0,
-        format!(
-            "[cue-engine] {} Cue {}. '{}' ({} post-condition steps)",
-            mode_label,
-            cue.index,
-            cue.title,
-            steps.len()
-        ),
-    );
+    inner.push_event_log(format!(
+        "[cue-engine] {} Cue {}. '{}' ({} post-condition steps)",
+        mode_label,
+        cue.index,
+        cue.title,
+        steps.len()
+    ));
     recompute_derived_alerts(&mut inner);
     sync_undo_metadata(&state, &mut inner);
     let snapshot = inner.clone();
@@ -255,7 +268,11 @@ fn verification_steps(cue: &ServiceCue, mode_tag: &str) -> Vec<CueVerificationSt
     ]
 }
 
-fn dispatch_cue_actions(state: &State<ManagedState>, cue: &ServiceCue) {
+fn dispatch_cue_actions(
+    state: &State<ManagedState>,
+    cue: &ServiceCue,
+    cam_target: Option<(String, u8)>,
+) {
     for id in &cue.unmute_dcas {
         if let Some(number) = dca_number(id) {
             dispatch(
@@ -288,7 +305,27 @@ fn dispatch_cue_actions(state: &State<ManagedState>, cue: &ServiceCue) {
         AdapterCommand::Obs(ObsCommand::CreateRecordChapter(cue.record_chapter.clone())),
     );
 
-    if cue.index == 2 {
+    if let Some((source_id, preset_index)) = cam_target {
+        dispatch(
+            state,
+            AdapterCommand::Ndi(NdiCommand::RecallPtzPreset {
+                source_id,
+                preset_index,
+                speed: 0.75,
+            }),
+        );
+    }
+
+    if !cue.slide_label.trim().is_empty() {
+        dispatch(state, AdapterCommand::ProPresenter(ProPresenterCommand::GoToSlide(0)));
+        dispatch(state, AdapterCommand::EasyWorship(EasyWorshipCommand::GoToStartSlide));
+    }
+
+    let triggers_broadcast = cue.actions.iter().any(|a| {
+        let low = a.to_ascii_lowercase();
+        low.contains("start_stream") || low.contains("go live") || low.contains("start broadcast")
+    });
+    if triggers_broadcast {
         dispatch(state, AdapterCommand::Obs(ObsCommand::StartStream));
         dispatch(state, AdapterCommand::Obs(ObsCommand::StartRecord));
     }
@@ -323,14 +360,59 @@ fn undo_last_cue(state: State<ManagedState>) -> AppStateSnapshot {
     let popped = state.undo_stack.lock().unwrap().pop();
     if let Some(entry) = popped {
         let mut inner = state.inner.lock().unwrap();
+        let current_settings = inner.settings.clone();
+        let current_health = inner.health.clone();
+        let current_log = inner.event_log.clone();
+        let current_stations = inner.connected_stations.clone();
+        let current_sources = inner.sources.clone();
+        let prev_dcas = entry.snapshot.dcas.clone();
+        let prev_scene = entry.snapshot.obs_scene.clone();
+        let prev_cam_target = entry
+            .snapshot
+            .cameras
+            .iter()
+            .find(|c| c.id == entry.snapshot.active_camera_preset_id)
+            .map(|c| (c.camera_id.clone(), c.preset_index));
+
         *inner = entry.snapshot;
-        inner.event_log.insert(
-            0,
-            format!("[cue-engine] COMPENSATING UNDO: Reverted '{}'", entry.label),
-        );
+        inner.settings = current_settings;
+        inner.health = current_health;
+        inner.event_log = current_log;
+        inner.connected_stations = current_stations;
+        inner.sources = current_sources;
+        inner.push_event_log(format!(
+            "[cue-engine] COMPENSATING UNDO: Reverted '{}'",
+            entry.label
+        ));
         recompute_derived_alerts(&mut inner);
         sync_undo_metadata(&state, &mut inner);
-        return inner.clone();
+        let snapshot = inner.clone();
+        drop(inner);
+
+        // Send compensating commands to live hardware.
+        for dca in &prev_dcas {
+            dispatch(
+                &state,
+                AdapterCommand::X32(X32Command::SetDcaMute {
+                    number: dca.number,
+                    muted: dca.muted,
+                }),
+            );
+        }
+        if !prev_scene.is_empty() {
+            dispatch(&state, AdapterCommand::Obs(ObsCommand::SetProgramScene(prev_scene)));
+        }
+        if let Some((source_id, preset_index)) = prev_cam_target {
+            dispatch(
+                &state,
+                AdapterCommand::Ndi(NdiCommand::RecallPtzPreset {
+                    source_id,
+                    preset_index,
+                    speed: 0.75,
+                }),
+            );
+        }
+        return snapshot;
     }
     state.inner.lock().unwrap().clone()
 }
@@ -344,10 +426,7 @@ fn toggle_rehearsal_mode(state: State<ManagedState>) -> AppStateSnapshot {
     } else {
         "DISABLED (Live Hardware Execution)"
     };
-    inner.event_log.insert(
-        0,
-        format!("[rehearsal] Rehearsal Mode {}", mode_label),
-    );
+    inner.push_event_log(format!("[rehearsal] Rehearsal Mode {}", mode_label));
     inner.clone()
 }
 
@@ -360,10 +439,7 @@ fn toggle_beltpack_fault(state: State<ManagedState>) -> AppStateSnapshot {
     } else {
         "CLEARED (Normal -11.5 dBFS signal on ULXD4-Pastor-Tx1)"
     };
-    inner.event_log.insert(
-        0,
-        format!("[dante-conmon] Pastor Beltpack Fault {}", status),
-    );
+    inner.push_event_log(format!("[dante-conmon] Pastor Beltpack Fault {}", status));
     recompute_derived_alerts(&mut inner);
     inner.clone()
 }
@@ -406,9 +482,30 @@ fn nudge_dca_level(dca_id: String, delta_db: f32, state: State<ManagedState>) ->
 #[tauri::command]
 fn recall_camera_preset(preset_id: String, state: State<ManagedState>) -> AppStateSnapshot {
     let mut inner = state.inner.lock().unwrap();
+    let target = inner
+        .cameras
+        .iter()
+        .find(|c| c.id == preset_id)
+        .map(|c| (c.camera_id.clone(), c.preset_index, c.name.clone()));
     inner.active_camera_preset_id = preset_id;
     recompute_derived_alerts(&mut inner);
-    inner.clone()
+    if let Some((ref cam_id, idx, ref name)) = target {
+        inner.push_event_log(format!("[ptz] Recalled preset #{idx} ('{name}') on {cam_id}"));
+    }
+    let snapshot = inner.clone();
+    drop(inner);
+
+    if let Some((source_id, preset_index, _)) = target {
+        dispatch(
+            &state,
+            AdapterCommand::Ndi(NdiCommand::RecallPtzPreset {
+                source_id,
+                preset_index,
+                speed: 0.75,
+            }),
+        );
+    }
+    snapshot
 }
 
 #[tauri::command]
@@ -853,74 +950,145 @@ fn switch_ndi_receiver(
             "DRIFT".into()
         };
     }
-    inner.event_log.insert(
-        0,
-        format!(
-            "[ndi-discovery-5959] Sent <control_receiver><command>connect</command> to {} -> '{}'",
-            receiver_id, source_name
-        ),
-    );
+    inner.push_event_log(format!(
+        "[ndi-discovery-5959] Sent <control_receiver><command>connect</command> to {} -> '{}'",
+        receiver_id, source_name
+    ));
     inner.clone()
 }
 
 #[tauri::command]
 fn auto_heal_ndi_receivers(state: State<ManagedState>) -> AppStateSnapshot {
     let mut inner = state.inner.lock().unwrap();
+    let mut repairs: Vec<(String, String)> = Vec::new();
     for rx in &mut inner.ndi_receivers {
+        if !rx.expected_source.is_empty() && rx.subscribed_source != rx.expected_source {
+            repairs.push((rx.id.clone(), rx.expected_source.clone()));
+        }
         rx.subscribed_source = rx.expected_source.clone();
         rx.status = "CONNECTED".into();
     }
-    inner.event_log.insert(
-        0,
-        "[ndi-discovery-5959] Auto-healed all NDI 6 receivers to expected show sources".into(),
-    );
-    inner.clone()
+    inner.push_event_log(format!(
+        "[ndi-discovery-5959] Auto-healed {} NDI 6 receiver(s) to expected show sources",
+        repairs.len()
+    ));
+    let snapshot = inner.clone();
+    drop(inner);
+
+    for (receiver_id, source_name) in repairs {
+        dispatch(
+            &state,
+            AdapterCommand::Ndi(NdiCommand::ControlReceiver {
+                receiver_id,
+                source_name,
+            }),
+        );
+    }
+    snapshot
 }
 
 #[tauri::command]
 fn flash_dante_identify(route_id: String, state: State<ManagedState>) -> AppStateSnapshot {
-    dispatch(
-        &state,
-        AdapterCommand::Dante(DanteCommand::IdentifyDevice {
-            target_ip: route_id.clone(),
-        }),
-    );
     let mut inner = state.inner.lock().unwrap();
-    if let Some(route) = inner.dante_routes.iter_mut().find(|r| r.id == route_id) {
+    let mut resolved_ip: Option<String> = None;
+    let is_ip = route_id.parse::<std::net::IpAddr>().is_ok();
+    if is_ip {
+        resolved_ip = Some(route_id.clone());
+    }
+    let matched_label = if let Some(route) = inner
+        .dante_routes
+        .iter_mut()
+        .find(|r| r.id == route_id || r.rx_device == route_id)
+    {
         route.identify_flashing = !route.identify_flashing;
-        let dev = route.rx_device.clone();
-        inner.event_log.insert(
-            0,
-            format!(
-                "[dante-conmon] Sent IDENTIFY_QUERY (opcode 0x0063) to {} on UDP :8700",
-                dev
-            ),
+        if resolved_ip.is_none() && route.rx_device.parse::<std::net::IpAddr>().is_ok() {
+            resolved_ip = Some(route.rx_device.clone());
+        }
+        Some(route.rx_device.clone())
+    } else if is_ip {
+        Some(route_id.clone())
+    } else {
+        None
+    };
+
+    if let Some(dev) = matched_label {
+        inner.push_event_log(format!(
+            "[dante-conmon] Sent IDENTIFY_QUERY (opcode 0x0063) to {} on UDP :8700",
+            dev
+        ));
+    }
+    let snapshot = inner.clone();
+    drop(inner);
+
+    if let Some(target_ip) = resolved_ip {
+        dispatch(
+            &state,
+            AdapterCommand::Dante(DanteCommand::IdentifyDevice { target_ip }),
         );
     }
-    inner.clone()
+    snapshot
 }
 
 #[tauri::command]
-fn update_settings(settings: AppSettings, state: State<ManagedState>) -> AppStateSnapshot {
-    let mut inner = state.inner.lock().unwrap();
-    inner.settings = settings;
-    inner.sync_broadcasts_from_settings();
-    inner.rebuild_preflight();
-    inner.push_event_log(
-        "[settings] Configuration saved (audio, network, broadcasting, slides, cameras, station, sync)"
-            .into(),
-    );
-    let snapshot = inner.clone();
-    drop(inner);
+fn update_settings(
+    settings: AppSettings,
+    app: tauri::AppHandle,
+    state: State<ManagedState>,
+) -> AppStateSnapshot {
+    let config = RuntimeConfig::from_env_and_settings(&settings);
+    {
+        let mut inner = state.inner.lock().unwrap();
+        inner.settings = settings;
+        inner.sync_broadcasts_from_settings();
+        inner.mock_mode = !config.live;
+        inner.rebuild_preflight();
+        inner.push_event_log(
+            "[settings] Configuration saved (audio, network, broadcasting, slides, cameras, station, sync)"
+                .into(),
+        );
+    }
+
+    if config.live {
+        let shared = state.inner.clone();
+        let sink: Arc<dyn EventSink> = Arc::new(TauriEventSink::new(app, shared.clone()));
+        let registry = AdapterRegistry::start(&config, shared, sink);
+        *state.runtime.lock().unwrap() = Some(Arc::new(registry));
+    } else {
+        *state.runtime.lock().unwrap() = None;
+    }
 
     if let Err(err) = state.save_settings() {
         let mut inner = state.inner.lock().unwrap();
         inner.push_event_log(format!(
             "[settings] WARNING: failed to persist configuration: {err}"
         ));
-        return inner.clone();
     }
-    snapshot
+    state.inner.lock().unwrap().clone()
+}
+
+/// Persist frontend-authored workspace edits (show name, broadcast sources, imported songs/theme)
+/// into Rust `ManagedState` so subsequent backend commands never clobber React state.
+#[tauri::command]
+fn sync_workspace_state(
+    service_name: Option<String>,
+    sources: Option<Vec<SceneSourceItem>>,
+    slides: Option<SlideState>,
+    state: State<ManagedState>,
+) -> AppStateSnapshot {
+    let mut inner = state.inner.lock().unwrap();
+    if let Some(name) = service_name {
+        let trimmed = name.trim();
+        if !trimmed.is_empty() {
+            inner.service_name = trimmed.to_string();
+        }
+    }
+    if let Some(srcs) = sources {
+        inner.sources = srcs;
+    }
+    if let Some(s) = slides {
+        inner.slides = s;
+    }
+    inner.clone()
 }
 
 #[tauri::command]
@@ -942,21 +1110,29 @@ fn import_show_file(show: ShowFile, state: State<ManagedState>) -> AppStateSnaps
 
 #[tauri::command]
 fn open_in_browser(url: String) -> Result<(), String> {
+    let trimmed = url.trim();
+    if !(trimmed.starts_with("https://") || trimmed.starts_with("http://")) {
+        return Err("Refused to open URL: only http:// and https:// URLs are allowed".into());
+    }
+    if trimmed.chars().any(|c| c.is_control() || c.is_whitespace()) {
+        return Err("Refused to open URL containing whitespace or control characters".into());
+    }
+
     #[cfg(target_os = "macos")]
     std::process::Command::new("open")
-        .arg(&url)
+        .arg(trimmed)
         .spawn()
         .map_err(|e| e.to_string())?;
 
     #[cfg(target_os = "windows")]
-    std::process::Command::new("cmd")
-        .args(&["/C", "start", "", &url])
+    std::process::Command::new("rundll32")
+        .args(["url.dll,FileProtocolHandler", trimmed])
         .spawn()
         .map_err(|e| e.to_string())?;
 
     #[cfg(target_os = "linux")]
     std::process::Command::new("xdg-open")
-        .arg(&url)
+        .arg(trimmed)
         .spawn()
         .map_err(|e| e.to_string())?;
 
@@ -980,6 +1156,14 @@ fn save_replay_buffer(
     replay: State<runtime::obs_daemon::ReplayBufferProcess>,
 ) -> Result<String, String> {
     replay.save_clip()
+}
+
+#[tauri::command]
+fn stop_replay_buffer(
+    replay: State<runtime::obs_daemon::ReplayBufferProcess>,
+) -> String {
+    replay.stop();
+    "Stopped Replay Buffer".into()
 }
 
 #[tauri::command]
@@ -1030,7 +1214,7 @@ fn dispatch_obs_worker_command(
 ) -> String {
     let serialized = serde_json::to_string(&cmd).unwrap_or_default();
     let mut inner = state.inner.lock().unwrap();
-    inner.event_log.insert(0, format!("[obs-worker-ipc] {}", serialized));
+    inner.push_event_log(format!("[obs-worker-ipc] {}", serialized));
     serialized
 }
 
@@ -1039,7 +1223,7 @@ fn dispatch_obs_worker_command(
 fn send_obs_stream_caption(text: String, state: State<ManagedState>) -> String {
     dispatch(&state, AdapterCommand::Obs(ObsCommand::SendStreamCaption(text.clone())));
     let mut inner = state.inner.lock().unwrap();
-    inner.event_log.insert(0, format!("[obs-caption] CEA-608/708 -> {}", text));
+    inner.push_event_log(format!("[obs-caption] CEA-608/708 -> {}", text));
     format!("Sent stream caption: {}", text)
 }
 
@@ -1071,9 +1255,9 @@ fn dispatch_obs_studio_command(action: String, arg: Option<String>, state: State
 
 #[tauri::command]
 fn split_recording_file(state: State<ManagedState>) -> AppStateSnapshot {
-    dispatch(&state, AdapterCommand::Obs(ObsCommand::CreateRecordChapter("Split Segment".into())));
+    dispatch(&state, AdapterCommand::Obs(ObsCommand::SplitRecordFile));
     let mut inner = state.inner.lock().unwrap();
-    inner.event_log.insert(0, "[obs] SplitRecordFile triggered".into());
+    inner.push_event_log("[obs] SplitRecordFile triggered".into());
     inner.clone()
 }
 
@@ -1115,10 +1299,10 @@ fn route_dante_crosspoint(
         }),
     );
     let mut inner = state.inner.lock().unwrap();
-    inner.event_log.insert(
-        0,
-        format!("[dante-arc] Crosspoint ch {} <- {}@{}", rx_chan_id, tx_chan, tx_dev),
-    );
+    inner.push_event_log(format!(
+        "[dante-arc] Crosspoint ch {} <- {}@{}",
+        rx_chan_id, tx_chan, tx_dev
+    ));
     inner.clone()
 }
 
@@ -1158,13 +1342,17 @@ fn send_x32_osc(
     value: f32,
     state: State<ManagedState>,
 ) -> AppStateSnapshot {
+    let mut handled_typed = false;
     if let Some(rest) = address.strip_prefix("/dca/") {
         if let Some((num_s, leaf)) = rest.split_once('/') {
             if let Ok(num) = num_s.parse::<u8>() {
                 if leaf == "on" {
                     dispatch(&state, AdapterCommand::X32(X32Command::SetDcaMute { number: num, muted: value < 0.5 }));
+                    handled_typed = true;
                 } else if leaf == "fader" {
-                    dispatch(&state, AdapterCommand::X32(X32Command::SetDcaLevel { number: num, db: (value - 0.75) * 40.0 }));
+                    let db = protocols::x32::fader_to_db(value).unwrap_or(protocols::x32::FADER_MIN_DB);
+                    dispatch(&state, AdapterCommand::X32(X32Command::SetDcaLevel { number: num, db }));
+                    handled_typed = true;
                 }
             }
         }
@@ -1173,15 +1361,19 @@ fn send_x32_osc(
             if let Ok(ch) = ch_s.parse::<u8>() {
                 if leaf == "mix/fader" {
                     dispatch(&state, AdapterCommand::X32(X32Command::SetChannelFader { channel: ch, fader: value }));
+                    handled_typed = true;
                 } else if leaf == "mix/on" {
                     dispatch(&state, AdapterCommand::X32(X32Command::SetChannelMute { channel: ch, muted: value < 0.5 }));
+                    handled_typed = true;
                 }
             }
         }
     }
-    dispatch(&state, AdapterCommand::X32(X32Command::RawOsc { address: address.clone(), value }));
+    if !handled_typed {
+        dispatch(&state, AdapterCommand::X32(X32Command::RawOsc { address: address.clone(), value }));
+    }
     let mut inner = state.inner.lock().unwrap();
-    inner.event_log.insert(0, format!("[x32-osc] {} -> {:.2}", address, value));
+    inner.push_event_log(format!("[x32-osc] {} -> {:.2}", address, value));
     inner.clone()
 }
 
@@ -1196,17 +1388,37 @@ async fn ptz_drive_camera(
 ) -> Result<String, String> {
     tokio::task::spawn_blocking(move || {
         let sock = std::net::UdpSocket::bind("0.0.0.0:0").map_err(|e| e.to_string())?;
-        sock.set_write_timeout(Some(std::time::Duration::from_millis(1500))).map_err(|e| e.to_string())?;
+        sock.set_write_timeout(Some(std::time::Duration::from_millis(1500)))
+            .map_err(|e| e.to_string())?;
         let addr = format!("{}:{}", ip, port);
-        
-        let p_spd = pan_speed.abs() as u8;
-        let t_spd = tilt_speed.abs() as u8;
-        let ptz_pkt = protocols::visca::ViscaPacket::pan_tilt_drive(1, p_spd.max(1), t_spd.max(1), pan_speed, tilt_speed).to_bytes();
-        sock.send_to(&ptz_pkt, &addr).map_err(|e| e.to_string())?;
-        
-        let z_spd = zoom_speed.abs() as u8;
-        let zoom_pkt = protocols::visca::ViscaPacket::zoom_drive(2, zoom_speed, z_spd.max(1)).to_bytes();
-        sock.send_to(&zoom_pkt, &addr).map_err(|e| e.to_string())?;
+        let full_stop = pan_speed == 0 && tilt_speed == 0 && zoom_speed == 0;
+
+        if full_stop || pan_speed != 0 || tilt_speed != 0 {
+            let seq = VISCA_SEQ.fetch_add(1, Ordering::Relaxed);
+            let p_spd = pan_speed.unsigned_abs().max(1);
+            let t_spd = tilt_speed.unsigned_abs().max(1);
+            let ptz_pkt = protocols::visca::ViscaPacket::pan_tilt_drive(
+                seq,
+                p_spd,
+                t_spd,
+                pan_speed.signum(),
+                tilt_speed.signum(),
+            )
+            .to_bytes();
+            sock.send_to(&ptz_pkt, &addr).map_err(|e| e.to_string())?;
+        }
+
+        if full_stop || zoom_speed != 0 {
+            let seq = VISCA_SEQ.fetch_add(1, Ordering::Relaxed);
+            let z_spd = zoom_speed.unsigned_abs().min(7);
+            let zoom_pkt = protocols::visca::ViscaPacket::zoom_drive(
+                seq,
+                zoom_speed.signum(),
+                z_spd,
+            )
+            .to_bytes();
+            sock.send_to(&zoom_pkt, &addr).map_err(|e| e.to_string())?;
+        }
 
         Ok(format!("VISCA PTZ commands sent to {}", addr))
     })
@@ -1222,8 +1434,11 @@ async fn ptz_recall_preset(
 ) -> Result<String, String> {
     tokio::task::spawn_blocking(move || {
         let sock = std::net::UdpSocket::bind("0.0.0.0:0").map_err(|e| e.to_string())?;
+        sock.set_write_timeout(Some(std::time::Duration::from_millis(1500)))
+            .map_err(|e| e.to_string())?;
         let addr = format!("{}:{}", ip, port);
-        let pkt = protocols::visca::ViscaPacket::recall_preset(1, preset).to_bytes();
+        let seq = VISCA_SEQ.fetch_add(1, Ordering::Relaxed);
+        let pkt = protocols::visca::ViscaPacket::recall_preset(seq, preset).to_bytes();
         sock.send_to(&pkt, &addr).map_err(|e| e.to_string())?;
         Ok(format!("VISCA Recall Preset {} sent to {}", preset, addr))
     })
@@ -1239,8 +1454,11 @@ async fn ptz_store_preset(
 ) -> Result<String, String> {
     tokio::task::spawn_blocking(move || {
         let sock = std::net::UdpSocket::bind("0.0.0.0:0").map_err(|e| e.to_string())?;
+        sock.set_write_timeout(Some(std::time::Duration::from_millis(1500)))
+            .map_err(|e| e.to_string())?;
         let addr = format!("{}:{}", ip, port);
-        let pkt = protocols::visca::ViscaPacket::set_preset(1, preset).to_bytes();
+        let seq = VISCA_SEQ.fetch_add(1, Ordering::Relaxed);
+        let pkt = protocols::visca::ViscaPacket::set_preset(seq, preset).to_bytes();
         sock.send_to(&pkt, &addr).map_err(|e| e.to_string())?;
         Ok(format!("VISCA Store Preset {} sent to {}", preset, addr))
     })
@@ -1253,15 +1471,33 @@ fn list_open_windows() -> Vec<String> {
     let mut windows = Vec::new();
     #[cfg(target_os = "macos")]
     {
+        let script = r#"
+set outLines to {}
+tell application "System Events"
+    repeat with p in (every process whose background only is false)
+        set pname to name of p
+        try
+            repeat with w in (every window of p)
+                set wtitle to title of w
+                if wtitle is not "" and wtitle is not missing value then
+                    set end of outLines to (pname & " - " & wtitle)
+                end if
+            end repeat
+        end try
+    end repeat
+end tell
+set AppleScript's text item delimiters to linefeed
+return outLines as text
+"#;
         if let Ok(out) = std::process::Command::new("osascript")
             .arg("-e")
-            .arg(r#"tell application "System Events" to get {name, title of every window} of (every process whose background only is false)"#)
+            .arg(script)
             .output()
         {
             let s = String::from_utf8_lossy(&out.stdout);
-            for part in s.split(", ") {
-                let clean = part.trim().trim_matches('"');
-                if !clean.is_empty() && clean != "missing value" {
+            for line in s.lines() {
+                let clean = line.trim();
+                if !clean.is_empty() {
                     windows.push(clean.to_string());
                 }
             }
@@ -1403,13 +1639,16 @@ pub fn run() {
                 managed.attach_settings_path(config_dir.join("settings.json"));
             }
             let shared = managed.inner.clone();
-            let config = RuntimeConfig::from_env();
+            let persisted_settings = shared.lock().unwrap().settings.clone();
+            let config = RuntimeConfig::from_env_and_settings(&persisted_settings);
             if config.live {
                 with_state(&shared, |snapshot| snapshot.mock_mode = false);
                 let sink: Arc<dyn EventSink> =
                     Arc::new(TauriEventSink::new(app.handle().clone(), shared.clone()));
                 let registry = AdapterRegistry::start(&config, shared, sink);
                 *managed.runtime.lock().unwrap() = Some(Arc::new(registry));
+            } else {
+                with_state(&shared, |snapshot| snapshot.mock_mode = true);
             }
             Ok(())
         })
@@ -1443,6 +1682,7 @@ pub fn run() {
             flash_dante_identify,
             run_preflight_probes,
             update_settings,
+            sync_workspace_state,
             export_show_file,
             import_show_file,
             check_update,
@@ -1453,6 +1693,7 @@ pub fn run() {
             start_direct_ffmpeg_stream,
             start_replay_buffer,
             save_replay_buffer,
+            stop_replay_buffer,
             stop_direct_ffmpeg_stream,
             import_ewsx_schedule,
             list_video_devices,
@@ -1472,6 +1713,13 @@ pub fn run() {
             send_x32_osc,
             open_in_browser
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running One Ring");
+        .build(tauri::generate_context!())
+        .expect("error while building One Ring")
+        .run(|app_handle, event| {
+            if matches!(event, tauri::RunEvent::Exit | tauri::RunEvent::ExitRequested { .. }) {
+                app_handle.state::<runtime::obs_daemon::ObsDaemonSupervisor>().stop();
+                app_handle.state::<runtime::obs_daemon::FfmpegStreamProcess>().stop();
+                app_handle.state::<runtime::obs_daemon::ReplayBufferProcess>().stop();
+            }
+        });
 }

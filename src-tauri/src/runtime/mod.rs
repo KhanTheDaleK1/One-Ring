@@ -88,9 +88,9 @@ impl RuntimeConfig {
 
         // EasyWorship's listener uses an ephemeral port, so mDNS is the default when live mode is
         // on. A static `RING_EZW_HOST`/`RING_EZW_PORT` (or full `RING_EZW_ENDPOINT`) overrides it.
-        let easyworship = if let Some(endpoint) = std::env::var("RING_EZW_ENDPOINT").ok() {
+        let easyworship = if let Ok(endpoint) = std::env::var("RING_EZW_ENDPOINT") {
             Some(EasyWorshipConfig::new(endpoint))
-        } else if let Some(host) = std::env::var("RING_EZW_HOST").ok() {
+        } else if let Ok(host) = std::env::var("RING_EZW_HOST") {
             let port = std::env::var("RING_EZW_PORT")
                 .ok()
                 .and_then(|p| p.parse().ok())
@@ -118,6 +118,41 @@ impl RuntimeConfig {
             dante,
             ndi,
         }
+    }
+
+    /// Build a runtime configuration merging environment overrides with persisted Settings UI values.
+    /// If `RING_LIVE` is unset, live adapters still activate automatically when the user configures
+    /// hardware endpoints (e.g. X32 IP or NDI discovery host) in Settings.
+    pub fn from_env_and_settings(settings: &crate::state::AppSettings) -> Self {
+        let mut cfg = Self::from_env();
+        let x32_ip = settings.x32.ip_address.trim();
+        if cfg.x32.is_none() && !x32_ip.is_empty() {
+            let mut x = X32Config::new(x32_ip);
+            if settings.x32.osc_port > 0 {
+                x.port = settings.x32.osc_port;
+            }
+            cfg.x32 = Some(x);
+            cfg.live = true;
+        }
+        let ndi_host = settings.ndi_ptz.discovery_range_start.trim();
+        if cfg.ndi.is_none() && !ndi_host.is_empty() {
+            cfg.ndi = Some(NdiConfig {
+                discovery_host: ndi_host.to_string(),
+                ..NdiConfig::default()
+            });
+            cfg.live = true;
+        }
+        if cfg.live && cfg.dante.is_none() {
+            cfg.dante = Some(DanteConfig {
+                meter_port: if settings.dante.conmon_meter_port > 0 {
+                    settings.dante.conmon_meter_port
+                } else {
+                    dante_adapter::DANTE_CONMON_METER_PORT
+                },
+                ..DanteConfig::default()
+            });
+        }
+        cfg
     }
 }
 

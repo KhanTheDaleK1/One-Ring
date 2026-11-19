@@ -32,6 +32,7 @@ const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(2);
 const RECEIVE_TIMEOUT: Duration = Duration::from_secs(6);
 const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(3);
 const MAX_IMAGE_BYTES: usize = 8 * 1024 * 1024;
+const MAX_BINARY_PAYLOAD_BYTES: usize = 16 * 1024 * 1024;
 const MAX_IMAGE_CACHE_BYTES: usize = 32 * 1024 * 1024;
 
 /// Bounded raw-JPEG cache. Metadata lives in `SlideState.image`; bytes are fetched by key from
@@ -183,7 +184,7 @@ async fn run(
     let mut backoff = Duration::from_millis(500);
     loop {
         reporter.connecting(format!("Connecting to EasyWorship ({})", config.endpoint_label()));
-        match serve(&config, &state, &sink, &reporter, &images, &mut commands).await {
+        match serve(&config, &state, &sink, &reporter, &images, &mut commands, &mut backoff).await {
             Ok(()) => {
                 reporter.offline("EasyWorship command channel closed");
                 return;
@@ -245,6 +246,7 @@ async fn serve(
     reporter: &HealthReporter,
     images: &Arc<Mutex<EasyWorshipImageCache>>,
     commands: &mut mpsc::UnboundedReceiver<EasyWorshipCommand>,
+    backoff: &mut Duration,
 ) -> Result<(), String> {
     let endpoint = resolve_endpoint(config).await?;
     let mut stream = TcpStream::connect(&endpoint)
@@ -278,6 +280,7 @@ async fn serve(
                     return Err("EasyWorship closed the connection".into());
                 }
                 last_receive = tokio::time::Instant::now();
+                *backoff = Duration::from_millis(500);
                 line_buf.extend_from_slice(&read_buf[..n]);
                 while let Some(line) = take_line(&mut line_buf) {
                     let message = parse_server_line(&line)
@@ -345,15 +348,15 @@ async fn serve(
     }
 }
 
-/// Pull the next `\n`-terminated line from the accumulator, draining consumed bytes.
+/// Pull the next non-empty `\n`-terminated line from the accumulator, skipping blank lines.
 fn take_line(buffer: &mut Vec<u8>) -> Option<String> {
-    let pos = buffer.iter().position(|b| *b == b'\n')?;
-    let line: Vec<u8> = buffer.drain(..=pos).collect();
-    let text = String::from_utf8_lossy(&line).trim_end_matches('\r').trim().to_string();
-    if text.is_empty() {
-        None
-    } else {
-        Some(text)
+    loop {
+        let pos = buffer.iter().position(|b| *b == b'\n')?;
+        let line: Vec<u8> = buffer.drain(..=pos).collect();
+        let text = String::from_utf8_lossy(&line).trim_end_matches('\r').trim().to_string();
+        if !text.is_empty() {
+            return Some(text);
+        }
     }
 }
 
@@ -362,8 +365,13 @@ async fn consume_binary<R: AsyncRead + Unpin>(
     line_buf: &mut Vec<u8>,
     size: usize,
 ) -> Result<Vec<u8>, String> {
+    if size > MAX_BINARY_PAYLOAD_BYTES {
+        return Err(format!(
+            "EasyWorship binary payload ({size} bytes) exceeds {MAX_BINARY_PAYLOAD_BYTES}-byte limit"
+        ));
+    }
     let mut remaining = size;
-    let mut payload = Vec::with_capacity(size);
+    let mut payload = Vec::with_capacity(size.min(64 * 1024));
     // A single TCP read can contain the header, the whole binary body, and subsequent frames.
     // Drain whatever is already buffered before touching the socket again.
     if !line_buf.is_empty() {

@@ -3,7 +3,8 @@
 use crate::protocols::dante::{
     self, ArcPacket, ConmonFraming, ConmonHeader, DanteMeterLevel, DanteRxStatus,
 };
-use crate::runtime::events::EventSink;
+use crate::runtime::events::{state_patch, EventSink};
+use serde_json::json;
 use crate::runtime::health::HealthReporter;
 use crate::state::{recompute_derived_alerts, with_state, SharedState};
 use std::net::{Ipv4Addr, SocketAddrV4};
@@ -92,13 +93,13 @@ pub fn spawn(
                     let Some(cmd) = cmd else { break; };
                     match cmd {
                         DanteCommand::IdentifyDevice { target_ip } => {
-                            let hdr = ConmonHeader::request(dante::op::VERSIONS_QUERY, ConmonFraming::Spec24)
+                            let hdr = ConmonHeader::request(dante::op::IDENTIFY_QUERY, ConmonFraming::Spec24)
                                 .with_sequence(sequence);
                             sequence = sequence.wrapping_add(1);
-                            if let Ok(bytes) = hdr.encode(&[0x00, 0x63, 0x00, 0x00]) {
+                            if let Ok(bytes) = hdr.encode(&[]) {
                                 let dest = format!("{}:{}", target_ip, DANTE_CONMON_CONTROL_PORT);
                                 let _ = sock.send_to(&bytes, &dest).await;
-                                sink.log(format!("[dante-conmon] Sent IDENTIFY (0x0063) -> {}", dest));
+                                sink.log(format!("[dante-conmon] Sent IDENTIFY_QUERY (0x0063) -> {}", dest));
                             }
                         }
                         DanteCommand::RouteCrosspoint { rx_ip, rx_port, rx_channel_id, tx_channel, tx_device } => {
@@ -135,16 +136,24 @@ pub fn spawn(
                         let pkt = &buf[..len];
                         if let Ok(hdr) = ConmonHeader::parse_auto(pkt) {
                             if let Ok(payload) = hdr.payload(pkt) {
-                                let meters = dante::parse_metering_frame(payload);
-                                if !meters.is_empty() {
-                                    let muted_count = meters.iter().filter(|m| matches!(m, DanteMeterLevel::Mute)).count();
-                                    with_state(&state, |snap| {
-                                        if muted_count > 0 {
-                                            snap.beltpack_fault_simulated = true;
-                                        }
-                                        recompute_derived_alerts(snap);
-                                    });
-                                    health.ready(format!("Conmon meters active ({} ch from {})", meters.len(), src.ip()), 1);
+                                if hdr.opcode == dante::op::METERING_STATUS {
+                                    let meters = dante::parse_metering_frame(payload);
+                                    if !meters.is_empty() {
+                                        let muted_count = meters.iter().filter(|m| matches!(m, DanteMeterLevel::Mute)).count();
+                                        let (fault, alert) = with_state(&state, |snap| {
+                                            snap.beltpack_fault_simulated = muted_count > 0;
+                                            recompute_derived_alerts(snap);
+                                            (snap.beltpack_fault_simulated, snap.silent_mic_alert.clone())
+                                        });
+                                        sink.state(state_patch(
+                                            "dante",
+                                            json!({
+                                                "beltpackFaultSimulated": fault,
+                                                "silentMicAlert": alert,
+                                            }),
+                                        ));
+                                        health.ready(format!("Conmon meters active ({} ch from {})", meters.len(), src.ip()), 1);
+                                    }
                                 } else {
                                     let status = DanteRxStatus::Unicast.label();
                                     health.ready(format!("Conmon packet op=0x{:04X} ({})", hdr.opcode, status), 1);

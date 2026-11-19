@@ -97,7 +97,7 @@ async fn run(
     let mut backoff = Duration::from_millis(500);
     loop {
         reporter.connecting(format!("Connecting to {}", config.endpoint()));
-        match stream_status(&config, &state, &sink, &reporter, &mut commands).await {
+        match stream_status(&config, &state, &sink, &reporter, &mut commands, &mut backoff).await {
             Ok(()) => {
                 reporter.offline("ProPresenter command channel closed");
                 return;
@@ -119,6 +119,7 @@ async fn stream_status(
     sink: &Arc<dyn EventSink>,
     reporter: &HealthReporter,
     commands: &mut mpsc::UnboundedReceiver<ProPresenterCommand>,
+    backoff: &mut Duration,
 ) -> Result<(), String> {
     let subscription = StatusUpdateSubscription::church_default();
     let body = subscription.body();
@@ -143,6 +144,9 @@ async fn stream_status(
     let mut headers_done = false;
     let mut buf = [0u8; 8192];
     let mut last_update = tokio::time::Instant::now();
+    let mut liveness_tick = tokio::time::interval(Duration::from_secs(15));
+    liveness_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    liveness_tick.tick().await;
 
     loop {
         tokio::select! {
@@ -153,6 +157,9 @@ async fn stream_status(
                 }
                 if !headers_done {
                     header_buf.extend_from_slice(&buf[..n]);
+                    if header_buf.len() > 32 * 1024 {
+                        return Err("ProPresenter HTTP header exceeded 32 KiB limit".into());
+                    }
                     if let Some(end) = find_header_end(&header_buf) {
                         let head = String::from_utf8_lossy(&header_buf[..end]).to_string();
                         if !head.starts_with("HTTP/1.1 200") && !head.starts_with("HTTP/1.0 200") {
@@ -168,6 +175,7 @@ async fn stream_status(
                                 .into(),
                         );
                         headers_done = true;
+                        *backoff = Duration::from_millis(500);
                         mark_connected(state, sink);
                         let rest = header_buf[end + 4..].to_vec();
                         if !rest.is_empty() {
@@ -191,7 +199,7 @@ async fn stream_status(
                     }
                 }
             }
-            _ = tokio::time::sleep(Duration::from_secs(20)) => {
+            _ = liveness_tick.tick() => {
                 // A healthy ProPresenter stream can be quiet for long periods. Probe /version
                 // out-of-band so a dead hub is detected without touching the subscription.
                 if last_update.elapsed() > Duration::from_secs(30) {
@@ -710,9 +718,14 @@ async fn one_shot(
     .map_err(|_| "control connection timed out".to_string())?
     .map_err(|e| format!("control connect failed: {e}"))?;
 
+    let content_type_hdr = if body.is_some() {
+        "Content-Type: application/json\r\n"
+    } else {
+        ""
+    };
     let body = body.unwrap_or("");
     let request = format!(
-        "{method} {path} HTTP/1.1\r\nHost: {}\r\nAccept: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        "{method} {path} HTTP/1.1\r\nHost: {}\r\nAccept: application/json\r\n{content_type_hdr}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
         config.endpoint(),
         body.len()
     );
@@ -721,12 +734,30 @@ async fn one_shot(
         .await
         .map_err(|e| format!("control write failed: {e}"))?;
 
-    let mut buf = vec![0u8; 4096];
-    let n = tokio::time::timeout(Duration::from_secs(2), stream.read(&mut buf))
+    const MAX_RESPONSE_BYTES: usize = 256 * 1024;
+    let mut response = Vec::with_capacity(4096);
+    let mut chunk = [0u8; 4096];
+    let read_all = async {
+        loop {
+            let n = stream
+                .read(&mut chunk)
+                .await
+                .map_err(|e| format!("control read failed: {e}"))?;
+            if n == 0 {
+                break;
+            }
+            let remaining = MAX_RESPONSE_BYTES.saturating_sub(response.len());
+            response.extend_from_slice(&chunk[..n.min(remaining)]);
+            if response.len() >= MAX_RESPONSE_BYTES {
+                break;
+            }
+        }
+        Ok::<(), String>(())
+    };
+    tokio::time::timeout(Duration::from_secs(3), read_all)
         .await
-        .map_err(|_| "control response timed out".to_string())?
-        .map_err(|e| format!("control read failed: {e}"))?;
-    let head = String::from_utf8_lossy(&buf[..n]).to_string();
+        .map_err(|_| "control response timed out".to_string())??;
+    let head = String::from_utf8_lossy(&response).to_string();
     if head.starts_with("HTTP/1.1 2") || head.starts_with("HTTP/1.0 2") {
         Ok(head)
     } else {

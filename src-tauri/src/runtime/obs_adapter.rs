@@ -14,7 +14,10 @@ use crate::runtime::health::HealthReporter;
 use crate::state::{with_state, BroadcastCanvas, SharedState};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+
+static OBS_REQ_SEQ: AtomicU64 = AtomicU64::new(1);
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
@@ -58,6 +61,7 @@ pub enum ObsCommand {
     Refresh,
     PauseRecord,
     ResumeRecord,
+    SplitRecordFile,
     StartVirtualCam,
     StopVirtualCam,
     StartReplayBuffer,
@@ -104,7 +108,7 @@ async fn run(
     let mut backoff = Duration::from_millis(500);
     loop {
         reporter.connecting(format!("Connecting to {}", config.url));
-        match serve(&config, &state, &sink, &reporter, &mut commands).await {
+        match serve(&config, &state, &sink, &reporter, &mut commands, &mut backoff).await {
             Ok(()) => {
                 reporter.offline("OBS command channel closed");
                 return;
@@ -125,6 +129,7 @@ async fn serve(
     sink: &Arc<dyn EventSink>,
     reporter: &HealthReporter,
     commands: &mut mpsc::UnboundedReceiver<ObsCommand>,
+    backoff: &mut Duration,
 ) -> Result<(), String> {
     let mut request = config
         .url
@@ -213,6 +218,7 @@ async fn serve(
                             OpCode::Identified => {
                                 if !identified {
                                     identified = true;
+                                    *backoff = Duration::from_millis(500);
                                     reporter.ready("obs-websocket v5 identified", 1);
                                     sink.log(
                                         "[obs-ws-v5] Identified (JSON subprotocol, canvas + output subscriptions)"
@@ -230,7 +236,20 @@ async fn serve(
                             }
                             OpCode::Event => {
                                 if let Ok(event) = ObsEvent::from_frame(&frame) {
+                                    let needs_refresh = matches!(
+                                        event.event_type.as_str(),
+                                        "CanvasCreated" | "CanvasRemoved" | "SceneListChanged" | "OutputListChanged"
+                                    );
                                     handle_event(event, state, sink);
+                                    if needs_refresh {
+                                        for req in [
+                                            ObsRequest::get_canvas_list(),
+                                            ObsRequest::get_scene_list(None),
+                                            ObsRequest::get_output_list(),
+                                        ] {
+                                            let _ = send_text(&mut ws, req.to_json()).await;
+                                        }
+                                    }
                                 }
                             }
                             _ => {}
@@ -251,7 +270,7 @@ async fn serve(
                 send_command(&mut ws, command).await?;
             }
             _ = ping.tick() => {
-                ws.send(Message::Ping(Vec::new().into()))
+                ws.send(Message::Ping(Vec::new()))
                     .await
                     .map_err(|e| format!("OBS ping failed: {e}"))?;
             }
@@ -281,7 +300,7 @@ async fn send_text(
     >,
     text: String,
 ) -> Result<(), String> {
-    ws.send(Message::Text(text.into()))
+    ws.send(Message::Text(text))
         .await
         .map_err(|e| format!("OBS send failed: {e}"))
 }
@@ -294,11 +313,13 @@ async fn ws_request(
     request_data: Option<Value>,
     request_id: &str,
 ) -> Result<(), String> {
+    let seq = OBS_REQ_SEQ.fetch_add(1, Ordering::Relaxed);
+    let unique_id = format!("{request_id}-{seq}");
     let payload = json!({
         "op": 6,
         "d": {
             "requestType": request_type,
-            "requestId": request_id,
+            "requestId": unique_id,
             "requestData": request_data.unwrap_or_else(|| json!({}))
         }
     });
@@ -349,13 +370,14 @@ async fn send_command(
         }
         ObsCommand::PauseRecord => ws_request(ws, "PauseRecord", None, "pause_rec").await,
         ObsCommand::ResumeRecord => ws_request(ws, "ResumeRecord", None, "resume_rec").await,
+        ObsCommand::SplitRecordFile => ws_request(ws, "SplitRecordFile", None, "split_rec").await,
         ObsCommand::StartVirtualCam => ws_request(ws, "StartVirtualCam", None, "start_vcam").await,
         ObsCommand::StopVirtualCam => ws_request(ws, "StopVirtualCam", None, "stop_vcam").await,
         ObsCommand::StartReplayBuffer => ws_request(ws, "StartReplayBuffer", None, "start_rb").await,
         ObsCommand::SaveReplayBuffer => ws_request(ws, "SaveReplayBuffer", None, "save_rb").await,
         ObsCommand::TriggerStudioModeTransition => ws_request(ws, "TriggerStudioModeTransition", None, "studio_trans").await,
         ObsCommand::SetStudioModeEnabled(enabled) => ws_request(ws, "SetStudioModeEnabled", Some(json!({ "studioModeEnabled": enabled })), "set_studio").await,
-        ObsCommand::SetTBarPosition(pos) => ws_request(ws, "SetTBarPosition", Some(json!({ "position": pos, "release": false })), "tbar").await,
+        ObsCommand::SetTBarPosition(pos) => ws_request(ws, "SetTBarPosition", Some(json!({ "position": pos.clamp(0.0, 1.0), "release": pos >= 0.99 })), "tbar").await,
         ObsCommand::SetCurrentSceneTransition(name) => ws_request(ws, "SetCurrentSceneTransition", Some(json!({ "transitionName": name })), "set_trans").await,
         ObsCommand::SetCurrentSceneTransitionDuration(ms) => ws_request(ws, "SetCurrentSceneTransitionDuration", Some(json!({ "transitionDuration": ms })), "set_trans_dur").await,
         ObsCommand::CreateScene(name) => ws_request(ws, "CreateScene", Some(json!({ "sceneName": name })), "create_scene").await,
@@ -557,7 +579,14 @@ fn apply_outputs(data: &Value, state: &SharedState) -> Vec<crate::state::Broadca
     with_state(state, |snapshot| {
         for broadcast in &mut snapshot.broadcasts {
             let id = broadcast.id.to_ascii_lowercase();
-            if let Some((_, active)) = outputs.iter().find(|(name, _)| name.contains(&id)) {
+            let plat = broadcast.platform.to_ascii_lowercase();
+            let matched = outputs.iter().find(|(name, _)| {
+                name.contains(&id)
+                    || (!plat.is_empty() && name.contains(&plat))
+                    || (id == "yt" && name.contains("youtube"))
+                    || (id == "fb" && name.contains("facebook"))
+            });
+            if let Some((_, active)) = matched {
                 broadcast.live = *active;
                 broadcast.bitrate_kbps = if *active {
                     if broadcast.id == "record" { 12_000 } else { 5_800 }

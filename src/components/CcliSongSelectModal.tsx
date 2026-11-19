@@ -22,7 +22,7 @@ export const CcliSongSelectModal: React.FC<CcliSongSelectModalProps> = ({
   isOpen,
   onClose,
   onImportSong,
-  ccliLicenseNumber = "11245892",
+  ccliLicenseNumber = "Not Configured",
 }) => {
   const [searchTerm, setSearchTerm] = useState("");
   const [isSearching, setIsSearching] = useState(false);
@@ -37,72 +37,74 @@ export const CcliSongSelectModal: React.FC<CcliSongSelectModalProps> = ({
     if (!searchTerm.trim()) return;
 
     setIsSearching(true);
-    // Simulated CCLI SongSelect API search with realistic hymn/contemporary library results
+    // Local Public Domain Hymn Catalog (clean-room compliant — no copyrighted lyrics embedded).
+    // Configure live CCLI SongSelect OAuth credentials in Settings -> Slides for commercial catalog search.
     setTimeout(() => {
-      const term = searchTerm.toLowerCase();
-      const mockDatabase: SongSelectResult[] = [
+      const term = searchTerm.trim().toLowerCase();
+      const publicDomainCatalog: SongSelectResult[] = [
         {
-          ccliNumber: "7065049",
-          title: "Good Good Father",
-          author: "Anthony Brown, Pat Barrett",
-          copyright: "2014 Capitol CMG Paragon / Common Hymnal Publishing",
-          key: "A",
-          lyricsPreview:
-            "I've heard a thousand stories\nOf what they think You're like\nBut I've heard the tender whisper\nOf love in the dead of night\nYou tell me that You're pleased\nAnd that I'm never alone",
-          themes: ["God's Love", "Grace", "Identity", "Father"],
-        },
-        {
-          ccliNumber: "7067561",
-          title: "What A Beautiful Name",
-          author: "Ben Fielding, Brooke Ligertwood",
-          copyright: "2016 Hillsong Music Publishing Australia",
-          key: "D",
-          lyricsPreview:
-            "You were the Word at the beginning\nOne with God the Lord Most High\nYour hidden glory in creation\nNow revealed in You our Christ\nWhat a beautiful Name it is\nWhat a beautiful Name it is",
-          themes: ["Praise", "Worship", "Jesus", "Name of God"],
-        },
-        {
-          ccliNumber: "7106807",
-          title: "Way Maker",
-          author: "Osinachi Kalu Okoro Egbu",
-          copyright: "2016 Sinach (Admin. by SLIC Inspire)",
-          key: "E",
-          lyricsPreview:
-            "You are here moving in our midst\nI worship You I worship You\nYou are here working in this place\nI worship You I worship You\nWay Maker Miracle Worker\nPromise Keeper Light in the darkness",
-          themes: ["Faithfulness", "Miracles", "God's Presence"],
-        },
-        {
-          ccliNumber: "7147798",
-          title: "Graves Into Gardens",
-          author: "Brandon Lake, Chris Brown, Steven Furtick, Tiffany Hudson",
-          copyright: "2019 Music by Elevation Worship Publishing",
-          key: "B",
-          lyricsPreview:
-            "I searched the world but it couldn't fill me\nMan's empty praise and treasures that fade\nAre never enough\nThen You came along and You put me back together\nAnd every desire is now satisfied\nHere in Your love",
-          themes: ["Restoration", "Grace", "Joy", "Salvation"],
-        },
-        {
-          ccliNumber: "7037787",
-          title: "Build My Life",
-          author: "Brett Younker, Karl Martin, Kirby Kaple, Matt Redman, Pat Barrett",
-          copyright: "2016 Said And Done Music / sixsteps Music",
+          ccliNumber: "22025",
+          title: "Amazing Grace",
+          author: "John Newton (1779)",
+          copyright: "Public Domain",
           key: "G",
           lyricsPreview:
-            "Worthy of ev'ry song we could ever sing\nWorthy of all the praise we could ever bring\nWorthy of ev'ry breath we could ever breathe\nWe live for You",
-          themes: ["Dedication", "Holiness", "Praise"],
+            "Amazing grace how sweet the sound\nThat saved a wretch like me\nI once was lost but now am found\nWas blind but now I see",
+          themes: ["Grace", "Redemption", "Hymn"],
+        },
+        {
+          ccliNumber: "1156",
+          title: "Holy, Holy, Holy",
+          author: "Reginald Heber (1826)",
+          copyright: "Public Domain",
+          key: "D",
+          lyricsPreview:
+            "Holy holy holy Lord God Almighty\nEarly in the morning our song shall rise to Thee\nHoly holy holy merciful and mighty\nGod in three Persons blessed Trinity",
+          themes: ["Holiness", "Trinity", "Worship"],
+        },
+        {
+          ccliNumber: "30639",
+          title: "Be Thou My Vision",
+          author: "Traditional Irish / Eleanor Hull (1912)",
+          copyright: "Public Domain",
+          key: "Eb",
+          lyricsPreview:
+            "Be Thou my Vision O Lord of my heart\nNaught be all else to me save that Thou art\nThou my best thought by day or by night\nWaking or sleeping Thy presence my light",
+          themes: ["Devotion", "Guidance", "Hymn"],
+        },
+        {
+          ccliNumber: "25376",
+          title: "It Is Well With My Soul",
+          author: "Horatio G. Spafford (1873)",
+          copyright: "Public Domain",
+          key: "C",
+          lyricsPreview:
+            "When peace like a river attendeth my way\nWhen sorrows like sea billows roll\nWhatever my lot Thou hast taught me to say\nIt is well it is well with my soul",
+          themes: ["Peace", "Trust", "Comfort"],
+        },
+        {
+          ccliNumber: "108389",
+          title: "Come, Thou Fount of Every Blessing",
+          author: "Robert Robinson (1758)",
+          copyright: "Public Domain",
+          key: "D",
+          lyricsPreview:
+            "Come Thou Fount of every blessing\nTune my heart to sing Thy grace\nStreams of mercy never ceasing\nCall for songs of loudest praise",
+          themes: ["Grace", "Praise", "Thankfulness"],
         },
       ];
 
-      const filtered = mockDatabase.filter(
+      const filtered = publicDomainCatalog.filter(
         (s) =>
           s.title.toLowerCase().includes(term) ||
           s.author.toLowerCase().includes(term) ||
-          s.ccliNumber.includes(term)
+          s.ccliNumber.includes(term) ||
+          s.lyricsPreview.toLowerCase().includes(term)
       );
 
-      setResults(filtered.length > 0 ? filtered : mockDatabase);
+      setResults(filtered);
       setIsSearching(false);
-    }, 350);
+    }, 150);
   };
 
   const handleSelect = (song: SongSelectResult) => {

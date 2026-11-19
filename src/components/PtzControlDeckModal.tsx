@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { Video, ArrowUp, ArrowDown, ArrowLeft, ArrowRight, ZoomIn, ZoomOut, Save, Play, X, Sliders } from "lucide-react";
 
 export interface PtzPreset {
@@ -12,43 +12,88 @@ interface PtzControlDeckModalProps {
   onClose: () => void;
   cameraId?: string;
   cameraName?: string;
-  onDrive?: (pan: number, tilt: number, zoom: number) => void;
-  onRecallPreset?: (presetNum: number) => void;
-  onSavePreset?: (presetNum: number, name: string) => void;
+  defaultIp?: string;
+  defaultPort?: number;
+  onDrive?: (pan: number, tilt: number, zoom: number, ip: string, port: number) => void;
+  onRecallPreset?: (presetNum: number, ip: string, port: number) => void;
+  onSavePreset?: (presetNum: number, name: string, ip: string, port: number) => void;
 }
+
+const PRESETS_STORAGE_KEY = "onering_ptz_presets_v1";
+
+const DEFAULT_PRESETS: PtzPreset[] = [
+  { id: "p1", name: "Pulpit Center", presetNumber: 1 },
+  { id: "p2", name: "Stage Wide", presetNumber: 2 },
+  { id: "p3", name: "Baptistry / Altar", presetNumber: 3 },
+  { id: "p4", name: "Worship Leader Close", presetNumber: 4 },
+  { id: "p5", name: "Band / Keys", presetNumber: 5 },
+  { id: "p6", name: "Choir / Crowd", presetNumber: 6 },
+];
 
 export const PtzControlDeckModal: React.FC<PtzControlDeckModalProps> = ({
   isOpen,
   onClose,
   cameraId = "cam1",
   cameraName = "Pastor Pulpit Cam (PTZ 1)",
+  defaultIp = "192.168.1.50",
+  defaultPort = 52381,
   onDrive,
   onRecallPreset,
   onSavePreset,
 }) => {
   const [speed, setSpeed] = useState<number>(12);
+  const [cameraIp, setCameraIp] = useState<string>(defaultIp);
+  const [cameraPort, setCameraPort] = useState<number>(defaultPort || 52381);
   const [activeDirection, setActiveDirection] = useState<string | null>(null);
-  const [presets, setPresets] = useState<PtzPreset[]>([
-    { id: "p1", name: "Pulpit Center", presetNumber: 1 },
-    { id: "p2", name: "Stage Wide", presetNumber: 2 },
-    { id: "p3", name: "Baptistry / Altar", presetNumber: 3 },
-    { id: "p4", name: "Worship Leader Close", presetNumber: 4 },
-    { id: "p5", name: "Band / Keys", presetNumber: 5 },
-    { id: "p6", name: "Choir / Crowd", presetNumber: 6 },
-  ]);
+  const [statusNote, setStatusNote] = useState<string | null>(null);
+  const [presets, setPresets] = useState<PtzPreset[]>(() => {
+    try {
+      const saved = localStorage.getItem(PRESETS_STORAGE_KEY);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      }
+    } catch {}
+    return DEFAULT_PRESETS;
+  });
   const [editingPreset, setEditingPreset] = useState<number | null>(null);
   const [presetNameInput, setPresetNameInput] = useState<string>("");
+  const activeDirRef = useRef<string | null>(null);
+
+  const stopMotion = useCallback(() => {
+    if (activeDirRef.current === null) return;
+    activeDirRef.current = null;
+    setActiveDirection(null);
+    onDrive?.(0, 0, 0, cameraIp.trim(), cameraPort);
+  }, [onDrive, cameraIp, cameraPort]);
+
+  // Safety guarantee: release anywhere on window or focus loss ALWAYS halts camera motors.
+  useEffect(() => {
+    if (!isOpen) return;
+    const onGlobalRelease = () => stopMotion();
+    window.addEventListener("pointerup", onGlobalRelease);
+    window.addEventListener("pointercancel", onGlobalRelease);
+    window.addEventListener("blur", onGlobalRelease);
+    return () => {
+      window.removeEventListener("pointerup", onGlobalRelease);
+      window.removeEventListener("pointercancel", onGlobalRelease);
+      window.removeEventListener("blur", onGlobalRelease);
+      stopMotion();
+    };
+  }, [isOpen, stopMotion]);
 
   if (!isOpen) return null;
 
-  const handlePointerDown = (dir: string, pan: number, tilt: number, zoom: number) => {
+  const handlePointerDown = (dir: string, panSign: number, tiltSign: number, zoomSign: number) => {
+    activeDirRef.current = dir;
     setActiveDirection(dir);
-    onDrive?.(pan, tilt, zoom);
-  };
-
-  const handlePointerUp = () => {
-    setActiveDirection(null);
-    onDrive?.(0, 0, 0);
+    const ptSpeed = Math.max(1, Math.min(24, speed));
+    const zoomSpeed = Math.max(1, Math.min(7, Math.round((speed / 24) * 7)));
+    const pan = panSign * ptSpeed;
+    const tilt = tiltSign * Math.min(20, ptSpeed);
+    const zoom = zoomSign * zoomSpeed;
+    onDrive?.(pan, tilt, zoom, cameraIp.trim(), cameraPort);
+    setStatusNote(`Driving ${dir} @ speed ${zoomSign !== 0 ? zoomSpeed : ptSpeed} -> ${cameraIp}:${cameraPort}`);
   };
 
   const handleSaveClick = (presetNum: number) => {
@@ -58,12 +103,36 @@ export const PtzControlDeckModal: React.FC<PtzControlDeckModalProps> = ({
   };
 
   const handleConfirmSave = (presetNum: number) => {
-    onSavePreset?.(presetNum, presetNameInput);
-    setPresets((prev) =>
-      prev.map((p) => (p.presetNumber === presetNum ? { ...p, name: presetNameInput } : p))
-    );
+    const cleanName = presetNameInput.trim() || `Preset ${presetNum}`;
+    onSavePreset?.(presetNum, cleanName, cameraIp.trim(), cameraPort);
+    setPresets((prev) => {
+      const updated = prev.map((p) =>
+        p.presetNumber === presetNum ? { ...p, name: cleanName } : p
+      );
+      try {
+        localStorage.setItem(PRESETS_STORAGE_KEY, JSON.stringify(updated));
+      } catch {}
+      return updated;
+    });
+    setStatusNote(`Stored Preset #${presetNum} ("${cleanName}") on ${cameraIp}:${cameraPort}`);
     setEditingPreset(null);
   };
+
+  const handleRecall = (presetNum: number, name: string) => {
+    onRecallPreset?.(presetNum, cameraIp.trim(), cameraPort);
+    setStatusNote(`Recalled Preset #${presetNum} ("${name}") on ${cameraIp}:${cameraPort}`);
+  };
+
+  const motionButtonProps = (dir: string, pan: number, tilt: number, zoom: number) => ({
+    type: "button" as const,
+    onPointerDown: (e: React.PointerEvent<HTMLButtonElement>) => {
+      e.preventDefault();
+      handlePointerDown(dir, pan, tilt, zoom);
+    },
+    onPointerUp: stopMotion,
+    onPointerLeave: stopMotion,
+    onPointerCancel: stopMotion,
+  });
 
   return (
     <div
@@ -81,8 +150,8 @@ export const PtzControlDeckModal: React.FC<PtzControlDeckModalProps> = ({
       <div
         className="card"
         style={{
-          width: "820px",
-          maxHeight: "85vh",
+          width: "840px",
+          maxHeight: "88vh",
           display: "flex",
           flexDirection: "column",
           borderRadius: 14,
@@ -100,6 +169,7 @@ export const PtzControlDeckModal: React.FC<PtzControlDeckModalProps> = ({
             padding: "16px 22px",
             borderBottom: "1px solid #1F2937",
             backgroundColor: "#182234",
+            gap: 12,
           }}
         >
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
@@ -109,13 +179,53 @@ export const PtzControlDeckModal: React.FC<PtzControlDeckModalProps> = ({
                 PTZ Control Deck & Preset Programmer
               </h2>
               <span className="mono" style={{ fontSize: 12, color: "#9CA3AF" }}>
-                Target: {cameraName} • Protocol: VISCA-over-IP (:52381) / NDI PTZ
+                Target: {cameraName} ({cameraId}) • VISCA-over-IP UDP
               </span>
             </div>
           </div>
-          <button onClick={onClose} className="btn" style={{ padding: "6px 8px", background: "transparent", border: "none" }}>
-            <X size={20} color="#9CA3AF" />
-          </button>
+
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <input
+              type="text"
+              aria-label="PTZ Camera IP"
+              value={cameraIp}
+              onChange={(e) => setCameraIp(e.target.value)}
+              placeholder="Camera IP"
+              className="mono"
+              style={{
+                width: 132,
+                height: 32,
+                backgroundColor: "#0B0D10",
+                border: "1px solid #374151",
+                borderRadius: 6,
+                padding: "0 8px",
+                color: "#E5E7EB",
+                fontSize: 12,
+              }}
+            />
+            <input
+              type="number"
+              aria-label="VISCA UDP Port"
+              value={cameraPort}
+              min={1}
+              max={65535}
+              onChange={(e) => setCameraPort(Math.max(1, Math.min(65535, Number(e.target.value) || 52381)))}
+              className="mono"
+              style={{
+                width: 72,
+                height: 32,
+                backgroundColor: "#0B0D10",
+                border: "1px solid #374151",
+                borderRadius: 6,
+                padding: "0 8px",
+                color: "#93C5FD",
+                fontSize: 12,
+              }}
+            />
+            <button onClick={onClose} className="btn" style={{ padding: "6px 8px", background: "transparent", border: "none" }}>
+              <X size={20} color="#9CA3AF" />
+            </button>
+          </div>
         </div>
 
         {/* Content Body */}
@@ -133,9 +243,7 @@ export const PtzControlDeckModal: React.FC<PtzControlDeckModalProps> = ({
             >
               <div />
               <button
-                type="button"
-                onPointerDown={() => handlePointerDown("UP", 0, 1, 0)}
-                onPointerUp={handlePointerUp}
+                {...motionButtonProps("UP", 0, 1, 0)}
                 className="btn"
                 style={{
                   display: "flex",
@@ -149,9 +257,7 @@ export const PtzControlDeckModal: React.FC<PtzControlDeckModalProps> = ({
               <div />
 
               <button
-                type="button"
-                onPointerDown={() => handlePointerDown("LEFT", -1, 0, 0)}
-                onPointerUp={handlePointerUp}
+                {...motionButtonProps("LEFT", -1, 0, 0)}
                 className="btn"
                 style={{
                   display: "flex",
@@ -162,7 +268,10 @@ export const PtzControlDeckModal: React.FC<PtzControlDeckModalProps> = ({
               >
                 <ArrowLeft size={24} />
               </button>
-              <div
+              <button
+                type="button"
+                onClick={stopMotion}
+                title="Emergency Stop PTZ Motors"
                 style={{
                   display: "flex",
                   alignItems: "center",
@@ -170,14 +279,13 @@ export const PtzControlDeckModal: React.FC<PtzControlDeckModalProps> = ({
                   borderRadius: 10,
                   backgroundColor: "#161F30",
                   border: "1px solid #233044",
+                  cursor: "pointer",
                 }}
               >
                 <Sliders size={18} color="#38BDF8" />
-              </div>
+              </button>
               <button
-                type="button"
-                onPointerDown={() => handlePointerDown("RIGHT", 1, 0, 0)}
-                onPointerUp={handlePointerUp}
+                {...motionButtonProps("RIGHT", 1, 0, 0)}
                 className="btn"
                 style={{
                   display: "flex",
@@ -191,9 +299,7 @@ export const PtzControlDeckModal: React.FC<PtzControlDeckModalProps> = ({
 
               <div />
               <button
-                type="button"
-                onPointerDown={() => handlePointerDown("DOWN", 0, -1, 0)}
-                onPointerUp={handlePointerUp}
+                {...motionButtonProps("DOWN", 0, -1, 0)}
                 className="btn"
                 style={{
                   display: "flex",
@@ -210,9 +316,7 @@ export const PtzControlDeckModal: React.FC<PtzControlDeckModalProps> = ({
             {/* Zoom Controls & Speed */}
             <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 8 }}>
               <button
-                type="button"
-                onPointerDown={() => handlePointerDown("ZOOM_IN", 0, 0, 1)}
-                onPointerUp={handlePointerUp}
+                {...motionButtonProps("ZOOM_IN", 0, 0, 1)}
                 className="btn"
                 style={{
                   height: 44,
@@ -226,9 +330,7 @@ export const PtzControlDeckModal: React.FC<PtzControlDeckModalProps> = ({
                 <ZoomIn size={18} /> Zoom In
               </button>
               <button
-                type="button"
-                onPointerDown={() => handlePointerDown("ZOOM_OUT", 0, 0, -1)}
-                onPointerUp={handlePointerUp}
+                {...motionButtonProps("ZOOM_OUT", 0, 0, -1)}
                 className="btn"
                 style={{
                   height: 44,
@@ -293,6 +395,7 @@ export const PtzControlDeckModal: React.FC<PtzControlDeckModalProps> = ({
                         }}
                       />
                       <button
+                        type="button"
                         onClick={() => handleConfirmSave(p.presetNumber)}
                         className="btn"
                         style={{ height: 32, padding: "0 10px", backgroundColor: "#0284C7", fontSize: 11 }}
@@ -310,7 +413,7 @@ export const PtzControlDeckModal: React.FC<PtzControlDeckModalProps> = ({
                   <div style={{ display: "flex", gap: 6 }}>
                     <button
                       type="button"
-                      onClick={() => onRecallPreset?.(p.presetNumber)}
+                      onClick={() => handleRecall(p.presetNumber, p.name)}
                       className="btn"
                       style={{ height: 32, padding: "0 10px", fontSize: 12, display: "flex", alignItems: "center", gap: 4 }}
                     >
@@ -338,10 +441,14 @@ export const PtzControlDeckModal: React.FC<PtzControlDeckModalProps> = ({
             borderTop: "1px solid #1F2937",
             backgroundColor: "#182234",
             display: "flex",
-            justifyContent: "flex-end",
+            justifyContent: "space-between",
+            alignItems: "center",
           }}
         >
-          <button onClick={onClose} className="btn" style={{ height: 38, padding: "0 22px" }}>
+          <span className="mono" style={{ fontSize: 12, color: "#93C5FD" }}>
+            {statusNote || "Hold arrow/zoom buttons to drive • Release anywhere to stop"}
+          </span>
+          <button type="button" onClick={onClose} className="btn" style={{ height: 38, padding: "0 22px" }}>
             Done
           </button>
         </div>

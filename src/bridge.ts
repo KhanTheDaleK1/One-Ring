@@ -5,6 +5,7 @@ import type {
   BroadcastTarget,
   CueVerificationStep,
   PreflightCheck,
+  SceneSourceItem,
   SlideState,
 } from "./types";
 import type { UnlistenFn } from "@tauri-apps/api/event";
@@ -902,6 +903,30 @@ export const bridge = {
     return structuredClone(simState);
   },
 
+  async syncWorkspaceState(payload: {
+    serviceName?: string;
+    sources?: SceneSourceItem[];
+    slides?: SlideState;
+  }): Promise<AppStateSnapshot> {
+    if (isTauri()) {
+      return invokeTauri("sync_workspace_state", {
+        serviceName: payload.serviceName ?? null,
+        sources: payload.sources ?? null,
+        slides: payload.slides ?? null,
+      });
+    }
+    if (payload.serviceName && payload.serviceName.trim()) {
+      simState.serviceName = payload.serviceName.trim();
+    }
+    if (payload.sources) {
+      simState.sources = structuredClone(payload.sources);
+    }
+    if (payload.slides) {
+      simState.slides = structuredClone(payload.slides);
+    }
+    return structuredClone(simState);
+  },
+
   async applyShowFile(show: RingShowFile): Promise<AppStateSnapshot> {
     if (isTauri()) return invokeTauri("import_show_file", { show });
     simState = applyShowFileToSnapshot(simState, show);
@@ -1115,6 +1140,23 @@ export async function startReplayBuffer(): Promise<string> {
 export async function saveReplayBuffer(): Promise<string> {
   if (isTauri()) return invokeTauri<string>("save_replay_buffer");
   return "Saved 30s Instant Replay clip!";
+}
+
+export async function stopReplayBuffer(): Promise<string> {
+  if (isTauri()) return invokeTauri<string>("stop_replay_buffer");
+  return "Stopped Replay Buffer";
+}
+
+export interface ImportedEwsxSong {
+  title: string;
+  rawLyrics: string;
+}
+
+export async function importEwsxSchedule(filePath: string): Promise<ImportedEwsxSong[]> {
+  if (isTauri()) {
+    return invokeTauri<ImportedEwsxSong[]>("import_ewsx_schedule", { filePath });
+  }
+  return [];
 }
 
 export async function remuxRecordingToMp4(filePath: string): Promise<string> {

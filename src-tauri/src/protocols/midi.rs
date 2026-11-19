@@ -41,10 +41,24 @@ impl MidiMessage {
         let status_type = status & 0xF0;
         let channel = status & 0x0F;
 
+        let expected_len = match status_type {
+            0xC0 | 0xD0 => 2,
+            0x80 | 0x90 | 0xA0 | 0xB0 | 0xE0 => 3,
+            _ => return Err(format!("Unsupported or system MIDI status: 0x{:02X}", status)),
+        };
+        if bytes.len() < expected_len {
+            return Err(format!(
+                "Truncated MIDI packet: expected {} bytes for status 0x{:02X}, got {}",
+                expected_len,
+                status,
+                bytes.len()
+            ));
+        }
+
         let message_type = match status_type {
             0x80 => MidiMessageType::NoteOff,
             0x90 => {
-                if bytes.len() > 2 && bytes[2] == 0 {
+                if bytes[2] == 0 {
                     MidiMessageType::NoteOff
                 } else {
                     MidiMessageType::NoteOn
@@ -55,11 +69,11 @@ impl MidiMessage {
             0xC0 => MidiMessageType::ProgramChange,
             0xD0 => MidiMessageType::ChannelAftertouch,
             0xE0 => MidiMessageType::PitchBend,
-            _ => return Err(format!("Unsupported or system MIDI status: 0x{:02X}", status)),
+            _ => unreachable!(),
         };
 
-        let data1 = if bytes.len() > 1 { bytes[1] & 0x7F } else { 0 };
-        let data2 = if bytes.len() > 2 { bytes[2] & 0x7F } else { 0 };
+        let data1 = bytes[1] & 0x7F;
+        let data2 = if expected_len >= 3 { bytes[2] & 0x7F } else { 0 };
 
         Ok(Self {
             channel,
@@ -136,5 +150,13 @@ mod tests {
         let msg_other = MidiMessage::new(MidiMessageType::NoteOn, 0, 61, 127);
         assert!(binding.matches(&msg_match));
         assert!(!binding.matches(&msg_other));
+    }
+
+    #[test]
+    fn rejects_truncated_midi_packets() {
+        assert!(MidiMessage::parse_bytes(&[0x90]).is_err());
+        assert!(MidiMessage::parse_bytes(&[0x90, 60]).is_err());
+        assert!(MidiMessage::parse_bytes(&[0xC0]).is_err());
+        assert!(MidiMessage::parse_bytes(&[0xC0, 5]).is_ok());
     }
 }

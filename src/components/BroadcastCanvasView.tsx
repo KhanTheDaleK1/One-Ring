@@ -319,14 +319,20 @@ export const BroadcastCanvasView: React.FC<BroadcastCanvasViewProps> = ({
 
   useEffect(() => {
     let active = true;
-    invoke<{ ready?: boolean; gpu?: string; audio?: string; virtualCam?: boolean }>(
-      "probe_libobs_sidecar"
-    )
+    invoke<{
+      libobsFound?: boolean;
+      libobsPath?: string | null;
+      virtualCamSupported?: boolean;
+      vstNativeSupported?: boolean;
+    }>("probe_libobs_sidecar")
       .then((res) => {
         if (!active) return;
+        const found = Boolean(res?.libobsFound);
         setSidecarProbe({
-          ready: Boolean(res?.ready ?? true),
-          label: "Metal/DX11 · VST3/AU · Virtual Cam",
+          ready: found,
+          label: found
+            ? "libobs Ready · VST3/AU · Virtual Cam"
+            : "Standalone FFmpeg Mode (libobs not installed)",
         });
       })
       .catch(() => {
@@ -595,8 +601,14 @@ export const BroadcastCanvasView: React.FC<BroadcastCanvasViewProps> = ({
   ]);
 
   const handleToggleStream = useCallback(() => {
+    const obsConnected =
+      !state.mockMode && state.health.some((h) => h.id === "yt" && h.status === "ok");
     onBroadcastToggle("all", !anyLive);
     if (!anyLive) {
+      if (obsConnected) {
+        notify("Live stream & recording started via connected OBS engine");
+        return;
+      }
       const dest = state.settings?.broadcast?.destinations?.find((d) => d.enabled);
       const effectiveUrl = streamConfig.rtmpUrl || dest?.rtmpUrl || "";
       const effectiveKey = streamConfig.streamKey || dest?.streamKey || "";
@@ -607,12 +619,14 @@ export const BroadcastCanvasView: React.FC<BroadcastCanvasViewProps> = ({
         : "";
       const recExt = obsProfile.recordingFormat || "mp4";
       const recPath = state.settings?.broadcast?.recordingPath
-        ? `${state.settings.broadcast.recordingPath}/recording_${Date.now()}.${recExt}`
+        ? `${state.settings.broadcast.recordingPath.replace(/[\/]+$/, "")}/recording_${Date.now()}.${recExt}`
         : undefined;
       lastRecordingPathRef.current = recPath ?? null;
-      startDirectFfmpegStream(fullRtmp, recPath)
-        .then((m) => notify(m))
-        .catch(() => {});
+      if (fullRtmp || recPath) {
+        startDirectFfmpegStream(fullRtmp, recPath)
+          .then((m) => notify(m))
+          .catch((e) => notify(`FFmpeg start error: ${String(e)}`));
+      }
     } else {
       const recordedFile = lastRecordingPathRef.current;
       stopDirectFfmpegStream()
@@ -642,8 +656,15 @@ export const BroadcastCanvasView: React.FC<BroadcastCanvasViewProps> = ({
 
   const handleSaveReplay = useCallback(() => {
     if (!replayBufferActive) {
-      setReplayBufferActive(true);
-      startReplayBuffer().then(notify).catch((e) => notify(String(e)));
+      startReplayBuffer()
+        .then((msg) => {
+          setReplayBufferActive(true);
+          notify(msg);
+        })
+        .catch((e) => {
+          setReplayBufferActive(false);
+          notify(String(e));
+        });
     } else {
       saveReplayBuffer().then(notify).catch((e) => notify(String(e)));
     }

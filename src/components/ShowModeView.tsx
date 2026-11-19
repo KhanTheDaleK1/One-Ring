@@ -1,5 +1,5 @@
 import { PtzControlDeckModal } from "./PtzControlDeckModal";
-import { CcliSongSelectModal, SongSelectResult } from "./CcliSongSelectModal";
+import { ptzDriveCamera, ptzRecallPreset, ptzStorePreset } from "../bridge";
 import React, { useEffect, useRef, useState } from "react";
 import {
   Play,
@@ -1800,10 +1800,21 @@ export const ShowModeView: React.FC<ShowModeViewProps> = ({
           </div>
         </div>
       )}
-          {showPtzDeck && (
+      {showPtzDeck && (
         <PtzControlDeckModal
           isOpen={showPtzDeck}
           onClose={() => setShowPtzDeck(false)}
+          defaultIp={state.settings?.ndiPtz?.discoveryRangeStart || "192.168.1.50"}
+          defaultPort={state.settings?.ndiPtz?.viscaPort || 52381}
+          onDrive={(pan, tilt, zoom, ip, port) => {
+            ptzDriveCamera(ip, port, pan, tilt, zoom).catch(() => {});
+          }}
+          onRecallPreset={(presetNum, ip, port) => {
+            ptzRecallPreset(ip, port, presetNum).catch(() => {});
+          }}
+          onSavePreset={(presetNum, _name, ip, port) => {
+            ptzStorePreset(ip, port, presetNum).catch(() => {});
+          }}
         />
       )}
     </div>

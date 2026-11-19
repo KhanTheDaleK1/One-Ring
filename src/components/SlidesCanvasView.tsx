@@ -17,6 +17,8 @@ import {
 } from "lucide-react";
 import type { AppStateSnapshot, ServiceSong, SlideCue, SlideTheme } from "../types";
 import { LyricImportModal } from "./LyricImportModal";
+import { CcliSongSelectModal, type SongSelectResult } from "./CcliSongSelectModal";
+import { importEwsxSchedule } from "../bridge";
 import { BibleLookupModal } from "./BibleLookupModal";
 import { TimersAndAlertsModal } from "./TimersAndAlertsModal";
 
@@ -61,6 +63,8 @@ export const SlidesCanvasView: React.FC<SlidesCanvasViewProps> = ({
   onRemoveSong,
 }) => {
   const [showImportModal, setShowImportModal] = useState(false);
+  const [showCcliModal, setShowCcliModal] = useState(false);
+  const [importNotice, setImportNotice] = useState<string | null>(null);
   const [showThemeEditor, setShowThemeEditor] = useState(false);
   const [showBibleModal, setShowBibleModal] = useState(false);
   const [showTimersModal, setShowTimersModal] = useState(false);
@@ -72,8 +76,52 @@ export const SlidesCanvasView: React.FC<SlidesCanvasViewProps> = ({
   const handleFileImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    const text = await file.text();
+    const lowerName = file.name.toLowerCase();
     const baseName = file.name.replace(/\.[^.]+$/, "");
+    setImportNotice(null);
+
+    if (lowerName.endsWith(".ewsx")) {
+      const nativePath = (file as File & { path?: string }).path;
+      if (nativePath) {
+        try {
+          const songs = await importEwsxSchedule(nativePath);
+          for (const song of songs) {
+            const lines = song.rawLyrics
+              .split(/\r?\n/)
+              .map((l) => l.trim())
+              .filter(Boolean);
+            const slidesOut: SlideCue[] = [];
+            for (let i = 0; i < lines.length; i += 2) {
+              const num = slidesOut.length + 1;
+              slidesOut.push({
+                id: `ewsx-${Date.now()}-${num}`,
+                number: num,
+                section: "Song",
+                title: `${song.title} - ${num}`,
+                text: lines.slice(i, i + 2).join("\n"),
+                kind: "lyrics",
+              });
+            }
+            if (slidesOut.length > 0) onImportSong(song.title, slidesOut);
+          }
+          setImportNotice(`Imported ${songs.length} song(s) from ${file.name}`);
+        } catch (err) {
+          setImportNotice(`Failed to extract .ewsx archive: ${String(err)}`);
+        }
+      } else {
+        setImportNotice("EasyWorship .ewsx files are binary ZIP archives; export plain text or import via native desktop path.");
+      }
+      e.target.value = "";
+      return;
+    }
+
+    if (lowerName.endsWith(".pro")) {
+      setImportNotice("ProPresenter .pro files are binary protobuf bundles; export as .txt / ChordPro (.cho) to import.");
+      e.target.value = "";
+      return;
+    }
+
+    const text = await file.text();
     // Clean ChordPro bracket chords like [G], [C/E], [Am7] and parse sections
     const cleanLines = text
       .replace(/\[(?!(Verse|Chorus|Bridge|Pre-Chorus|Tag|Intro|Outro|Ending))[^\]]+\]/gi, "")
@@ -519,6 +567,23 @@ export const SlidesCanvasView: React.FC<SlidesCanvasViewProps> = ({
               </button>
               <button
                 type="button"
+                onClick={() => setShowCcliModal(true)}
+                title="Search Public Domain / CCLI SongSelect catalog"
+                style={{
+                  background: "#1E293B",
+                  border: "1px solid #334155",
+                  color: "#38BDF8",
+                  borderRadius: 5,
+                  padding: "3px 6px",
+                  fontSize: 10.5,
+                  fontWeight: 700,
+                  cursor: "pointer",
+                }}
+              >
+                CCLI
+              </button>
+              <button
+                type="button"
                 onClick={() => setShowImportModal(true)}
               title="Add another song to this service"
               style={{
@@ -540,6 +605,11 @@ export const SlidesCanvasView: React.FC<SlidesCanvasViewProps> = ({
             </div>
           </div>
 
+          {importNotice && (
+            <div className="mono" style={{ fontSize: 11, color: "#FBBF24", background: "#1E2533", padding: "6px 8px", borderRadius: 6 }}>
+              {importNotice}
+            </div>
+          )}
           <div style={{ display: "flex", flexDirection: "column", gap: 6, flex: 1, overflowY: "auto" }}>
             {(state.slides.songs || []).length === 0 ? (
               <div style={{ padding: 16, textAlign: "center", color: "#64748B", fontSize: 12, border: "1px dashed #1E293B", borderRadius: 8 }}>
@@ -883,6 +953,29 @@ export const SlidesCanvasView: React.FC<SlidesCanvasViewProps> = ({
         isOpen={showImportModal}
         onClose={() => setShowImportModal(false)}
         onImport={onImportSong}
+      />
+      <CcliSongSelectModal
+        isOpen={showCcliModal}
+        onClose={() => setShowCcliModal(false)}
+        ccliLicenseNumber={state.settings?.slides?.songselectClientId || "Public Domain"}
+        onImportSong={(song: SongSelectResult) => {
+          const lines = song.lyricsPreview.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+          const importedSlides: SlideCue[] = [];
+          for (let i = 0; i < lines.length; i += 2) {
+            const num = importedSlides.length + 1;
+            importedSlides.push({
+              id: `ccli-${song.ccliNumber}-${num}`,
+              number: num,
+              section: "Verse",
+              title: `${song.title} - ${num}`,
+              text: lines.slice(i, i + 2).join("\n"),
+              kind: "lyrics",
+            });
+          }
+          if (importedSlides.length > 0) {
+            onImportSong(song.title, importedSlides);
+          }
+        }}
       />
     </div>
   );
