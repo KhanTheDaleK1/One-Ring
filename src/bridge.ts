@@ -5,7 +5,9 @@ import type {
   AudienceChatMessage,
   AudienceRelayConfig,
   BroadcastTarget,
+  ConnectionTestResult,
   CueVerificationStep,
+  DiscoveredLanDevice,
   PreflightCheck,
   SceneSourceItem,
   SlideState,
@@ -979,7 +981,7 @@ export async function checkForUpdate(): Promise<UpdateInfo | null> {
       const releases = await resp.json();
       if (!releases || releases.length === 0) return null;
       const latest = releases[0];
-      const currentVersion = "0.3.2";
+      const currentVersion = "0.3.3";
       const latestTag: string = latest.tag_name || "";
       const updateAvailable = latestTag.replace(/^v/, "") !== currentVersion.replace(/^v/, "");
       return {
@@ -1498,4 +1500,202 @@ export async function pinAudienceMessage(
   return messageId
     ? simAudienceChat.find((message) => message.id === messageId && message.pinnedOnAir) ?? null
     : null;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Settings page operations — typed IPC with explicit browser-preview fallbacks
+// ---------------------------------------------------------------------------------------------
+
+/** Probe a configured subsystem endpoint from the Settings page. */
+export async function testSubsystemConnection(
+  subsystem: string,
+  host: string,
+  port: number
+): Promise<ConnectionTestResult> {
+  if (isTauri()) {
+    try {
+      return await invokeTauri<ConnectionTestResult>("test_subsystem_connection", {
+        subsystem,
+        host,
+        port,
+      });
+    } catch {
+      // The preview probe below keeps the operator UI responsive if the command is unavailable.
+    }
+  }
+  const target = host.trim() || "127.0.0.1";
+  const reachable = Boolean(host.trim()) && port >= 1 && port <= 65535;
+  const latencyMs = reachable ? 12 : 0;
+  return {
+    ok: reachable,
+    subsystem,
+    host: target,
+    port,
+    latencyMs,
+    summary: reachable ? `Simulated link check — ${latencyMs} ms` : "No reachable target configured",
+    detail: reachable
+      ? `Preview probe for ${subsystem} at ${target}:${port}. Live verification requires the desktop runtime.`
+      : `Set a valid host and port for ${subsystem} before testing.`,
+  };
+}
+
+/** Sweep the local network for devices of the requested kind. */
+export async function discoverLanDevices(kind: string): Promise<DiscoveredLanDevice[]> {
+  if (isTauri()) {
+    try {
+      const devices = await invokeTauri<DiscoveredLanDevice[]>("discover_lan_devices", { kind });
+      return Array.isArray(devices) ? devices : [];
+    } catch {
+      // Fall through to illustrative preview devices.
+    }
+  }
+  return [
+    {
+      name: "Booth Control Node",
+      host: "192.0.2.10",
+      port: 10023,
+      kind,
+      detail: "Simulated device (browser preview)",
+    },
+    {
+      name: "Stage Endpoint",
+      host: "192.0.2.11",
+      port: 52381,
+      kind,
+      detail: "Simulated device (browser preview)",
+    },
+    {
+      name: "Presentation Node",
+      host: "192.0.2.12",
+      port: 8080,
+      kind,
+      detail: "Simulated device (browser preview)",
+    },
+  ];
+}
+
+/** Serialize the current settings profile for download. */
+export async function exportSettingsBundle(): Promise<string> {
+  if (isTauri()) {
+    try {
+      return await invokeTauri<string>("export_settings_bundle");
+    } catch {
+      // Fall through to the in-memory profile below.
+    }
+  }
+  return JSON.stringify(
+    {
+      format: "one-ring-settings-profile",
+      version: 1,
+      exportedAt: new Date().toISOString(),
+      settings: structuredClone(simState.settings),
+    },
+    null,
+    2
+  );
+}
+
+/** Replace settings from an exported profile payload. */
+export async function importSettingsBundle(payload: string): Promise<AppStateSnapshot | null> {
+  if (isTauri()) {
+    try {
+      return await invokeTauri<AppStateSnapshot | null>("import_settings_bundle", { payload });
+    } catch {
+      // Fall through to the local import below.
+    }
+  }
+  try {
+    const parsed = JSON.parse(payload) as ({ settings?: AppSettings } & Partial<AppSettings>) | null;
+    const settings = (parsed?.settings ?? parsed) as AppSettings | undefined;
+    if (!settings || typeof settings !== "object" || !settings.console || !settings.general) {
+      return null;
+    }
+    return await bridge.saveSettings(settings);
+  } catch {
+    return null;
+  }
+}
+
+/** Restore one settings section to its documented defaults. */
+export async function resetSettingsSection(section: string): Promise<AppStateSnapshot | null> {
+  if (isTauri()) {
+    try {
+      return await invokeTauri<AppStateSnapshot | null>("reset_settings_section", { section });
+    } catch {
+      // Fall through to the local default section below.
+    }
+  }
+  const defaults = initialSettings() as unknown as Record<string, unknown>;
+  if (!Object.prototype.hasOwnProperty.call(defaults, section)) return null;
+  const nextSettings = { ...simState.settings } as unknown as Record<string, unknown>;
+  nextSettings[section] = structuredClone(defaults[section]);
+  simState.settings = nextSettings as unknown as AppSettings;
+  rebuildPreflight(simState);
+  simState.eventLog.unshift(`[settings] ${section} restored to defaults (browser preview)`);
+  return structuredClone(simState);
+}
+
+/** Build a credential-free diagnostics snapshot as JSON. */
+export async function exportDiagnosticBundle(): Promise<string> {
+  if (isTauri()) {
+    try {
+      return await invokeTauri<string>("export_diagnostic_bundle");
+    } catch {
+      // Fall through to the sanitized local snapshot below.
+    }
+  }
+  const settings = structuredClone(simState.settings) as unknown as Record<string, unknown>;
+  const broadcast = settings.broadcast as
+    | { destinations?: Array<{ streamKey?: string }>; recordingPath?: string }
+    | undefined;
+  if (broadcast?.destinations) {
+    broadcast.destinations = broadcast.destinations.map((dest) => ({
+      ...dest,
+      streamKey: "[REDACTED]",
+    }));
+  }
+  if (broadcast?.recordingPath) broadcast.recordingPath = "[REDACTED]";
+  const slides = settings.slides as { songLibraryClientSecret?: string } | undefined;
+  if (slides) slides.songLibraryClientSecret = "[REDACTED]";
+  const general = settings.general as { engineerPin?: string } | undefined;
+  if (general) general.engineerPin = "[REDACTED]";
+  const sync = settings.sync as { syncToken?: string; accountEmail?: string } | undefined;
+  if (sync) {
+    sync.syncToken = "[REDACTED]";
+    sync.accountEmail = "[REDACTED]";
+  }
+  return JSON.stringify(
+    {
+      format: "one-ring-diagnostics",
+      version: 1,
+      generatedAt: new Date().toISOString(),
+      mockMode: simState.mockMode,
+      syncStatus: simState.syncStatus,
+      health: simState.health.map((h) => ({
+        id: h.id,
+        label: h.label,
+        status: h.status,
+        protocol: h.protocol,
+        latencyMs: h.latencyMs,
+      })),
+      preflightStatuses: simState.preflight.map((check) => check.status),
+      topologyIssueCount: simState.topologyIssues.length,
+      eventCount: simState.eventLog.length,
+      settings,
+    },
+    null,
+    2
+  );
+}
+
+/** Reveal the platform configuration directory in the installed runtime. */
+export async function openConfigDirectory(): Promise<string> {
+  if (isTauri()) {
+    try {
+      return await invokeTauri<string>("open_config_directory");
+    } catch {
+      // Fall through to the preview message below.
+    }
+  }
+  return "Browser preview — no local configuration directory is available.";
 }

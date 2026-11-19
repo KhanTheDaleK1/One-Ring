@@ -398,11 +398,22 @@ export interface CameraPresetName {
   label: string;
 }
 
+/** Operator-managed PTZ camera endpoint in the Settings roster. */
+export interface PtzCameraEntry {
+  id: string;
+  name: string;
+  ipAddress: string;
+  port: number;
+  detail?: string;
+}
+
 export interface IpVideoPtzSettings {
   discoveryRangeStart: string;
   discoveryRangeEnd: string;
   ptzIpPort: number;
   presetNames: CameraPresetName[];
+  /** Frontend-managed camera roster; persisted when the backend supports it. */
+  cameras?: PtzCameraEntry[];
 }
 
 export interface GeneralSettings {
@@ -410,6 +421,32 @@ export interface GeneralSettings {
   canvasTabs: CanvasTabConfig[];
   /** PIN required to unlock Engineer Mode from Volunteer Show Mode. */
   engineerPin: string;
+  /** Booth display scaling percentage applied to the document root. */
+  uiScale?: number;
+  /** High-contrast operating mode for challenging booth lighting. */
+  highContrast?: boolean;
+  /** Warn before navigating away from the Settings page with unsaved edits. */
+  confirmUnsavedLeave?: boolean;
+}
+
+/** Result of an operator-triggered subsystem connectivity probe. */
+export interface ConnectionTestResult {
+  ok: boolean;
+  subsystem: string;
+  host: string;
+  port: number;
+  latencyMs: number;
+  summary: string;
+  detail: string;
+}
+
+/** A device surfaced by a local-network discovery sweep. */
+export interface DiscoveredLanDevice {
+  name: string;
+  host: string;
+  port: number;
+  kind: string;
+  detail?: string;
 }
 
 export type StationRole = "slides" | "audio" | "broadcast" | "director" | "master";

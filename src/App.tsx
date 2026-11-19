@@ -27,8 +27,62 @@ import { PairingPrompt, type DiscoveredPeerInfo } from "./components/PairingProm
 import { getDiscoveredPeers } from "./bridge";
 import { WelcomeTour } from "./components/WelcomeTour";
 import { UpdateModal } from "./components/UpdateModal";
-import { checkForUpdate } from "./bridge";
-import type { UpdateInfo } from "./types";
+import { BroadcastSettingsModal } from "./components/BroadcastSettingsModal";
+import { checkForUpdate, probeHardwareEncoders, type EncoderCapability } from "./bridge";
+import type { BroadcastProfileSettings, UpdateInfo } from "./types";
+
+const BROADCAST_PROFILE_KEY = "onering_broadcast_profile";
+const BROADCAST_STREAM_KEY = "onering_broadcast_stream_config";
+const BROADCAST_HOTKEYS_KEY = "onering_broadcast_hotkeys";
+
+function defaultBroadcastProfile(): BroadcastProfileSettings {
+  const defaults: BroadcastProfileSettings = {
+    name: "Production Broadcast (1080p60)",
+    baseResolution: "1920x1080",
+    outputResolution: "1920x1080",
+    fps: 60,
+    videoEncoder: "libx264",
+    rateControl: "CBR",
+    bitrateKbps: 6000,
+    keyframeIntervalSec: 2,
+    audioSampleRate: 48000,
+    audioBitrateKbps: 192,
+    recordingFormat: "mkv",
+    autoRemuxToMp4: true,
+  };
+  try {
+    const raw = localStorage.getItem(BROADCAST_PROFILE_KEY);
+    if (raw) return { ...defaults, ...JSON.parse(raw) };
+  } catch {
+    // Ignore malformed locally saved profiles.
+  }
+  return defaults;
+}
+
+function loadBroadcastStream(): { rtmpUrl: string; streamKey: string } {
+  try {
+    const raw = localStorage.getItem(BROADCAST_STREAM_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (typeof parsed?.rtmpUrl === "string" && typeof parsed?.streamKey === "string") {
+        return { rtmpUrl: parsed.rtmpUrl, streamKey: parsed.streamKey };
+      }
+    }
+  } catch {
+    // Ignore malformed locally saved stream configuration.
+  }
+  return { rtmpUrl: "rtmps://ingest.example.com/live2", streamKey: "" };
+}
+
+function loadBroadcastHotkeys(): Record<string, string> {
+  try {
+    const raw = localStorage.getItem(BROADCAST_HOTKEYS_KEY);
+    if (raw) return JSON.parse(raw) as Record<string, string>;
+  } catch {
+    // Ignore malformed locally saved hotkeys.
+  }
+  return {};
+}
 
 export const App: React.FC = () => {
   const [state, setState] = useState<AppStateSnapshot | null>(null);
@@ -47,6 +101,67 @@ export const App: React.FC = () => {
   const [showWelcomeTour, setShowWelcomeTour] = useState(() => {
     return localStorage.getItem("onering_tour_completed") !== "true";
   });
+  const [showBroadcastSettings, setShowBroadcastSettings] = useState(false);
+  const [broadcastProfile, setBroadcastProfile] = useState<BroadcastProfileSettings>(() =>
+    defaultBroadcastProfile()
+  );
+  const [broadcastStream, setBroadcastStream] = useState(loadBroadcastStream);
+  const [broadcastHotkeys, setBroadcastHotkeys] = useState<Record<string, string>>(
+    loadBroadcastHotkeys
+  );
+  const [hardwareEncoders, setHardwareEncoders] = useState<EncoderCapability[]>([]);
+  const [encodersLoading, setEncodersLoading] = useState(false);
+
+  // Booth display preferences are authored in Settings and applied to the document root.
+  useEffect(() => {
+    const root = document.documentElement;
+    const rawScale = state?.settings.general.uiScale ?? 100;
+    const scale = rawScale <= 2 ? Math.round(rawScale * 100) : rawScale;
+    root.style.setProperty("zoom", `${scale}%`);
+    if (state?.settings.general.highContrast) {
+      root.setAttribute("data-contrast", "high");
+    } else {
+      root.removeAttribute("data-contrast");
+    }
+    return () => {
+      root.style.removeProperty("zoom");
+      root.removeAttribute("data-contrast");
+    };
+  }, [state?.settings.general.uiScale, state?.settings.general.highContrast]);
+
+  useEffect(() => {
+    if (!state?.settings.general.highContrast) return;
+    const style = document.createElement("style");
+    style.dataset.oneringContrast = "high";
+    style.textContent = [
+      '[data-contrast="high"] body { background: #000000 !important; color: #FFFFFF !important; }',
+      '[data-contrast="high"] .card { background: #000000 !important; border-color: #FFFFFF !important; }',
+      '[data-contrast="high"] .btn { border-color: #FFFFFF !important; color: #FFFFFF !important; }',
+    ].join("\n");
+    document.head.appendChild(style);
+    return () => {
+      style.remove();
+    };
+  }, [state?.settings.general.highContrast]);
+
+  useEffect(() => {
+    if (!showBroadcastSettings) return;
+    let cancelled = false;
+    setEncodersLoading(true);
+    probeHardwareEncoders()
+      .then((encoders) => {
+        if (!cancelled) setHardwareEncoders(Array.isArray(encoders) ? encoders : []);
+      })
+      .catch(() => {
+        if (!cancelled) setHardwareEncoders([]);
+      })
+      .finally(() => {
+        if (!cancelled) setEncodersLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [showBroadcastSettings]);
 
   useEffect(() => {
     let disposed = false;
@@ -70,10 +185,10 @@ export const App: React.FC = () => {
         } else {
           // Provide fallback about info even if offline
           setAvailableUpdate({
-            current_version: "0.3.2",
-            latest_version: "v0.3.2-alpha",
+            current_version: "0.3.3",
+            latest_version: "v0.3.3-alpha",
             release_name: "One Ring — Church Production Suite",
-            release_notes: "You are running One Ring v0.3.2-alpha. All systems up to date.",
+            release_notes: "You are running One Ring v0.3.3-alpha. All systems up to date.",
             published_at: new Date().toISOString(),
             html_url: UPDATE_REPO_URL,
             download_url: null,
@@ -1074,19 +1189,72 @@ export const App: React.FC = () => {
         <UpdateModal update={availableUpdate} onDismiss={() => setAvailableUpdate(null)} />
       )}
 
+      <BroadcastSettingsModal
+        isOpen={showBroadcastSettings}
+        onClose={() => setShowBroadcastSettings(false)}
+        profile={broadcastProfile}
+        onSaveProfile={(profile) => {
+          setBroadcastProfile(profile);
+          try {
+            localStorage.setItem(BROADCAST_PROFILE_KEY, JSON.stringify(profile));
+          } catch {
+            // Local persistence is best-effort.
+          }
+        }}
+        streamKey={broadcastStream.streamKey}
+        rtmpUrl={broadcastStream.rtmpUrl}
+        onSaveStreamConfig={(rtmpUrl, streamKey) => {
+          setBroadcastStream({ rtmpUrl, streamKey });
+          try {
+            localStorage.setItem(BROADCAST_STREAM_KEY, JSON.stringify({ rtmpUrl, streamKey }));
+          } catch {
+            // Local persistence is best-effort.
+          }
+          if (state) {
+            const settings = structuredClone(state.settings);
+            const existing = settings.broadcast.destinations[0];
+            if (existing) {
+              existing.rtmpUrl = rtmpUrl;
+              existing.streamKey = streamKey;
+            } else {
+              settings.broadcast.destinations.push({
+                id: `destination-${Date.now().toString(36)}`,
+                platform: "Primary",
+                rtmpUrl,
+                streamKey,
+                enabled: true,
+              });
+            }
+            bridge.saveSettings(settings).then(setState).catch(() => undefined);
+          }
+        }}
+        hotkeys={broadcastHotkeys}
+        onSaveHotkeys={(hotkeys) => {
+          setBroadcastHotkeys(hotkeys);
+          try {
+            localStorage.setItem(BROADCAST_HOTKEYS_KEY, JSON.stringify(hotkeys));
+          } catch {
+            // Local persistence is best-effort.
+          }
+        }}
+        hardwareEncoders={hardwareEncoders}
+        encodersLoading={encodersLoading}
+      />
+
       {mode === "settings" && (
         <SettingsView
           state={state}
           onSave={(settings) => bridge.saveSettings(settings).then(setState)}
+          onOpenBroadcastSettings={() => setShowBroadcastSettings(true)}
           onCheckUpdates={async () => {
             const info = await checkForUpdate();
             if (info) {
               setAvailableUpdate(info);
             } else {
               setAvailableUpdate({
-                current_version: "0.3.2",
-                latest_version: "v0.3.2-alpha",
-                release_name: "One Ring v0.3.2-alpha",
+                current_version: "0.3.3",
+                latest_version: "v0.3.3-alpha",
+                release_name: "One Ring v0.3.3-alpha",
                 release_notes: "You are running the latest version. All systems are up to date.",
                 published_at: new Date().toISOString(),
                 html_url: `${UPDATE_REPO_URL}/releases`,

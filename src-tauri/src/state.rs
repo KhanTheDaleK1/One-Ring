@@ -469,6 +469,17 @@ fn default_canvas_tabs() -> Vec<CanvasTabConfig> {
     ]
 }
 
+/// Neutral zoom level. A plain `#[serde(default)]` would yield `0.0`, so the serde fallback
+/// is explicit to keep older settings files loadable at the previous visual size.
+fn default_ui_scale() -> f32 {
+    1.0
+}
+
+/// Leaving a page with unsaved edits is confirmed by default; opting out is explicit.
+fn default_confirm_unsaved_leave() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GeneralSettings {
@@ -479,6 +490,12 @@ pub struct GeneralSettings {
     /// PIN required to unlock Engineer Mode from Volunteer Show Mode.
     #[serde(default)]
     pub engineer_pin: String,
+    #[serde(default = "default_ui_scale")]
+    pub ui_scale: f32,
+    #[serde(default)]
+    pub high_contrast: bool,
+    #[serde(default = "default_confirm_unsaved_leave")]
+    pub confirm_unsaved_leave: bool,
 }
 
 impl Default for GeneralSettings {
@@ -487,6 +504,9 @@ impl Default for GeneralSettings {
             canvas_title: default_canvas_title(),
             canvas_tabs: default_canvas_tabs(),
             engineer_pin: String::new(),
+            ui_scale: default_ui_scale(),
+            high_contrast: false,
+            confirm_unsaved_leave: default_confirm_unsaved_leave(),
         }
     }
 }
@@ -563,6 +583,26 @@ pub struct AppSettings {
     pub sync: SyncSettings,
 }
 
+/// Reset a single settings section while leaving every other section untouched.
+/// Returns an error for unknown section names so callers can surface a clear message.
+pub fn default_section_settings(settings: &mut AppSettings, section: &str) -> Result<(), String> {
+    match section {
+        "console" => settings.console = ConsoleSettings::default(),
+        "aoip" => settings.aoip = AoipSettings::default(),
+        "broadcast" => settings.broadcast = BroadcastSettings::default(),
+        "slides" => settings.slides = SlidesSettings::default(),
+        "ipVideo" | "ipvideo" | "ip_video" => settings.ip_video_ptz = IpVideoPtzSettings::default(),
+        "station" => settings.station = StationSettings::default(),
+        "general" => settings.general = GeneralSettings::default(),
+        _ => {
+            return Err(format!(
+                "Unsupported settings section: {section} (expected console, aoip, broadcast, slides, ipVideo, station, or general)"
+            ))
+        }
+    }
+    Ok(())
+}
+
 /// Another One Ring node discovered on the LAN.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -636,6 +676,9 @@ pub struct AppStateSnapshot {
     pub sync_status: String,
 }
 
+/// Public name used by settings IPC commands for the serializable application state.
+pub type AppState = AppStateSnapshot;
+
 #[derive(Clone)]
 pub struct UndoEntry {
     pub label: String,
@@ -678,6 +721,7 @@ impl ManagedState {
                 path.display()
             ));
         }
+        remember_settings_path(&path);
         *self.settings_path.lock().unwrap() = Some(path);
     }
 
@@ -690,6 +734,26 @@ impl ManagedState {
         let settings = self.inner.lock().unwrap().settings.clone();
         write_settings_to_disk(&path, &settings)
     }
+}
+
+/// Process-wide settings file location. Settings-focused IPC commands only receive a
+/// `SharedState`, so they persist through this remembered path instead of holding a
+/// second `ManagedState` reference.
+static SETTINGS_PATH: Mutex<Option<PathBuf>> = Mutex::new(None);
+
+/// Remember where settings JSON lives. Called when the app attaches its config directory.
+pub fn remember_settings_path(path: &Path) {
+    *SETTINGS_PATH.lock().unwrap() = Some(path.to_path_buf());
+}
+
+/// Persist the settings carried by a snapshot to the remembered settings file.
+/// A missing path is valid in memory-only/test scenarios and is treated as success.
+pub fn persist_snapshot_settings(snapshot: &AppStateSnapshot) -> Result<(), String> {
+    let path = SETTINGS_PATH.lock().unwrap().clone();
+    let Some(path) = path else {
+        return Ok(());
+    };
+    write_settings_to_disk(&path, &snapshot.settings)
 }
 
 /// Read a persisted `AppSettings` file. Missing/corrupt files fall back to defaults.
@@ -1436,5 +1500,32 @@ mod tests {
         assert_eq!(image.key, "current:hash-1");
         assert_eq!(image.imagehash, "hash-1");
         assert_eq!(image.size, 2048);
+    }
+
+    #[test]
+    fn general_settings_defaults_keep_legacy_files_loadable() {
+        let legacy: GeneralSettings =
+            serde_json::from_str(r#"{"canvasTitle":"Legacy Canvas"}"#).expect("legacy settings");
+        assert_eq!(legacy.canvas_title, "Legacy Canvas");
+        assert_eq!(legacy.ui_scale, 1.0);
+        assert!(!legacy.high_contrast);
+        assert!(legacy.confirm_unsaved_leave);
+    }
+
+    #[test]
+    fn default_section_settings_resets_only_the_selected_section() {
+        let mut settings = AppSettings::default();
+        settings.console.ip_address = "192.0.2.10".into();
+        settings.general.ui_scale = 1.5;
+        settings.station.station_name = "Stage".into();
+
+        default_section_settings(&mut settings, "console").expect("reset console");
+        assert!(settings.console.ip_address.is_empty());
+        assert_eq!(settings.general.ui_scale, 1.5);
+        assert_eq!(settings.station.station_name, "Stage");
+
+        default_section_settings(&mut settings, "ipVideo").expect("reset camera section");
+        assert_eq!(settings.ip_video_ptz.ptz_ip_port, 52381);
+        assert!(default_section_settings(&mut settings, "unknown").is_err());
     }
 }

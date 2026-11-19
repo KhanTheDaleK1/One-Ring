@@ -1,5 +1,7 @@
 
 use peer_discovery::{PeerRegistry, DiscoveredPeer};
+// A retained wire-format helper in this module is intentionally unused by current adapters.
+#[allow(dead_code)]
 pub mod protocols;
 pub mod runtime;
 mod state;
@@ -21,9 +23,10 @@ use runtime::dual_stream_adapter::DualStreamCommand;
 use runtime::console_adapter::ConsoleCommand;
 use runtime::{AdapterCommand, AdapterRegistry, RuntimeConfig};
 use state::{
-    recompute_derived_alerts, with_state, AoipRoute, AppSettings, AppStateSnapshot,
-    CueVerificationReport, CueVerificationStep, ManagedState, PreflightCheck, SceneSourceItem,
-    ServiceCue, SharedState, ShowFile, SlideState, UndoEntry,
+    default_section_settings, persist_snapshot_settings, recompute_derived_alerts, with_state,
+    AoipRoute, AppSettings, AppState, AppStateSnapshot, CueVerificationReport, CueVerificationStep,
+    ManagedState, PreflightCheck, SceneSourceItem, ServiceCue, SharedState, ShowFile, SlideState,
+    UndoEntry,
 };
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
@@ -2459,6 +2462,506 @@ async fn run_preflight_probes(state: State<'_, ManagedState>) -> Result<AppState
     Ok(inner.clone())
 }
 
+// ---------------------------------------------------------------------------------------------
+// Settings page IPC: bounded connectivity probes, LAN discovery, bundles and diagnostics
+// ---------------------------------------------------------------------------------------------
+
+const SETTINGS_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(1500);
+const UDP_REPLY_WINDOW: std::time::Duration = std::time::Duration::from_millis(400);
+const REDACTED: &str = "[REDACTED]";
+
+fn probe_result(
+    subsystem: &str,
+    host: &str,
+    port: u16,
+    ok: bool,
+    latency_ms: u64,
+    summary: impl Into<String>,
+    detail: impl Into<String>,
+) -> serde_json::Value {
+    serde_json::json!({
+        "ok": ok,
+        "subsystem": subsystem,
+        "host": host,
+        "port": port,
+        "latencyMs": latency_ms,
+        "summary": summary.into(),
+        "detail": detail.into(),
+    })
+}
+
+async fn probe_tcp_target(host: &str, port: u16) -> (bool, u64, String, String) {
+    let started = std::time::Instant::now();
+    let connect = tokio::net::TcpStream::connect((host, port));
+    match tokio::time::timeout(SETTINGS_PROBE_TIMEOUT, connect).await {
+        Ok(Ok(_stream)) => {
+            let latency = started.elapsed().as_millis() as u64;
+            (
+                true,
+                latency,
+                "TCP connection established".into(),
+                format!("Connected to {host}:{port} in {latency} ms"),
+            )
+        }
+        Ok(Err(err)) => {
+            let latency = started.elapsed().as_millis() as u64;
+            (
+                false,
+                latency,
+                "TCP connection failed".into(),
+                format!("Could not connect to {host}:{port}: {err}"),
+            )
+        }
+        Err(_) => {
+            let latency = started.elapsed().as_millis() as u64;
+            (
+                false,
+                latency,
+                "TCP connection timed out".into(),
+                format!("No connection to {host}:{port} within 1500 ms"),
+            )
+        }
+    }
+}
+
+async fn probe_udp_target(host: &str, port: u16, subsystem: &str) -> (bool, u64, String, String) {
+    let started = std::time::Instant::now();
+    let send_phase = async {
+        let socket = tokio::net::UdpSocket::bind("0.0.0.0:0").await?;
+        socket.connect((host, port)).await?;
+        // Small, read-only identity query for the console; a harmless marker elsewhere.
+        let payload: Vec<u8> = if subsystem == "console" {
+            protocols::console_osc::OscMessage::xinfo().encode()
+        } else {
+            b"PING".to_vec()
+        };
+        socket.send(&payload).await?;
+        Ok::<tokio::net::UdpSocket, std::io::Error>(socket)
+    };
+
+    let socket = match tokio::time::timeout(SETTINGS_PROBE_TIMEOUT, send_phase).await {
+        Ok(Ok(socket)) => socket,
+        Ok(Err(err)) => {
+            let latency = started.elapsed().as_millis() as u64;
+            return (
+                false,
+                latency,
+                "UDP probe failed".into(),
+                format!("Could not send a probe to {host}:{port}: {err}"),
+            );
+        }
+        Err(_) => {
+            let latency = started.elapsed().as_millis() as u64;
+            return (
+                false,
+                latency,
+                "UDP probe timed out".into(),
+                format!("Probe to {host}:{port} exceeded 1500 ms"),
+            );
+        }
+    };
+
+    // UDP has no transport acknowledgement. Spend only the remainder of the bounded budget
+    // waiting for a reply so an otherwise silent endpoint is still reported as reachable.
+    let remaining = SETTINGS_PROBE_TIMEOUT.saturating_sub(started.elapsed());
+    let reply_len = if remaining.is_zero() {
+        None
+    } else {
+        let mut buf = [0u8; 2048];
+        match tokio::time::timeout(remaining.min(UDP_REPLY_WINDOW), socket.recv(&mut buf)).await {
+            Ok(Ok(len)) => Some(len),
+            _ => None,
+        }
+    };
+    let latency = started.elapsed().as_millis() as u64;
+    match reply_len {
+        Some(len) => (
+            true,
+            latency,
+            "UDP probe replied".into(),
+            format!("Probe to {host}:{port} answered with {len} bytes in {latency} ms"),
+        ),
+        None => (
+            true,
+            latency,
+            "UDP probe delivered".into(),
+            format!(
+                "Probe sent to {host}:{port}; no reply inside the bounded window (UDP is unacknowledged)"
+            ),
+        ),
+    }
+}
+
+/// Run a real, bounded reachability probe for one subsystem from the Settings page.
+#[tauri::command]
+async fn test_subsystem_connection(
+    subsystem: String,
+    host: String,
+    port: u16,
+) -> Result<serde_json::Value, String> {
+    if host.trim().is_empty() {
+        return Err("Connection host must not be empty".into());
+    }
+    let normalized = subsystem.trim().to_ascii_lowercase().replace('_', "");
+    let (ok, latency, summary, detail) = match normalized.as_str() {
+        "console" => probe_udp_target(&host, port, "console").await,
+        "ipvideo" => probe_udp_target(&host, port, "ipvideo").await,
+        "broadcast" | "slides" | "aoip" | "station" => probe_tcp_target(&host, port).await,
+        _ => return Err(format!("Unsupported subsystem for connection test: {subsystem}")),
+    };
+    Ok(probe_result(
+        &subsystem, &host, port, ok, latency, summary, detail,
+    ))
+}
+
+fn push_device(
+    devices: &mut Vec<serde_json::Value>,
+    seen: &mut std::collections::HashSet<String>,
+    name: impl Into<String>,
+    host: impl Into<String>,
+    port: u16,
+    kind: &str,
+    detail: impl Into<String>,
+) {
+    let host = host.into();
+    if seen.insert(format!("{kind}:{host}:{port}")) {
+        devices.push(serde_json::json!({
+            "name": name.into(),
+            "host": host,
+            "port": port,
+            "kind": kind,
+            "detail": detail.into(),
+        }));
+    }
+}
+
+/// List devices already known to the running app (peer/route/receiver state and configured
+/// presentation endpoints). All sources are in-memory, so the command never blocks on a scan.
+#[tauri::command]
+fn discover_lan_devices(
+    kind: String,
+    state: State<SharedState>,
+) -> Result<Vec<serde_json::Value>, String> {
+    let normalized = kind.trim().to_ascii_lowercase().replace('_', "");
+    if !matches!(normalized.as_str(), "aoip" | "slides" | "ipvideo" | "station" | "all") {
+        return Err(format!("Unsupported discovery kind: {kind}"));
+    }
+    let snapshot = state.lock().map_err(|_| "State lock poisoned".to_string())?;
+    let mut devices = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+
+    if matches!(normalized.as_str(), "aoip" | "all") {
+        let port = snapshot.settings.aoip.conmon_control_port;
+        for route in &snapshot.aoip_routes {
+            for (label, address, channel) in [
+                ("receive", &route.rx_device, &route.rx_channel),
+                ("transmit", &route.tx_device, &route.tx_channel),
+            ] {
+                if address.parse::<std::net::IpAddr>().is_ok() {
+                    push_device(
+                        &mut devices,
+                        &mut seen,
+                        format!("Audio node {address}"),
+                        address.clone(),
+                        port,
+                        "aoip",
+                        format!("Route {} / {label} / channel {channel}", route.id),
+                    );
+                }
+            }
+        }
+    }
+
+    if matches!(normalized.as_str(), "slides" | "all") {
+        let configured = std::env::var("RING_PP_HOST")
+            .ok()
+            .filter(|host| !host.trim().is_empty())
+            .or_else(|| {
+                std::env::var("RING_EZW_HOST")
+                    .ok()
+                    .filter(|host| !host.trim().is_empty())
+            });
+        if let Some(host) = configured {
+            let port = std::env::var("RING_PP_PORT")
+                .ok()
+                .and_then(|value| value.parse().ok())
+                .or_else(|| std::env::var("RING_EZW_PORT").ok().and_then(|value| value.parse().ok()))
+                .unwrap_or(50_000);
+            let adapter = if snapshot.slides.adapter.is_empty() {
+                "unconfigured"
+            } else {
+                &snapshot.slides.adapter
+            };
+            push_device(
+                &mut devices,
+                &mut seen,
+                "Presentation endpoint",
+                host,
+                port,
+                "slides",
+                format!("Adapter: {adapter}"),
+            );
+        }
+    }
+
+    if matches!(normalized.as_str(), "ipvideo" | "all") {
+        let port = snapshot.settings.ip_video_ptz.ptz_ip_port;
+        for receiver in &snapshot.ip_video_receivers {
+            if !receiver.ip.trim().is_empty() {
+                push_device(
+                    &mut devices,
+                    &mut seen,
+                    receiver.receiver_name.clone(),
+                    receiver.ip.clone(),
+                    port,
+                    "ipVideo",
+                    format!(
+                        "Receiver {} / subscribed: {}",
+                        receiver.id, receiver.subscribed_source
+                    ),
+                );
+            }
+        }
+        for source in &snapshot.ip_video_sources {
+            if source.parse::<std::net::IpAddr>().is_ok() {
+                push_device(
+                    &mut devices,
+                    &mut seen,
+                    format!("Camera source {source}"),
+                    source.clone(),
+                    port,
+                    "ipVideo",
+                    "Configured camera source",
+                );
+            }
+        }
+    }
+
+    if matches!(normalized.as_str(), "station" | "all") {
+        let port = snapshot.settings.sync.sync_port;
+        for station in &snapshot.connected_stations {
+            push_device(
+                &mut devices,
+                &mut seen,
+                station.name.clone(),
+                station.id.clone(),
+                port,
+                "station",
+                format!("Role: {} / online: {}", station.role, station.online),
+            );
+        }
+    }
+
+    Ok(devices)
+}
+
+fn build_settings_bundle(settings: &AppSettings) -> String {
+    serde_json::to_string_pretty(&serde_json::json!({
+        "format": "one-ring-settings-v1",
+        "settings": settings,
+    }))
+    .unwrap_or_else(|_| "{}".to_string())
+}
+
+/// Export the full configuration as a portable, versioned JSON bundle.
+#[tauri::command]
+fn export_settings_bundle(state: State<SharedState>) -> Result<String, String> {
+    let snapshot = state.lock().map_err(|_| "State lock poisoned".to_string())?;
+    Ok(build_settings_bundle(&snapshot.settings))
+}
+
+fn validate_settings(settings: &AppSettings) -> Result<(), String> {
+    let pin = &settings.general.engineer_pin;
+    if !pin.is_empty()
+        && !(pin.len() >= 4
+            && pin.len() <= 8
+            && pin.bytes().all(|byte| byte.is_ascii_digit()))
+    {
+        return Err("Engineer PIN must be 4 to 8 digits".into());
+    }
+    let ports = [
+        ("console.oscPort", settings.console.osc_port),
+        ("aoip.conmonMeterPort", settings.aoip.conmon_meter_port),
+        ("aoip.conmonControlPort", settings.aoip.conmon_control_port),
+        ("ipVideoPtz.ptzIpPort", settings.ip_video_ptz.ptz_ip_port),
+        ("sync.syncPort", settings.sync.sync_port),
+    ];
+    for (label, port) in ports {
+        if port == 0 {
+            return Err(format!("Invalid port for {label}: {port} (ports start at 1)"));
+        }
+    }
+    Ok(())
+}
+
+fn parse_settings_bundle(payload: &str) -> Result<AppSettings, String> {
+    let value: serde_json::Value = serde_json::from_str(payload)
+        .map_err(|err| format!("Settings bundle is not valid JSON: {err}"))?;
+    let raw = match value.as_object() {
+        Some(object) if object.contains_key("settings") => object
+            .get("settings")
+            .cloned()
+            .ok_or_else(|| "Settings bundle has no settings object".to_string())?,
+        Some(_) => value.clone(),
+        None => return Err("Settings bundle must be a JSON object".into()),
+    };
+    let settings: AppSettings = serde_json::from_value(raw)
+        .map_err(|err| format!("Settings bundle does not match the settings schema: {err}"))?;
+    validate_settings(&settings)?;
+    Ok(settings)
+}
+
+/// Import a versioned bundle (or a raw settings object), validate it and persist it.
+#[tauri::command]
+fn import_settings_bundle(payload: String, state: State<SharedState>) -> Result<AppState, String> {
+    let settings = parse_settings_bundle(&payload)?;
+    let mut snapshot = state.lock().map_err(|_| "State lock poisoned".to_string())?;
+    snapshot.settings = settings;
+    snapshot.sync_broadcasts_from_settings();
+    snapshot.rebuild_preflight();
+    snapshot.push_event_log("[settings] Imported settings bundle".into());
+    if let Err(err) = persist_snapshot_settings(&snapshot) {
+        snapshot.push_event_log(format!(
+            "[settings] WARNING: failed to persist imported bundle: {err}"
+        ));
+    }
+    Ok(snapshot.clone())
+}
+
+/// Restore one named section to its defaults without disturbing the other sections.
+#[tauri::command]
+fn reset_settings_section(section: String, state: State<SharedState>) -> Result<AppState, String> {
+    let mut snapshot = state.lock().map_err(|_| "State lock poisoned".to_string())?;
+    default_section_settings(&mut snapshot.settings, &section)?;
+    snapshot.push_event_log(format!("[settings] Reset '{section}' section to defaults"));
+    if let Err(err) = persist_snapshot_settings(&snapshot) {
+        snapshot.push_event_log(format!(
+            "[settings] WARNING: failed to persist section reset: {err}"
+        ));
+    }
+    Ok(snapshot.clone())
+}
+
+fn is_sensitive_key(key: &str) -> bool {
+    let normalized: String = key
+        .chars()
+        .filter(|character| character.is_ascii_alphanumeric())
+        .flat_map(|character| character.to_lowercase())
+        .collect();
+    [
+        "password",
+        "secret",
+        "token",
+        "streamkey",
+        "apikey",
+        "credential",
+        "auth",
+        "pin",
+        "email",
+        "key",
+    ]
+    .iter()
+    .any(|needle| normalized.contains(needle))
+}
+
+fn redact_secrets(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Object(entries) => {
+            for (key, child) in entries.iter_mut() {
+                if is_sensitive_key(key) {
+                    *child = serde_json::Value::String(REDACTED.into());
+                } else {
+                    redact_secrets(child);
+                }
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                redact_secrets(item);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn build_diagnostic_bundle(snapshot: &AppStateSnapshot) -> Result<String, String> {
+    let mut settings = serde_json::to_value(&snapshot.settings)
+        .map_err(|err| format!("Could not summarize settings: {err}"))?;
+    redact_secrets(&mut settings);
+
+    let subsystems: Vec<serde_json::Value> = snapshot
+        .health
+        .iter()
+        .map(|health| {
+            serde_json::json!({
+                "id": health.id,
+                "status": health.status,
+                "detail": health.detail,
+                "protocol": health.protocol,
+                "latencyMs": health.latency_ms,
+            })
+        })
+        .collect();
+    let passed = snapshot.preflight.iter().filter(|check| check.status == "pass").count();
+    let warned = snapshot.preflight.iter().filter(|check| check.status == "warn").count();
+    let failed = snapshot.preflight.iter().filter(|check| check.status == "fail").count();
+
+    let bundle = serde_json::json!({
+        "appVersion": env!("CARGO_PKG_VERSION"),
+        "os": std::env::consts::OS,
+        "arch": std::env::consts::ARCH,
+        "mockMode": snapshot.mock_mode,
+        "subsystems": subsystems,
+        "preflight": {
+            "pass": passed,
+            "warn": warned,
+            "fail": failed,
+            "total": snapshot.preflight.len(),
+        },
+        "settings": settings,
+    });
+    serde_json::to_string_pretty(&bundle)
+        .map_err(|err| format!("Could not serialize diagnostic bundle: {err}"))
+}
+
+/// Export a sanitized snapshot for support: no credentials, tokens or PINs are included.
+#[tauri::command]
+fn export_diagnostic_bundle(state: State<SharedState>) -> Result<String, String> {
+    let snapshot = state.lock().map_err(|_| "State lock poisoned".to_string())?;
+    build_diagnostic_bundle(&snapshot)
+}
+
+/// Create (if needed) and reveal the folder holding settings.json.
+#[tauri::command]
+fn open_config_directory(app: tauri::AppHandle) -> Result<String, String> {
+    let directory = app
+        .path()
+        .app_config_dir()
+        .map_err(|err| format!("Could not resolve the configuration directory: {err}"))?;
+    std::fs::create_dir_all(&directory)
+        .map_err(|err| format!("Could not create the configuration directory: {err}"))?;
+
+    #[cfg(target_os = "macos")]
+    std::process::Command::new("open")
+        .arg(&directory)
+        .spawn()
+        .map_err(|err| format!("Could not open the configuration directory: {err}"))?;
+
+    #[cfg(target_os = "windows")]
+    std::process::Command::new("explorer")
+        .arg(&directory)
+        .spawn()
+        .map_err(|err| format!("Could not open the configuration directory: {err}"))?;
+
+    #[cfg(target_os = "linux")]
+    std::process::Command::new("xdg-open")
+        .arg(&directory)
+        .spawn()
+        .map_err(|err| format!("Could not open the configuration directory: {err}"))?;
+
+    Ok("Opened configuration directory".into())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -2549,6 +3052,9 @@ pub fn run() {
                 managed.attach_settings_path(config_dir.join("settings.json"));
             }
             let shared = managed.inner.clone();
+            // Settings IPC commands take `State<SharedState>` directly; register the same
+            // snapshot handle so they observe every change made through `ManagedState`.
+            app.manage(shared.clone());
             let persisted_settings = shared.lock().unwrap().settings.clone();
             let config = RuntimeConfig::from_env_and_settings(&persisted_settings);
             if config.live {
@@ -2647,7 +3153,14 @@ pub fn run() {
             send_audience_message,
             pin_audience_message,
             send_console_osc,
-            open_in_browser
+            open_in_browser,
+            test_subsystem_connection,
+            discover_lan_devices,
+            export_settings_bundle,
+            import_settings_bundle,
+            reset_settings_section,
+            export_diagnostic_bundle,
+            open_config_directory
         ])
         .build(tauri::generate_context!())
         .expect("error while building One Ring")
@@ -2659,4 +3172,103 @@ pub fn run() {
                 app_handle.state::<runtime::broadcast_worker_ipc::BroadcastWorkerSupervisor>().stop();
             }
         });
+}
+
+#[cfg(test)]
+mod settings_ipc_tests {
+    use super::*;
+    use state::{default_simulator_state, RtmpDestination};
+
+    #[tokio::test]
+    async fn connection_probe_reports_ok_and_latency_for_loopback_tcp() {
+        // A real listener is required for an actual round trip. Documentation examples
+        // elsewhere use RFC 5737 addresses such as 192.0.2.1.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind loopback listener");
+        let port = listener.local_addr().expect("listener address").port();
+        let server = tokio::spawn(async move {
+            let (_stream, _peer) = listener.accept().await.expect("accept probe");
+        });
+
+        let result = test_subsystem_connection("broadcast".into(), "127.0.0.1".into(), port)
+            .await
+            .expect("probe result");
+        assert_eq!(result["ok"], serde_json::json!(true));
+        assert_eq!(result["subsystem"], serde_json::json!("broadcast"));
+        assert_eq!(result["port"], serde_json::json!(port));
+        assert!(
+            result["latencyMs"].as_u64().is_some(),
+            "latencyMs must be reported: {result}"
+        );
+        server.await.expect("server task");
+    }
+
+    #[test]
+    fn probe_result_shape_uses_rfc5737_example_address() {
+        let result = probe_result(
+            "aoip",
+            "192.0.2.10",
+            8700,
+            false,
+            12,
+            "TCP connection failed",
+            "example failure",
+        );
+        assert_eq!(result["host"], serde_json::json!("192.0.2.10"));
+        assert_eq!(result["latencyMs"], serde_json::json!(12));
+        assert_eq!(result["ok"], serde_json::json!(false));
+    }
+
+    #[test]
+    fn settings_bundle_round_trips_and_rejects_invalid_pin_and_ports() {
+        let mut settings = AppSettings::default();
+        settings.general.engineer_pin = "1234".into();
+        settings.general.ui_scale = 1.25;
+        settings.console.ip_address = "192.0.2.10".into();
+
+        let bundle = build_settings_bundle(&settings);
+        assert!(bundle.contains("one-ring-settings-v1"));
+        let imported = parse_settings_bundle(&bundle).expect("wrapped bundle");
+        assert_eq!(imported.general.engineer_pin, "1234");
+        assert_eq!(imported.general.ui_scale, 1.25);
+        assert_eq!(imported.console.ip_address, "192.0.2.10");
+
+        let raw = serde_json::to_string(&settings).expect("serialize raw settings");
+        let imported_raw = parse_settings_bundle(&raw).expect("raw settings bundle");
+        assert_eq!(imported_raw.general.engineer_pin, "1234");
+
+        let mut bad_pin = settings.clone();
+        bad_pin.general.engineer_pin = "12ab".into();
+        assert!(parse_settings_bundle(&serde_json::to_string(&bad_pin).unwrap()).is_err());
+
+        let mut bad_port = settings.clone();
+        bad_port.console.osc_port = 0;
+        assert!(parse_settings_bundle(&serde_json::to_string(&bad_port).unwrap()).is_err());
+    }
+
+    #[test]
+    fn diagnostic_bundle_redacts_secrets_pins_and_stream_keys() {
+        let mut snapshot = default_simulator_state();
+        snapshot.settings.general.engineer_pin = "PIN_SENTINEL_2468".into();
+        snapshot.settings.slides.song_library_client_secret = "CLIENT_SECRET_SENTINEL".into();
+        snapshot.settings.sync.sync_token = "TOKEN_SENTINEL".into();
+        snapshot.settings.sync.account_email = "OWNER_EMAIL_SENTINEL".into();
+        snapshot.settings.broadcast.destinations.push(RtmpDestination {
+            id: "primary".into(),
+            platform: "generic".into(),
+            rtmp_url: "rtmp://192.0.2.20/live".into(),
+            stream_key: "STREAM_KEY_SENTINEL".into(),
+            enabled: true,
+        });
+
+        let diagnostics = build_diagnostic_bundle(&snapshot).expect("diagnostics");
+        assert!(!diagnostics.contains("PIN_SENTINEL_2468"));
+        assert!(!diagnostics.contains("CLIENT_SECRET_SENTINEL"));
+        assert!(!diagnostics.contains("TOKEN_SENTINEL"));
+        assert!(!diagnostics.contains("OWNER_EMAIL_SENTINEL"));
+        assert!(!diagnostics.contains("STREAM_KEY_SENTINEL"));
+        assert!(diagnostics.contains(REDACTED));
+        assert!(diagnostics.contains(env!("CARGO_PKG_VERSION")));
+    }
 }
