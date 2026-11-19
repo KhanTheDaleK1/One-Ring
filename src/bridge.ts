@@ -300,9 +300,23 @@ const blankSlides = (): SlideState => ({
   totalSlides: 0,
   currentText: "",
   nextText: "",
+  currentNotes: "",
+  nextNotes: "",
   cleared: false,
   stageMessage: "",
+  stageMessageVisible: false,
+  stageMessageFlash: false,
   transportLayer: "local",
+  transportTime: 0,
+  timers: [],
+  activeLayers: [],
+  screens: [],
+  screen: { black: false, clear: false, logo: false },
+  image: null,
+  playback: null,
+  connected: false,
+  lastUpdateMs: 0,
+  adapter: "local",
   slides: [],
 });
 
@@ -617,23 +631,198 @@ export const bridge = {
 
   async goToSlide(slideNumber: number): Promise<AppStateSnapshot> {
     if (isTauri()) {
-      // The native command surface only exposes relative slide actions today.
-      // Drive it to the requested index so Show Mode remains functional.
-      const current = await invokeTauri<AppStateSnapshot>("get_app_state");
-      const delta = slideNumber - current.slides.currentSlide;
-      if (delta === 0 && current.slides.cleared) {
-        return invokeTauri<AppStateSnapshot>("trigger_slide_action", { action: "clear" });
-      }
-      const action = delta >= 0 ? "next" : "prev";
-      let result = current;
-      for (let i = 0; i < Math.abs(delta); i += 1) {
-        result = await invokeTauri<AppStateSnapshot>("trigger_slide_action", { action });
-      }
-      return result;
+      return invokeTauri<AppStateSnapshot>("go_to_slide", { slideNumber });
     }
     applySlidePosition(simState, slideNumber);
     simState.eventLog.unshift(
       `[propresenter] Direct slide select -> ${simState.slides.currentSlide}/${simState.slides.totalSlides} '${simState.slides.presentationName}'`
+    );
+    return structuredClone(simState);
+  },
+
+  async controlPresentationTimer(operation: "start" | "stop" | "reset"): Promise<AppStateSnapshot> {
+    if (isTauri()) {
+      return invokeTauri<AppStateSnapshot>("control_presentation_timer", { operation });
+    }
+    if (simState.slides.timers.length) {
+      const timer = simState.slides.timers[0];
+      timer.state = operation === "start" ? "running" : "stopped";
+      if (operation === "reset") {
+        timer.time = 0;
+        timer.formatted = "00:00";
+      }
+    }
+    simState.eventLog.unshift(`[slides] local timer ${operation}`);
+    return structuredClone(simState);
+  },
+
+  async setStageMessage(message: string | null): Promise<AppStateSnapshot> {
+    if (isTauri()) {
+      return invokeTauri<AppStateSnapshot>("set_stage_message", { message });
+    }
+    const text = message ?? "";
+    simState.slides.stageMessage = text;
+    simState.slides.stageMessageVisible = text.trim().length > 0;
+    simState.eventLog.unshift(
+      `[slides] stage message ${text.trim() ? "set" : "cleared"} (local)`
+    );
+    return structuredClone(simState);
+  },
+
+  async setStageMessageFlag(field: "visible" | "flash", value: boolean): Promise<AppStateSnapshot> {
+    if (isTauri()) {
+      return invokeTauri<AppStateSnapshot>("set_stage_message_flag", { field, value });
+    }
+    if (field === "visible") simState.slides.stageMessageVisible = value;
+    if (field === "flash") simState.slides.stageMessageFlash = value;
+    return structuredClone(simState);
+  },
+
+  async controlProPresenterPlaylist(
+    kind: "media" | "audio",
+    direction: "next" | "previous"
+  ): Promise<AppStateSnapshot> {
+    if (isTauri()) {
+      return invokeTauri<AppStateSnapshot>("propresenter_playlist_control", { kind, direction });
+    }
+    simState.eventLog.unshift(`[propresenter] ${kind} playlist ${direction} (simulated)`);
+    return structuredClone(simState);
+  },
+
+  async controlProPresenterTransport(
+    layer: string,
+    operation: "play" | "pause" | "go_to_end"
+  ): Promise<AppStateSnapshot> {
+    if (isTauri()) {
+      return invokeTauri<AppStateSnapshot>("propresenter_transport_control", { layer, operation });
+    }
+    if (layer === "presentation" && simState.slides.playback) {
+      simState.slides.playback.isPlaying = operation === "play";
+    }
+    simState.eventLog.unshift(`[propresenter] ${layer} transport ${operation} (simulated)`);
+    return structuredClone(simState);
+  },
+
+  async seekProPresenterTransport(layer: string, seconds: number): Promise<AppStateSnapshot> {
+    if (isTauri()) {
+      return invokeTauri<AppStateSnapshot>("propresenter_transport_seek", { layer, seconds });
+    }
+    if (layer === "presentation" && simState.slides.playback) {
+      simState.slides.playback.positionMs = Math.max(0, seconds * 1000);
+    }
+    simState.eventLog.unshift(`[propresenter] ${layer} seek -> ${seconds.toFixed(1)}s (simulated)`);
+    return structuredClone(simState);
+  },
+
+  async triggerProPresenterClearGroup(id: string): Promise<AppStateSnapshot> {
+    if (isTauri()) {
+      return invokeTauri<AppStateSnapshot>("propresenter_clear_group", { id });
+    }
+    simState.eventLog.unshift(`[propresenter] clear group '${id}' (simulated)`);
+    return structuredClone(simState);
+  },
+
+  async refreshProPresenterCatalog(
+    kind:
+      | "looks"
+      | "look_current"
+      | "props"
+      | "macros"
+      | "prop_collections"
+      | "macro_collections"
+      | "clear_groups"
+  ): Promise<AppStateSnapshot> {
+    if (isTauri()) {
+      return invokeTauri<AppStateSnapshot>("propresenter_catalog", { kind });
+    }
+    simState.eventLog.unshift(`[propresenter] refresh ${kind} catalog (simulated)`);
+    return structuredClone(simState);
+  },
+
+  async triggerProPresenterResource(
+    action:
+      | "trigger_look"
+      | "trigger_prop"
+      | "clear_prop"
+      | "trigger_macro"
+      | "prop_auto_clear_pause"
+      | "prop_auto_clear_resume",
+    id: string
+  ): Promise<AppStateSnapshot> {
+    if (isTauri()) {
+      return invokeTauri<AppStateSnapshot>("propresenter_resource", { action, id });
+    }
+    simState.eventLog.unshift(`[propresenter] ${action} '${id}' (simulated)`);
+    return structuredClone(simState);
+  },
+
+  async controlEasyWorship(
+    action:
+      | "nextSlide"
+      | "prevSlide"
+      | "nextBuild"
+      | "prevBuild"
+      | "nextSchedule"
+      | "prevSchedule"
+      | "gotoStartSlide"
+      | "gotoStartPresentation"
+      | "Toggle"
+      | "Play"
+      | "Pause"
+      | "GetScheduleData"
+      | "GetLiveData"
+      | "GetCurrentImage"
+      | "Refresh"
+  ): Promise<AppStateSnapshot> {
+    if (isTauri()) {
+      return invokeTauri<AppStateSnapshot>("easyworship_control", { action });
+    }
+    simState.eventLog.unshift(`[easyworship] action ${action} (simulated)`);
+    if (action === "gotoStartSlide" || action === "gotoStartPresentation") {
+      applySlidePosition(simState, 1);
+    }
+    return structuredClone(simState);
+  },
+
+  async getEasyWorshipSlideImage(
+    rectype: string,
+    presRowid: string,
+    slideRowid: string,
+    revision: string
+  ): Promise<AppStateSnapshot> {
+    if (isTauri()) {
+      return invokeTauri<AppStateSnapshot>("easyworship_get_slide_image", {
+        rectype,
+        presRowid,
+        slideRowid,
+        revision,
+      });
+    }
+    simState.eventLog.unshift(
+      `[easyworship] getSlideImage ${rectype}/${presRowid}/${slideRowid} (simulated)`
+    );
+    return structuredClone(simState);
+  },
+
+  /** Raw JPEG bytes for the key in `state.slides.image`; null when no image is cached. */
+  async getEasyWorshipImage(key: string): Promise<Uint8Array | null> {
+    if (!isTauri() || !key) return null;
+    const bytes = await invokeTauri<number[] | null>("easyworship_image", { key });
+    return bytes ? new Uint8Array(bytes) : null;
+  },
+
+  /** Local display override only: the documented TCP catalog has no black/clear/logo toggle. */
+  async setEasyWorshipScreenFlag(
+    field: "black" | "clear" | "logo",
+    value: boolean
+  ): Promise<AppStateSnapshot> {
+    if (isTauri()) {
+      return invokeTauri<AppStateSnapshot>("easyworship_screen_flag", { field, value });
+    }
+    simState.slides.screen[field] = value;
+    if (field === "clear") simState.slides.cleared = value;
+    simState.eventLog.unshift(
+      `[easyworship] local-only ${field} override set to ${value} (simulated)`
     );
     return structuredClone(simState);
   },

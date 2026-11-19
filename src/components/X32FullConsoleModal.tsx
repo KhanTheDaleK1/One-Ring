@@ -1,3 +1,4 @@
+import { X32FxRackModal } from "./X32FxRackModal";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import {
@@ -181,25 +182,25 @@ export const X32FullConsoleModal: React.FC<X32FullConsoleModalProps> = ({
     "P16 Ultranet": { ...ROUTING_CONFIG["P16 Ultranet"].initialMap },
   }));
 
-  const [lastOsc, setLastOsc] = useState<string>("Connected to X32 OSC :10023 (Mixer Overview Ready)");
+  const [lastOsc, setLastOsc] = useState<string>("X32 OSC :10023 — Offline (Pair mixer in Settings)");
   const [draggingBandIdx, setDraggingBandIdx] = useState<number | null>(null);
   const [sendsOnFader, setSendsOnFader] = useState<boolean>(false);
   const [sofTarget, setSofTarget] = useState<string>("bus-01");
   const [sendLevels, setSendLevels] = useState<Record<string, Record<string, number>>>({});
   const [muteGroups, setMuteGroups] = useState<boolean[]>([false, false, false, false, false, false]);
   const [rtaEnabled, setRtaEnabled] = useState<boolean>(true);
-  const [rtaBars, setRtaBars] = useState<number[]>(() =>
-    Array.from({ length: 100 }, (_, i) => 0.15 + 0.25 * Math.sin(i * 0.18))
-  );
+  const [rtaBars, setRtaBars] = useState<number[]>(() => Array.from({ length: 100 }, () => 0));
   const [channelLinks, setChannelLinks] = useState<Record<string, boolean>>({});
   const [channelDelays, setChannelDelays] = useState<Record<string, number>>({});
   const [fxSlots, setFxSlots] = useState<FxSlotState[]>(() => buildInitialFxSlots());
+  const [fxRackOpen, setFxRackOpen] = useState<boolean>(false);
   const [sceneIndex, setSceneIndex] = useState<number>(1);
   const [automixGroups, setAutomixGroups] = useState<Record<string, "Off" | "X" | "Y">>({});
   const [talkbackA, setTalkbackA] = useState<boolean>(false);
   const [talkbackB, setTalkbackB] = useState<boolean>(false);
   const [clockSource, setClockSource] = useState<"48kHz Internal" | "AES50" | "Card">("48kHz Internal");
   const [mainLrDb, setMainLrDb] = useState<number>(-2.5);
+  const [mainLrMeterLevel] = useState<number>(-90);
   const [mainLrMute, setMainLrMute] = useState<boolean>(false);
   const [mainLrSolo, setMainLrSolo] = useState<boolean>(false);
   const [monoMcMode, setMonoMcMode] = useState<boolean>(false);
@@ -386,27 +387,7 @@ export const X32FullConsoleModal: React.FC<X32FullConsoleModalProps> = ({
     };
   }, [isOpen, embedded]);
 
-  useEffect(() => {
-    const active = embedded || isOpen;
-    if (!active || !rtaEnabled) return;
-    let phase = 0;
-    const timer = window.setInterval(() => {
-      if (hardwareRtaActiveRef.current) return;
-      phase += 0.25;
-      setRtaBars((prev) =>
-        prev.map((v, i) => {
-          const target =
-            0.12 +
-            0.28 * Math.exp(-Math.pow((i - 28) / 18, 2)) +
-            0.22 * Math.exp(-Math.pow((i - 62) / 14, 2)) +
-            0.14 * Math.abs(Math.sin(phase + i * 0.23)) +
-            0.08 * Math.random();
-          return Math.max(0.04, Math.min(0.92, v * 0.55 + target * 0.45));
-        })
-      );
-    }, 110);
-    return () => window.clearInterval(timer);
-  }, [isOpen, embedded, rtaEnabled]);
+  // RTA bars remain silent (0) until live x32://rta hardware frames arrive.
 
   const visibleChannels = useMemo(() => {
     if (activeBank === "ch1_32") return channels.filter((c) => c.bank === "ch1_16" || c.bank === "ch17_32");
@@ -681,6 +662,7 @@ export const X32FullConsoleModal: React.FC<X32FullConsoleModalProps> = ({
           channelLinks={channelLinks}
           clockSource={clockSource}
           mainLrDb={mainLrDb}
+          mainLrMeterLevel={mainLrMeterLevel}
           mainLrMute={mainLrMute}
           mainLrSolo={mainLrSolo}
           monoMcMode={monoMcMode}
@@ -1787,7 +1769,14 @@ export const X32FullConsoleModal: React.FC<X32FullConsoleModalProps> = ({
             );
           })}
         </div>
-      </div>
+      
+      {/* 8-Slot Virtual Stereo FX Rack Modal */}
+      <X32FxRackModal
+        isOpen={fxRackOpen}
+        onClose={() => setFxRackOpen(false)}
+        onEmitOsc={emitOsc}
+      />
+</div>
     </div>
   );
 

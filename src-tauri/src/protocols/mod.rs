@@ -12,6 +12,8 @@
 //! proprietary assets are reproduced here.
 
 pub mod dante;
+pub mod easyworship;
+pub mod easyworship_discovery;
 pub mod ndi;
 pub mod obs_streamlabs;
 pub mod propresenter;
@@ -94,17 +96,19 @@ pub enum DeviceKind {
     Obs,
     Streamlabs,
     ProPresenter,
+    EasyWorship,
     Unknown,
 }
 
 impl DeviceKind {
-    pub const ALL: [DeviceKind; 6] = [
+    pub const ALL: [DeviceKind; 7] = [
         DeviceKind::X32,
         DeviceKind::Dante,
         DeviceKind::Ndi,
         DeviceKind::Obs,
         DeviceKind::Streamlabs,
         DeviceKind::ProPresenter,
+        DeviceKind::EasyWorship,
     ];
 
     pub fn label(self) -> &'static str {
@@ -115,6 +119,7 @@ impl DeviceKind {
             DeviceKind::Obs => "OBS Studio",
             DeviceKind::Streamlabs => "Streamlabs Desktop",
             DeviceKind::ProPresenter => "ProPresenter",
+            DeviceKind::EasyWorship => "EasyWorship",
             DeviceKind::Unknown => "Unknown",
         }
     }
@@ -127,6 +132,7 @@ impl DeviceKind {
             DeviceKind::Obs => "OBS",
             DeviceKind::Streamlabs => "SLOBS",
             DeviceKind::ProPresenter => "ProPresenter",
+            DeviceKind::EasyWorship => "EasyWorship",
             DeviceKind::Unknown => "?",
         }
     }
@@ -201,6 +207,11 @@ impl DeviceCapabilities {
                 c.slides = true;
                 c.preroll = true;
                 c.recording = true;
+            }
+            DeviceKind::EasyWorship => {
+                // Remote control of live/schedule slides plus notes via the
+                // `_ezwremote._tcp` JSON-lines protocol.
+                c.slides = true;
             }
             DeviceKind::Unknown => {}
         }
@@ -414,6 +425,19 @@ impl ProtocolProbe for ProPresenterProbe {
     }
 }
 
+pub struct EasyWorshipProbe;
+impl ProtocolProbe for EasyWorshipProbe {
+    fn descriptor(&self) -> ProbeDescriptor {
+        ProbeDescriptor::new(
+            DeviceKind::EasyWorship,
+            "EasyWorship",
+            "<host>:<ephemeral-port>",
+            ProbeTransport::TcpConnect { default_port: 0 },
+            "mDNS _ezwremote._tcp then TCP JSON-lines connect/heartbeat pairing",
+        )
+    }
+}
+
 // -------------------------------------------------------------------------------------------------
 // Capability summary
 // -------------------------------------------------------------------------------------------------
@@ -491,6 +515,7 @@ pub fn default_probes() -> Vec<Box<dyn ProtocolProbe>> {
         Box::new(ObsProbe),
         Box::new(StreamlabsProbe),
         Box::new(ProPresenterProbe),
+        Box::new(EasyWorshipProbe),
     ]
 }
 
@@ -529,10 +554,14 @@ mod tests {
     #[test]
     fn preflight_rows_have_transport_labels() {
         let rows = default_capabilities_summary().preflight_rows();
-        assert_eq!(rows.len(), 6);
+        assert_eq!(rows.len(), 7);
         assert!(rows.iter().any(|r| r.transport == "udp"));
         assert!(rows.iter().any(|r| r.transport == "tcp"));
         assert!(rows.iter().any(|r| r.transport == "http"));
         assert!(rows.iter().any(|r| r.transport == "ws"));
     }
 }
+
+pub mod x32_scene;
+
+pub mod midi;

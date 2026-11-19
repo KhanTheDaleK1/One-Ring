@@ -220,6 +220,55 @@ export interface ServiceSong {
   slides: SlideCue[];
 }
 
+export interface PresentationTimer {
+  id: string;
+  name: string;
+  state: string;
+  time: number;
+  formatted: string;
+  countdown: boolean;
+}
+
+export interface ScreenOutput {
+  id: string;
+  name: string;
+  screenType: string;
+  width: number;
+  height: number;
+  enabled: boolean;
+}
+
+/** EasyWorship `status` output flags. These are reported state, not remote actions. */
+export interface ScreenFlags {
+  black: boolean;
+  clear: boolean;
+  logo: boolean;
+}
+
+/** Metadata for a cached JPEG preview; raw bytes are fetched separately by key. */
+export interface PresentationImage {
+  key: string;
+  source: "slide" | "current";
+  imagehash: string;
+  rectype: string;
+  presRowid: string;
+  slideRowid: string;
+  revision: string;
+  size: number;
+  updatedMs: number;
+}
+
+export interface PlaybackState {
+  layer: string;
+  isPlaying: boolean;
+  itemId: string;
+  name: string;
+  artist: string;
+  audioOnly: boolean;
+  durationMs: number;
+  positionMs: number;
+}
+
 export interface SlideState {
   app: string;
   playlistName: string;
@@ -228,9 +277,23 @@ export interface SlideState {
   totalSlides: number;
   currentText: string;
   nextText: string;
+  currentNotes: string;
+  nextNotes: string;
   cleared: boolean;
   stageMessage: string;
+  stageMessageVisible: boolean;
+  stageMessageFlash: boolean;
   transportLayer: string;
+  transportTime: number;
+  timers: PresentationTimer[];
+  activeLayers: string[];
+  screens: ScreenOutput[];
+  screen: ScreenFlags;
+  image?: PresentationImage | null;
+  playback?: PlaybackState | null;
+  connected: boolean;
+  lastUpdateMs: number;
+  adapter: string;
   /**
    * Live slide list for the active presentation. Optional so older native
    * backends still hydrate; the Show Mode grid synthesises placeholders when

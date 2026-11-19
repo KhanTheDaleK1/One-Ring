@@ -160,7 +160,7 @@ export const SecondaryOutputWindow: React.FC = () => {
   }, []);
 
   useEffect(() => {
-    if (outputType !== "multiview") return;
+    if (outputType !== "multiview" && outputType !== "stage") return;
     const timer = window.setInterval(() => {
       setClockText(new Date().toLocaleTimeString([], { hour12: false }));
     }, 1000);
@@ -552,6 +552,15 @@ export const SecondaryOutputWindow: React.FC = () => {
 
   // Stage Confidence Display Layout (High Contrast Yellow / Cyan Words)
   if (outputType === "stage") {
+    const linkLabel = slides?.connected
+      ? "LIVE"
+      : !slides || slides.adapter === "local"
+      ? "LOCAL"
+      : "NO LINK";
+    const linkColor = slides?.connected ? "#4ADE80" : !slides || slides.adapter === "local" ? "#64748B" : "#F87171";
+    const timers = slides?.timers ?? [];
+    const showMessage = Boolean(slides?.stageMessageVisible && slides?.stageMessage?.trim());
+
     return (
       <div
         style={{
@@ -568,10 +577,35 @@ export const SecondaryOutputWindow: React.FC = () => {
           overflow: "hidden",
         }}
       >
-        <div style={{ display: "flex", justifyContent: "space-between", color: "#64748B", fontSize: "2.2vh" }}>
+        <style>{`@keyframes oneringStageFlash { 0%,100% { opacity: 1; } 50% { opacity: 0.25; } }`}</style>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", color: "#64748B", fontSize: "2.2vh" }}>
           <span>ONE RING STAGE CONFIDENCE • {slides?.presentationName || "Standby"}</span>
-          <span>Slide {slides?.currentSlide || 0} / {slides?.totalSlides || 0}</span>
+          <span style={{ display: "flex", alignItems: "center", gap: "2vw" }}>
+            <span style={{ color: linkColor, fontWeight: 800 }}>{linkLabel}</span>
+            <span>Slide {slides?.currentSlide || 0} / {slides?.totalSlides || 0}</span>
+            <span className="mono">{clockText}</span>
+          </span>
         </div>
+
+        {showMessage && (
+          <div
+            style={{
+              alignSelf: "center",
+              marginTop: "1vh",
+              padding: "1.2vh 3vw",
+              border: "0.3vh solid #F59E0B",
+              borderRadius: "1vh",
+              background: "rgba(245,158,11,0.14)",
+              color: "#FCD34D",
+              fontSize: "3.4vh",
+              fontWeight: 800,
+              textAlign: "center",
+              animation: slides?.stageMessageFlash ? "oneringStageFlash 0.8s steps(2, end) infinite" : undefined,
+            }}
+          >
+            {slides?.stageMessage}
+          </div>
+        )}
 
         <div style={{ flex: 1, display: "flex", flexDirection: "column", justifyContent: "center" }}>
           <div style={{ color: "#EAB308", fontSize: "2.4vh", fontWeight: 800, textTransform: "uppercase", marginBottom: "1vh" }}>
@@ -580,6 +614,21 @@ export const SecondaryOutputWindow: React.FC = () => {
           <div style={{ fontSize: "6.5vh", fontWeight: 800, lineHeight: 1.25, whiteSpace: "pre-line" }}>
             {slides?.cleared ? "[CLEARED]" : currentSlide?.text || slides?.currentText || "—"}
           </div>
+          {slides?.currentNotes && (
+            <div
+              style={{
+                marginTop: "2vh",
+                color: "#A3B18A",
+                fontSize: "2.4vh",
+                lineHeight: 1.35,
+                whiteSpace: "pre-line",
+                maxWidth: "80%",
+              }}
+            >
+              <strong style={{ color: "#FBBF24" }}>NOTES: </strong>
+              {slides.currentNotes}
+            </div>
+          )}
         </div>
 
         <div style={{ borderTop: "2px solid #262626", paddingTop: "3vh" }}>
@@ -589,7 +638,37 @@ export const SecondaryOutputWindow: React.FC = () => {
           <div style={{ fontSize: "4.2vh", fontWeight: 600, color: "#94A3B8", lineHeight: 1.3, whiteSpace: "pre-line" }}>
             {slides?.nextText || "—"}
           </div>
+          {slides?.nextNotes && (
+            <div style={{ marginTop: "0.6vh", fontSize: "2vh", color: "#64748B", whiteSpace: "pre-line" }}>
+              {slides.nextNotes}
+            </div>
+          )}
         </div>
+
+        {timers.length > 0 && (
+          <div
+            style={{
+              marginTop: "2vh",
+              paddingTop: "1.6vh",
+              borderTop: "1px solid #1F2937",
+              display: "flex",
+              gap: "3vw",
+              alignItems: "center",
+              flexWrap: "wrap",
+            }}
+          >
+            {timers.slice(0, 4).map((timer) => (
+              <div key={timer.id} style={{ display: "flex", alignItems: "baseline", gap: "0.8vw" }}>
+                <span className="mono" style={{ fontSize: "3.6vh", fontWeight: 800, color: timer.state === "running" ? "#34D399" : "#E5E7EB" }}>
+                  {timer.formatted}
+                </span>
+                <span style={{ fontSize: "1.8vh", color: "#64748B", textTransform: "uppercase" }}>
+                  {timer.name}{timer.countdown ? " ↓" : ""}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     );
   }

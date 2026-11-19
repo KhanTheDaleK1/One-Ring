@@ -1,4 +1,5 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import { CcliSongSelectModal, SongSelectResult } from "./CcliSongSelectModal";
+import React, { useEffect, useRef, useState } from "react";
 import {
   Play,
   Undo2,
@@ -32,7 +33,48 @@ interface ShowModeViewProps {
   onRecallCamera: (presetId: string) => void;
   onSlideAction: (action: "prev" | "next" | "clear") => void;
   onSelectSlide: (slideNumber: number) => void;
+  onTimerControl: (operation: "start" | "stop" | "reset") => void;
+  onStageMessage: (message: string | null) => void;
+  onStageMessageFlag: (field: "visible" | "flash", value: boolean) => void;
   onBroadcastToggle: (targetId: string, live: boolean) => void;
+  onPlaylistControl?: (kind: "media" | "audio", direction: "next" | "previous") => void;
+  onTransportControl?: (layer: string, operation: "play" | "pause" | "go_to_end") => void;
+  onTransportSeek?: (layer: string, seconds: number) => void;
+  onClearGroup?: (id: string) => void;
+  onRefreshProPresenterCatalog?: (
+    kind:
+      | "looks"
+      | "look_current"
+      | "props"
+      | "macros"
+      | "prop_collections"
+      | "macro_collections"
+      | "clear_groups"
+  ) => void;
+  onProPresenterResource?: (
+    action:
+      | "trigger_look"
+      | "trigger_prop"
+      | "clear_prop"
+      | "trigger_macro"
+      | "prop_auto_clear_pause"
+      | "prop_auto_clear_resume",
+    id: string
+  ) => void;
+  onEasyWorshipControl?: (
+    action:
+      | "gotoStartSlide"
+      | "gotoStartPresentation"
+      | "Toggle"
+      | "Play"
+      | "Pause"
+      | "GetScheduleData"
+      | "GetLiveData"
+      | "GetCurrentImage"
+      | "Refresh"
+  ) => void;
+  onEasyWorshipScreenFlag?: (field: "black" | "clear" | "logo", value: boolean) => void;
+  onEasyWorshipImage?: (key: string) => Promise<Uint8Array | null>;
 }
 
 const fmtDuration = (sec: number) => {
@@ -75,7 +117,19 @@ export const ShowModeView: React.FC<ShowModeViewProps> = ({
   onRecallCamera,
   onSlideAction,
   onSelectSlide,
+  onTimerControl,
+  onStageMessage,
+  onStageMessageFlag,
   onBroadcastToggle,
+  onPlaylistControl,
+  onTransportControl,
+  onTransportSeek,
+  onClearGroup,
+  onRefreshProPresenterCatalog,
+  onProPresenterResource,
+  onEasyWorshipControl,
+  onEasyWorshipScreenFlag,
+  onEasyWorshipImage,
 }) => {
   const nextCueIndex = Math.min(state.cues.length - 1, state.activeCueIndex + 1);
   const nextCue = state.cues[nextCueIndex];
@@ -84,43 +138,61 @@ export const ShowModeView: React.FC<ShowModeViewProps> = ({
   const [pendingMute, setPendingMute] = useState<DcaChannel | null>(null);
   const [stageSeconds, setStageSeconds] = useState(0);
   const [stageRunning, setStageRunning] = useState(false);
+  const [messageDraft, setMessageDraft] = useState("");
+  const [clearGroupDraft, setClearGroupDraft] = useState("");
+  const [lookDraft, setLookDraft] = useState("");
+  const [propDraft, setPropDraft] = useState("");
+  const [macroDraft, setMacroDraft] = useState("");
+  const [imageUrl, setImageUrl] = useState<string | null>(null);
+  const messageInputRef = useRef<HTMLInputElement>(null);
+  const fetchImageRef = useRef(onEasyWorshipImage);
+  fetchImageRef.current = onEasyWorshipImage;
+  const imageKey = state.slides.image?.key ?? null;
 
-  const slideItems: SlideCue[] = useMemo(() => {
-    if (state.slides.slides && state.slides.slides.length > 0) {
-      return state.slides.slides;
+  useEffect(() => {
+    let cancelled = false;
+    let objectUrl: string | null = null;
+    setImageUrl(null);
+    if (imageKey && fetchImageRef.current) {
+      fetchImageRef.current(imageKey)
+        .then((bytes) => {
+          if (cancelled || !bytes) return;
+          const buffer = bytes.buffer.slice(
+            bytes.byteOffset,
+            bytes.byteOffset + bytes.byteLength
+          ) as ArrayBuffer;
+          objectUrl = URL.createObjectURL(new Blob([buffer], { type: "image/jpeg" }));
+          setImageUrl(objectUrl);
+        })
+        .catch(() => setImageUrl(null));
     }
-    const total = Math.max(1, state.slides.totalSlides);
-    const current = state.slides.currentSlide;
-    return Array.from({ length: total }, (_, index) => {
-      const number = index + 1;
-      return {
-        id: `fallback-slide-${number}`,
-        number,
-        section: number === current ? "LIVE" : number === current + 1 ? "NEXT" : "SLIDE",
-        title: `Slide ${number}`,
-        text:
-          number === current
-            ? state.slides.currentText
-            : number === current + 1
-            ? state.slides.nextText
-            : `Slide ${number} is ready.`,
-        kind: "media" as const,
-      };
-    });
-  }, [state.slides]);
+    return () => {
+      cancelled = true;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [imageKey]);
 
+  const slideItems: SlideCue[] = state.slides.slides ?? [];
   const currentSlide =
     slideItems[Math.max(0, Math.min(slideItems.length - 1, state.slides.currentSlide - 1))] ??
-    slideItems[0];
+    null;
   const nextSlide = slideItems[state.slides.currentSlide] ?? null;
+  const liveTimer = state.slides.timers?.[0];
+  const timerSeconds = liveTimer ? liveTimer.time : stageSeconds;
+  const timerRunning = liveTimer ? liveTimer.state === "running" : stageRunning;
+  const slideLinkLabel = state.slides.connected
+    ? "LIVE"
+    : state.slides.adapter === "local"
+    ? "LOCAL"
+    : "NO LINK";
   const activeProgram = state.broadcasts.find((b) => b.live);
   const programElapsed = Math.max(0, ...state.broadcasts.map((b) => b.elapsedSec));
 
   useEffect(() => {
-    if (!stageRunning) return;
+    if (liveTimer || !stageRunning) return;
     const id = window.setInterval(() => setStageSeconds((seconds) => seconds + 1), 1000);
     return () => window.clearInterval(id);
-  }, [stageRunning]);
+  }, [liveTimer, stageRunning]);
 
   const goNextCue = () => {
     const now = performance.now();
@@ -159,6 +231,12 @@ export const ShowModeView: React.FC<ShowModeViewProps> = ({
       } else if ((e.metaKey || e.ctrlKey) && e.code === "KeyZ") {
         e.preventDefault();
         if (state.canUndo) onUndoCue();
+      } else if (!e.metaKey && !e.ctrlKey && !e.altKey && e.code === "KeyM") {
+        e.preventDefault();
+        messageInputRef.current?.focus();
+      } else if (!e.metaKey && !e.ctrlKey && !e.altKey && e.code === "KeyT" && liveTimer) {
+        e.preventDefault();
+        onTimerControl(timerRunning ? "stop" : "start");
       } else if (!e.metaKey && !e.ctrlKey && !e.altKey) {
         const digit = /^Digit([1-8])$/.exec(e.code);
         if (digit) {
@@ -176,10 +254,13 @@ export const ShowModeView: React.FC<ShowModeViewProps> = ({
     state.cues.length,
     state.canUndo,
     state.cameras,
+    liveTimer,
+    timerRunning,
     onTriggerCue,
     onUndoCue,
     onSlideAction,
     onRecallCamera,
+    onTimerControl,
   ]);
 
   const requestDcaToggle = (dca: DcaChannel) => {
@@ -390,6 +471,16 @@ export const ShowModeView: React.FC<ShowModeViewProps> = ({
               >
                 <Presentation size={11} /> {state.slides.app.toUpperCase()}
               </span>
+              <span
+                className="mono"
+                style={{
+                  fontSize: 10,
+                  fontWeight: 700,
+                  color: state.slides.connected ? "#34D399" : state.slides.adapter === "local" ? "#9CA3AF" : "#F87171",
+                }}
+              >
+                {slideLinkLabel}
+              </span>
               <span className="mono" style={{ fontSize: 11, color: state.slides.cleared ? "#FBBF24" : "#34D399" }}>
                 {state.slides.cleared
                   ? "CLEARED"
@@ -419,29 +510,50 @@ export const ShowModeView: React.FC<ShowModeViewProps> = ({
                 flexShrink: 0,
               }}
             >
-              <Timer size={13} color="#9CA3AF" />
-              <span className="mono" style={{ fontSize: 13, fontWeight: 700, minWidth: 44, textAlign: "center" }}>
-                {fmtDuration(stageSeconds)}
+              <Timer size={13} color={liveTimer ? "#34D399" : "#9CA3AF"} />
+              <span
+                className="mono"
+                title={liveTimer ? `${liveTimer.name} (live)` : "Local service timer"}
+                style={{ fontSize: 13, fontWeight: 700, minWidth: 44, textAlign: "center" }}
+              >
+                {liveTimer?.formatted || fmtDuration(timerSeconds)}
               </span>
               <button
                 type="button"
                 className="btn"
-                onClick={() => setStageRunning((running) => !running)}
-                title={stageRunning ? "Pause stage timer" : "Start stage timer"}
-                aria-label={stageRunning ? "Pause stage timer" : "Start stage timer"}
+                onClick={() =>
+                  liveTimer
+                    ? onTimerControl(timerRunning ? "stop" : "start")
+                    : setStageRunning((running) => !running)
+                }
+                title={
+                  liveTimer
+                    ? `${timerRunning ? "Stop" : "Start"} ${liveTimer.name} (T)`
+                    : timerRunning
+                    ? "Pause local stage timer"
+                    : "Start local stage timer"
+                }
+                aria-label={
+                  liveTimer
+                    ? `${timerRunning ? "Stop" : "Start"} ${liveTimer.name}`
+                    : timerRunning
+                    ? "Pause local stage timer"
+                    : "Start local stage timer"
+                }
                 style={{ height: 30, width: 30, padding: 0, display: "grid", placeItems: "center" }}
               >
-                {stageRunning ? <Pause size={13} /> : <Play size={13} />}
+                {timerRunning ? <Pause size={13} /> : <Play size={13} />}
               </button>
               <button
                 type="button"
                 className="btn"
-                onClick={() => {
-                  setStageRunning(false);
-                  setStageSeconds(0);
-                }}
-                title="Reset stage timer"
-                aria-label="Reset stage timer"
+                onClick={() =>
+                  liveTimer
+                    ? onTimerControl("reset")
+                    : (setStageRunning(false), setStageSeconds(0))
+                }
+                title={liveTimer ? `Reset ${liveTimer.name}` : "Reset local stage timer"}
+                aria-label={liveTimer ? `Reset ${liveTimer.name}` : "Reset local stage timer"}
                 style={{ height: 30, width: 30, padding: 0, display: "grid", placeItems: "center" }}
               >
                 <RotateCcw size={13} />
@@ -461,6 +573,23 @@ export const ShowModeView: React.FC<ShowModeViewProps> = ({
               transition: "opacity 0.15s ease",
             }}
           >
+            {slideItems.length === 0 && (
+              <div
+                style={{
+                  gridColumn: "1 / -1",
+                  padding: "22px 16px",
+                  borderRadius: 10,
+                  border: "1px dashed #374151",
+                  background: "#121821",
+                  color: "#9CA3AF",
+                  fontSize: 12,
+                  lineHeight: 1.5,
+                  textAlign: "center",
+                }}
+              >
+                No live presentation. Open a song in the Slides canvas or connect ProPresenter / EasyWorship to populate this grid.
+              </div>
+            )}
             {slideItems.map((slide, index) => {
               const isCurrent = slide.number === state.slides.currentSlide;
               const isNext = slide.number === state.slides.currentSlide + 1;
@@ -584,6 +713,412 @@ export const ShowModeView: React.FC<ShowModeViewProps> = ({
             </button>
           </div>
 
+          {state.slides.adapter === "propresenter" && (
+            <div
+              style={{
+                marginTop: 10,
+                paddingTop: 8,
+                borderTop: "1px solid #2A3241",
+                display: "grid",
+                gap: 6,
+              }}
+            >
+              <div style={{ ...sectionLabelStyle, fontSize: 10 }}>MEDIA &amp; TRANSPORT</div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 6 }}>
+                <button
+                  type="button"
+                  className="btn"
+                  disabled={!onPlaylistControl}
+                  onClick={() => onPlaylistControl?.("media", "previous")}
+                  style={{ height: 34, fontSize: 11 }}
+                >
+                  ◀ Media
+                </button>
+                <button
+                  type="button"
+                  className="btn"
+                  disabled={!onPlaylistControl}
+                  onClick={() => onPlaylistControl?.("media", "next")}
+                  style={{ height: 34, fontSize: 11 }}
+                >
+                  Media ▶
+                </button>
+                <button
+                  type="button"
+                  className="btn"
+                  disabled={!onPlaylistControl}
+                  onClick={() => onPlaylistControl?.("audio", "previous")}
+                  style={{ height: 34, fontSize: 11 }}
+                >
+                  ◀ Audio
+                </button>
+                <button
+                  type="button"
+                  className="btn"
+                  disabled={!onPlaylistControl}
+                  onClick={() => onPlaylistControl?.("audio", "next")}
+                  style={{ height: 34, fontSize: 11 }}
+                >
+                  Audio ▶
+                </button>
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 6 }}>
+                <button
+                  type="button"
+                  className="btn"
+                  disabled={!onTransportControl}
+                  onClick={() => onTransportControl?.("presentation", "play")}
+                  style={{ height: 34, fontSize: 11, display: "flex", alignItems: "center", justifyContent: "center", gap: 4 }}
+                >
+                  <Play size={12} /> Play
+                </button>
+                <button
+                  type="button"
+                  className="btn"
+                  disabled={!onTransportControl}
+                  onClick={() => onTransportControl?.("presentation", "pause")}
+                  style={{ height: 34, fontSize: 11, display: "flex", alignItems: "center", justifyContent: "center", gap: 4 }}
+                >
+                  <Pause size={12} /> Pause
+                </button>
+                <button
+                  type="button"
+                  className="btn"
+                  disabled={!onTransportSeek}
+                  onClick={() => onTransportSeek?.("presentation", 0)}
+                  style={{ height: 34, fontSize: 11 }}
+                >
+                  Seek 0:00
+                </button>
+              </div>
+              {state.slides.playback && (
+                <div className="mono" style={{ fontSize: 10, color: "#9CA3AF" }}>
+                  {state.slides.playback.name || state.slides.playback.itemId || "No item"} ·{" "}
+                  {Math.floor(state.slides.playback.positionMs / 1000)}s /{" "}
+                  {Math.floor(state.slides.playback.durationMs / 1000)}s ·{" "}
+                  {state.slides.playback.isPlaying ? "PLAYING" : "PAUSED"}
+                </div>
+              )}
+              <div style={{ display: "flex", gap: 6 }}>
+                <input
+                  className="mono"
+                  value={clearGroupDraft}
+                  onChange={(e) => setClearGroupDraft(e.target.value)}
+                  placeholder="Clear group id"
+                  aria-label="Clear group id"
+                  style={{
+                    flex: 1,
+                    minWidth: 0,
+                    height: 32,
+                    padding: "0 8px",
+                    borderRadius: 6,
+                    border: "1px solid #2E3746",
+                    background: "#0F141C",
+                    color: "#E5E7EB",
+                    fontSize: 11,
+                  }}
+                />
+                <button
+                  type="button"
+                  className="btn"
+                  disabled={!onClearGroup || !clearGroupDraft.trim()}
+                  onClick={() => {
+                    onClearGroup?.(clearGroupDraft.trim());
+                    setClearGroupDraft("");
+                  }}
+                  style={{ height: 32, fontSize: 11 }}
+                >
+                  Clear group
+                </button>
+              </div>
+              <div style={{ ...sectionLabelStyle, fontSize: 10 }}>LOOKS / PROPS / MACROS</div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 6 }}>
+                <button
+                  type="button"
+                  className="btn"
+                  disabled={!onRefreshProPresenterCatalog}
+                  onClick={() => onRefreshProPresenterCatalog?.("looks")}
+                  style={{ height: 30, fontSize: 10 }}
+                  title="Refresh /v1/looks; raw JSON is logged (schema undocumented)"
+                >
+                  Refresh looks
+                </button>
+                <button
+                  type="button"
+                  className="btn"
+                  disabled={!onRefreshProPresenterCatalog}
+                  onClick={() => onRefreshProPresenterCatalog?.("look_current")}
+                  style={{ height: 30, fontSize: 10 }}
+                >
+                  Current look
+                </button>
+                <button
+                  type="button"
+                  className="btn"
+                  disabled={!onRefreshProPresenterCatalog}
+                  onClick={() => onRefreshProPresenterCatalog?.("props")}
+                  style={{ height: 30, fontSize: 10 }}
+                >
+                  Refresh props
+                </button>
+                <button
+                  type="button"
+                  className="btn"
+                  disabled={!onRefreshProPresenterCatalog}
+                  onClick={() => onRefreshProPresenterCatalog?.("macros")}
+                  style={{ height: 30, fontSize: 10 }}
+                >
+                  Refresh macros
+                </button>
+              </div>
+              <div style={{ display: "grid", gap: 6 }}>
+                <div style={{ display: "flex", gap: 6 }}>
+                  <input
+                    className="mono"
+                    value={lookDraft}
+                    onChange={(e) => setLookDraft(e.target.value)}
+                    placeholder="Look id / UUID"
+                    aria-label="Look id"
+                    style={{
+                      flex: 1,
+                      minWidth: 0,
+                      height: 30,
+                      padding: "0 8px",
+                      borderRadius: 6,
+                      border: "1px solid #2E3746",
+                      background: "#0F141C",
+                      color: "#E5E7EB",
+                      fontSize: 10,
+                    }}
+                  />
+                  <button
+                    type="button"
+                    className="btn"
+                    disabled={!onProPresenterResource || !lookDraft.trim()}
+                    onClick={() => {
+                      onProPresenterResource?.("trigger_look", lookDraft.trim());
+                      setLookDraft("");
+                    }}
+                    style={{ height: 30, fontSize: 10 }}
+                  >
+                    Trigger look
+                  </button>
+                </div>
+                <div style={{ display: "flex", gap: 6 }}>
+                  <input
+                    className="mono"
+                    value={propDraft}
+                    onChange={(e) => setPropDraft(e.target.value)}
+                    placeholder="Prop id / UUID"
+                    aria-label="Prop id"
+                    style={{
+                      flex: 1,
+                      minWidth: 0,
+                      height: 30,
+                      padding: "0 8px",
+                      borderRadius: 6,
+                      border: "1px solid #2E3746",
+                      background: "#0F141C",
+                      color: "#E5E7EB",
+                      fontSize: 10,
+                    }}
+                  />
+                  <button
+                    type="button"
+                    className="btn"
+                    disabled={!onProPresenterResource || !propDraft.trim()}
+                    onClick={() => onProPresenterResource?.("trigger_prop", propDraft.trim())}
+                    style={{ height: 30, fontSize: 10 }}
+                  >
+                    Trigger
+                  </button>
+                  <button
+                    type="button"
+                    className="btn"
+                    disabled={!onProPresenterResource || !propDraft.trim()}
+                    onClick={() => onProPresenterResource?.("clear_prop", propDraft.trim())}
+                    style={{ height: 30, fontSize: 10 }}
+                  >
+                    Clear
+                  </button>
+                </div>
+                <div style={{ display: "flex", gap: 6 }}>
+                  <input
+                    className="mono"
+                    value={macroDraft}
+                    onChange={(e) => setMacroDraft(e.target.value)}
+                    placeholder="Macro id / UUID"
+                    aria-label="Macro id"
+                    style={{
+                      flex: 1,
+                      minWidth: 0,
+                      height: 30,
+                      padding: "0 8px",
+                      borderRadius: 6,
+                      border: "1px solid #2E3746",
+                      background: "#0F141C",
+                      color: "#E5E7EB",
+                      fontSize: 10,
+                    }}
+                  />
+                  <button
+                    type="button"
+                    className="btn"
+                    disabled={!onProPresenterResource || !macroDraft.trim()}
+                    onClick={() => {
+                      onProPresenterResource?.("trigger_macro", macroDraft.trim());
+                      setMacroDraft("");
+                    }}
+                    style={{ height: 30, fontSize: 10 }}
+                  >
+                    Trigger macro
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {state.slides.adapter === "easyworship" && (
+            <div
+              style={{
+                marginTop: 10,
+                paddingTop: 8,
+                borderTop: "1px solid #2A3241",
+                display: "grid",
+                gap: 6,
+              }}
+            >
+              <div style={{ ...sectionLabelStyle, fontSize: 10 }}>EASYWORSHIP TRANSPORT</div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 6 }}>
+                <button
+                  type="button"
+                  className="btn"
+                  disabled={!onEasyWorshipControl}
+                  onClick={() => onEasyWorshipControl?.("gotoStartSlide")}
+                  style={{ height: 34, fontSize: 11 }}
+                >
+                  Start slide
+                </button>
+                <button
+                  type="button"
+                  className="btn"
+                  disabled={!onEasyWorshipControl}
+                  onClick={() => onEasyWorshipControl?.("gotoStartPresentation")}
+                  style={{ height: 34, fontSize: 11 }}
+                >
+                  Start pres
+                </button>
+                <button
+                  type="button"
+                  className="btn"
+                  disabled={!onEasyWorshipControl}
+                  onClick={() => onEasyWorshipControl?.("Toggle")}
+                  style={{ height: 34, fontSize: 11 }}
+                >
+                  Toggle media
+                </button>
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
+                <button
+                  type="button"
+                  className="btn"
+                  disabled={!onEasyWorshipControl}
+                  onClick={() => onEasyWorshipControl?.("Play")}
+                  style={{ height: 34, fontSize: 11, display: "flex", alignItems: "center", justifyContent: "center", gap: 4 }}
+                >
+                  <Play size={12} /> Play
+                </button>
+                <button
+                  type="button"
+                  className="btn"
+                  disabled={!onEasyWorshipControl}
+                  onClick={() => onEasyWorshipControl?.("Pause")}
+                  style={{ height: 34, fontSize: 11, display: "flex", alignItems: "center", justifyContent: "center", gap: 4 }}
+                >
+                  <Pause size={12} /> Pause
+                </button>
+              </div>
+              <div style={{ ...sectionLabelStyle, fontSize: 10 }}>OUTPUT FLAGS</div>
+              <div className="mono" style={{ fontSize: 10, color: "#9CA3AF" }}>
+                Reported: black {state.slides.screen.black ? "ON" : "off"} · clear{" "}
+                {state.slides.screen.clear ? "ON" : "off"} · logo{" "}
+                {state.slides.screen.logo ? "ON" : "off"}
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 6 }}>
+                {(["black", "clear", "logo"] as const).map((flag) => (
+                  <button
+                    key={flag}
+                    type="button"
+                    className="btn"
+                    disabled={!onEasyWorshipScreenFlag}
+                    onClick={() => onEasyWorshipScreenFlag?.(flag, !state.slides.screen[flag])}
+                    style={{
+                      height: 30,
+                      fontSize: 10,
+                      borderColor: state.slides.screen[flag] ? "#F59E0B" : "#2E3746",
+                      color: state.slides.screen[flag] ? "#FBBF24" : undefined,
+                    }}
+                    title="Local display override only — no remote TCP toggle is documented; the next status report overwrites it"
+                  >
+                    {flag.toUpperCase()} {state.slides.screen[flag] ? "ON" : "OFF"}
+                  </button>
+                ))}
+              </div>
+              <div style={{ ...sectionLabelStyle, fontSize: 10 }}>JPEG PREVIEW</div>
+              {state.slides.image ? (
+                <div style={{ display: "grid", gap: 6 }}>
+                  {imageUrl ? (
+                    <img
+                      src={imageUrl}
+                      alt="EasyWorship live preview"
+                      style={{
+                        width: "100%",
+                        maxHeight: 180,
+                        objectFit: "contain",
+                        borderRadius: 6,
+                        border: "1px solid #2A3241",
+                        background: "#000",
+                      }}
+                    />
+                  ) : (
+                    <div className="mono" style={{ fontSize: 10, color: "#9CA3AF" }}>
+                      Metadata only — raw JPEG unavailable in simulator mode
+                    </div>
+                  )}
+                  <div className="mono" style={{ fontSize: 10, color: "#9CA3AF" }}>
+                    {state.slides.image.source} · {state.slides.image.size} bytes ·{" "}
+                    {state.slides.image.imagehash || "no hash"}
+                  </div>
+                </div>
+              ) : (
+                <div className="mono" style={{ fontSize: 10, color: "#9CA3AF" }}>
+                  No JPEG received yet
+                </div>
+              )}
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
+                <button
+                  type="button"
+                  className="btn"
+                  disabled={!onEasyWorshipControl}
+                  onClick={() => onEasyWorshipControl?.("GetCurrentImage")}
+                  style={{ height: 30, fontSize: 10 }}
+                >
+                  Request live image
+                </button>
+                <button
+                  type="button"
+                  className="btn"
+                  disabled={!onEasyWorshipControl}
+                  onClick={() => onEasyWorshipControl?.("Refresh")}
+                  style={{ height: 30, fontSize: 10 }}
+                  title="Request a fresh status report; slide/image follow-ups fire on revision changes"
+                >
+                  Refresh status
+                </button>
+              </div>
+            </div>
+          )}
+
           <div
             className="mono"
             style={{
@@ -601,6 +1136,138 @@ export const ShowModeView: React.FC<ShowModeViewProps> = ({
             <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", textAlign: "right" }}>
               <strong style={{ color: "#34D399" }}>NEXT:</strong> {nextSlide?.text ?? "End of presentation"}
             </span>
+          </div>
+          {(state.slides.currentNotes || state.slides.nextNotes) && (
+            <div
+              className="mono"
+              style={{
+                marginTop: 6,
+                padding: "6px 8px",
+                borderRadius: 7,
+                border: "1px solid #2A3241",
+                background: "#0F141C",
+                fontSize: 10,
+                color: "#CBD5E1",
+                lineHeight: 1.4,
+              }}
+            >
+              <strong style={{ color: "#FBBF24" }}>NOTES:</strong>{" "}
+              {state.slides.currentNotes || "—"}
+              {state.slides.nextNotes ? `  ·  NEXT: ${state.slides.nextNotes}` : ""}
+            </div>
+          )}
+
+          <div
+            style={{
+              marginTop: 8,
+              paddingTop: 8,
+              borderTop: "1px solid #26303E",
+              display: "grid",
+              gap: 6,
+            }}
+          >
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+              <span className="mono" style={{ fontSize: 10, color: "#9CA3AF", fontWeight: 700 }}>
+                STAGE MESSAGE (M)
+              </span>
+              <span className="mono" style={{ fontSize: 9, color: "#6B7280" }}>
+                {state.slides.connected
+                  ? state.slides.adapter === "easyworship"
+                    ? "EASYWORSHIP"
+                    : "PROPRESENTER"
+                  : "LOCAL DISPLAY"}
+              </span>
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) auto auto", gap: 6 }}>
+              <input
+                ref={messageInputRef}
+                value={messageDraft}
+                onChange={(e) => setMessageDraft(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") onStageMessage(messageDraft.trim() || null);
+                }}
+                placeholder="e.g. Pastor enters in 2 minutes"
+                aria-label="Stage message text"
+                style={{
+                  minWidth: 0,
+                  height: 30,
+                  padding: "0 8px",
+                  borderRadius: 7,
+                  border: "1px solid #2A3241",
+                  background: "#0F141C",
+                  color: "#E5E7EB",
+                  fontSize: 11,
+                }}
+              />
+              <button
+                type="button"
+                className="btn"
+                onClick={() => onStageMessage(messageDraft.trim() || null)}
+                title="Send stage message"
+                style={{ height: 30, padding: "0 10px", fontSize: 11 }}
+              >
+                Set
+              </button>
+              <button
+                type="button"
+                className="btn"
+                onClick={() => {
+                  onStageMessage(null);
+                  setMessageDraft("");
+                }}
+                title="Clear stage message"
+                style={{ height: 30, padding: "0 10px", fontSize: 11 }}
+              >
+                Clear
+              </button>
+            </div>
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+              <button
+                type="button"
+                className="btn"
+                onClick={() => onStageMessageFlag("visible", !state.slides.stageMessageVisible)}
+                title="Show or hide the message on the stage display (local)"
+                style={{
+                  height: 26,
+                  padding: "0 9px",
+                  fontSize: 10,
+                  color: state.slides.stageMessageVisible ? "#FBBF24" : "#9CA3AF",
+                }}
+              >
+                {state.slides.stageMessageVisible ? "Hide on stage" : "Show on stage"}
+              </button>
+              <button
+                type="button"
+                className="btn"
+                onClick={() => onStageMessageFlag("flash", !state.slides.stageMessageFlash)}
+                title="Flash the stage message on the stage display (local)"
+                style={{
+                  height: 26,
+                  padding: "0 9px",
+                  fontSize: 10,
+                  color: state.slides.stageMessageFlash ? "#FBBF24" : "#9CA3AF",
+                }}
+              >
+                {state.slides.stageMessageFlash ? "Flash: ON" : "Flash: OFF"}
+              </button>
+            </div>
+            {state.slides.stageMessageVisible && state.slides.stageMessage && (
+              <div
+                className="mono"
+                style={{
+                  padding: "6px 8px",
+                  borderRadius: 7,
+                  border: "1px solid #B45309",
+                  background: "rgba(245,158,11,0.12)",
+                  color: "#FCD34D",
+                  fontSize: 11,
+                  fontWeight: 700,
+                  textAlign: "center",
+                }}
+              >
+                {state.slides.stageMessage}
+              </div>
+            )}
           </div>
         </div>
 

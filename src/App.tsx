@@ -544,7 +544,33 @@ export const App: React.FC = () => {
           onRecallCamera={(id) => bridge.recallCameraPreset(id).then(setState)}
           onSlideAction={(act) => bridge.triggerSlideAction(act).then(setState)}
           onSelectSlide={(slideNumber) => bridge.goToSlide(slideNumber).then(setState)}
+          onTimerControl={(operation) => bridge.controlPresentationTimer(operation).then(setState)}
+          onStageMessage={(message) => bridge.setStageMessage(message).then(setState)}
+          onStageMessageFlag={(field, value) => bridge.setStageMessageFlag(field, value).then(setState)}
           onBroadcastToggle={(id, live) => bridge.setBroadcastState(id, live).then(setState)}
+          onPlaylistControl={(kind, direction) =>
+            bridge.controlProPresenterPlaylist(kind, direction).then(setState)
+          }
+          onTransportControl={(layer, operation) =>
+            bridge.controlProPresenterTransport(layer, operation).then(setState)
+          }
+          onTransportSeek={(layer, seconds) =>
+            bridge.seekProPresenterTransport(layer, seconds).then(setState)
+          }
+          onClearGroup={(id) => bridge.triggerProPresenterClearGroup(id).then(setState)}
+          onRefreshProPresenterCatalog={(kind) =>
+            bridge.refreshProPresenterCatalog(kind).then(setState)
+          }
+          onProPresenterResource={(action, id) =>
+            bridge.triggerProPresenterResource(action, id).then(setState)
+          }
+          onEasyWorshipControl={(action) =>
+            bridge.controlEasyWorship(action).then(setState)
+          }
+          onEasyWorshipScreenFlag={(field, value) =>
+            bridge.setEasyWorshipScreenFlag(field, value).then(setState)
+          }
+          onEasyWorshipImage={(key) => bridge.getEasyWorshipImage(key)}
         />
       )}
 

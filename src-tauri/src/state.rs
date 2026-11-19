@@ -171,6 +171,67 @@ pub struct SlideCue {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
+pub struct PresentationTimer {
+    pub id: String,
+    pub name: String,
+    pub state: String,
+    pub time: f64,
+    pub formatted: String,
+    pub countdown: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ScreenOutput {
+    pub id: String,
+    pub name: String,
+    pub screen_type: String,
+    pub width: u32,
+    pub height: u32,
+    pub enabled: bool,
+}
+
+/// EasyWorship output flags reported by `status`. These are observed state, not remote actions:
+/// the documented TCP action catalog has no black/clear/logo toggle.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ScreenFlags {
+    pub black: bool,
+    pub clear: bool,
+    pub logo: bool,
+}
+
+/// Metadata for a cached JPEG preview. Raw bytes stay in a bounded runtime cache, keyed by `key`,
+/// so the typed snapshot never copies image payloads on every state event.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct PresentationImage {
+    pub key: String,
+    pub source: String,
+    pub imagehash: String,
+    pub rectype: String,
+    pub pres_rowid: String,
+    pub slide_rowid: String,
+    pub revision: String,
+    pub size: u32,
+    pub updated_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct PlaybackState {
+    pub layer: String,
+    pub is_playing: bool,
+    pub item_id: String,
+    pub name: String,
+    pub artist: String,
+    pub audio_only: bool,
+    pub duration_ms: u64,
+    pub position_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
 pub struct SlideState {
     pub app: String,
     pub playlist_name: String,
@@ -179,9 +240,37 @@ pub struct SlideState {
     pub total_slides: u32,
     pub current_text: String,
     pub next_text: String,
+    #[serde(default)]
+    pub current_notes: String,
+    #[serde(default)]
+    pub next_notes: String,
     pub cleared: bool,
     pub stage_message: String,
+    #[serde(default)]
+    pub stage_message_visible: bool,
+    #[serde(default)]
+    pub stage_message_flash: bool,
     pub transport_layer: String,
+    #[serde(default)]
+    pub transport_time: f64,
+    #[serde(default)]
+    pub timers: Vec<PresentationTimer>,
+    #[serde(default)]
+    pub active_layers: Vec<String>,
+    #[serde(default)]
+    pub screens: Vec<ScreenOutput>,
+    #[serde(default)]
+    pub screen: ScreenFlags,
+    #[serde(default)]
+    pub image: Option<PresentationImage>,
+    #[serde(default)]
+    pub playback: Option<PlaybackState>,
+    #[serde(default)]
+    pub connected: bool,
+    #[serde(default)]
+    pub last_update_ms: u64,
+    #[serde(default)]
+    pub adapter: String,
     #[serde(default)]
     pub slides: Option<Vec<SlideCue>>,
 }
@@ -700,6 +789,9 @@ impl AppStateSnapshot {
 
     /// Merge partial slide fields and return the refreshed slides state.
     pub fn apply_slides(&mut self, patch: SlidesPatch) -> SlideState {
+        let connection_changed = patch.connected.is_some()
+            || patch.last_update_ms.is_some()
+            || patch.adapter.is_some();
         if let Some(v) = patch.playlist_name {
             self.slides.playlist_name = v;
         }
@@ -718,11 +810,59 @@ impl AppStateSnapshot {
         if let Some(v) = patch.next_text {
             self.slides.next_text = v;
         }
+        if let Some(v) = patch.current_notes {
+            self.slides.current_notes = v;
+        }
+        if let Some(v) = patch.next_notes {
+            self.slides.next_notes = v;
+        }
         if let Some(v) = patch.cleared {
             self.slides.cleared = v;
         }
         if let Some(v) = patch.stage_message {
             self.slides.stage_message = v;
+        }
+        if let Some(v) = patch.stage_message_visible {
+            self.slides.stage_message_visible = v;
+        }
+        if let Some(v) = patch.stage_message_flash {
+            self.slides.stage_message_flash = v;
+        }
+        if let Some(v) = patch.transport_time {
+            self.slides.transport_time = v;
+        }
+        if let Some(v) = patch.timers {
+            self.slides.timers = v;
+        }
+        if let Some(v) = patch.active_layers {
+            self.slides.active_layers = v;
+        }
+        if let Some(v) = patch.screens {
+            self.slides.screens = v;
+        }
+        if let Some(v) = patch.screen {
+            self.slides.screen = v;
+        }
+        if let Some(v) = patch.image {
+            self.slides.image = Some(v);
+        }
+        if let Some(v) = patch.playback {
+            self.slides.playback = Some(v);
+        }
+        if let Some(v) = patch.slides {
+            self.slides.slides = Some(v);
+        }
+        if let Some(v) = patch.connected {
+            self.slides.connected = v;
+        }
+        if let Some(v) = patch.last_update_ms {
+            self.slides.last_update_ms = v;
+        }
+        if let Some(v) = patch.adapter {
+            self.slides.adapter = v;
+        }
+        if connection_changed {
+            self.sync_presentation_preflight();
         }
         self.slides.clone()
     }
@@ -913,7 +1053,85 @@ impl AppStateSnapshot {
             format!("{} preset(s) configured", self.cameras.len()),
         );
         self.preflight = checks;
+        self.sync_presentation_preflight();
         self.topology_issues.clear();
+    }
+
+    /// Build the live presentation-link readiness row from the actual adapter state.
+    fn presentation_preflight_check(&self) -> PreflightCheck {
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        let age_ms = now_ms.saturating_sub(self.slides.last_update_ms);
+        let age_s = age_ms / 1000;
+        let deck_len = self.slides.slides.as_ref().map(Vec::len).unwrap_or(0);
+
+        if self.mock_mode {
+            return PreflightCheck {
+                id: "chk-presentation-link".into(),
+                domain: "Slides".into(),
+                title: "Presentation source is available".into(),
+                status: "pass".into(),
+                detail: format!("Local simulator • {deck_len} slide(s) loaded"),
+                evidence: format!("Local simulator • {deck_len} slide(s) loaded"),
+                fix_label: None,
+            };
+        }
+
+        let fresh = self.slides.connected && age_ms <= 15_000 && self.slides.adapter != "local";
+        let detail = if fresh {
+            format!(
+                "Live {} link • updated {}s ago • {} slide(s)",
+                self.slides.adapter, age_s, deck_len
+            )
+        } else if !self.slides.connected {
+            let setup_hint = match self.slides.adapter.as_str() {
+                "easyworship" => "set RING_EZW_DISCOVER=1 or RING_EZW_HOST / RING_EZW_PORT",
+                _ => "set RING_PP_HOST / RING_PP_PORT (or RING_EZW_DISCOVER=1)",
+            };
+            format!(
+                "No live {} link (state never received) • {setup_hint} and restart",
+                if self.slides.adapter.is_empty() || self.slides.adapter == "local" {
+                    "presentation"
+                } else {
+                    &self.slides.adapter
+                }
+            )
+        } else {
+            format!(
+                "{} link is stale ({}s since last update) — check the presentation network",
+                self.slides.adapter, age_s
+            )
+        };
+
+        PreflightCheck {
+            id: "chk-presentation-link".into(),
+            domain: "Slides".into(),
+            title: "Presentation integration is live".into(),
+            status: if fresh { "pass".into() } else { "warn".into() },
+            detail: detail.clone(),
+            evidence: detail,
+            fix_label: if fresh {
+                None
+            } else {
+                Some("Verify presentation network".into())
+            },
+        }
+    }
+
+    /// Refresh the presentation-link row in place without rebuilding unrelated checks.
+    pub fn sync_presentation_preflight(&mut self) {
+        let check = self.presentation_preflight_check();
+        if let Some(existing) = self
+            .preflight
+            .iter_mut()
+            .find(|c| c.id == "chk-presentation-link")
+        {
+            *existing = check;
+        } else {
+            self.preflight.push(check);
+        }
     }
 
     /// Rebuild broadcast targets from Settings so user endpoints drive Show Mode.
@@ -977,8 +1195,23 @@ pub struct SlidesPatch {
     pub total_slides: Option<u32>,
     pub current_text: Option<String>,
     pub next_text: Option<String>,
+    pub current_notes: Option<String>,
+    pub next_notes: Option<String>,
     pub cleared: Option<bool>,
     pub stage_message: Option<String>,
+    pub stage_message_visible: Option<bool>,
+    pub stage_message_flash: Option<bool>,
+    pub transport_time: Option<f64>,
+    pub timers: Option<Vec<PresentationTimer>>,
+    pub active_layers: Option<Vec<String>>,
+    pub screens: Option<Vec<ScreenOutput>>,
+    pub screen: Option<ScreenFlags>,
+    pub image: Option<PresentationImage>,
+    pub playback: Option<PlaybackState>,
+    pub slides: Option<Vec<SlideCue>>,
+    pub connected: Option<bool>,
+    pub last_update_ms: Option<u64>,
+    pub adapter: Option<String>,
 }
 
 
@@ -1070,9 +1303,23 @@ pub fn default_simulator_state() -> AppStateSnapshot {
             total_slides: 0,
             current_text: String::new(),
             next_text: String::new(),
+            current_notes: String::new(),
+            next_notes: String::new(),
             cleared: false,
             stage_message: String::new(),
+            stage_message_visible: false,
+            stage_message_flash: false,
             transport_layer: "local".into(),
+            transport_time: 0.0,
+            timers: Vec::new(),
+            active_layers: Vec::new(),
+            screens: Vec::new(),
+            screen: ScreenFlags::default(),
+            image: None,
+            playback: None,
+            connected: false,
+            last_update_ms: 0,
+            adapter: "local".into(),
             slides: Some(Vec::new()),
         },
         cues: Vec::new(),
@@ -1084,4 +1331,96 @@ pub fn default_simulator_state() -> AppStateSnapshot {
     };
     recompute_derived_alerts(&mut state);
     state
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn now_ms() -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0)
+    }
+
+    #[test]
+    fn presentation_preflight_reports_local_simulator() {
+        let mut state = default_simulator_state();
+        state.mock_mode = true;
+        state.sync_presentation_preflight();
+        let check = state
+            .preflight
+            .iter()
+            .find(|c| c.id == "chk-presentation-link")
+            .expect("presentation check exists");
+        assert_eq!(check.status, "pass");
+        assert!(check.detail.contains("Local simulator"));
+    }
+
+    #[test]
+    fn presentation_preflight_detects_missing_and_stale_live_links() {
+        let mut state = default_simulator_state();
+        state.sync_presentation_preflight();
+        let check = state
+            .preflight
+            .iter()
+            .find(|c| c.id == "chk-presentation-link")
+            .expect("presentation check exists");
+        assert_eq!(check.status, "warn");
+
+        state.apply_slides(SlidesPatch {
+            connected: Some(true),
+            last_update_ms: Some(now_ms()),
+            adapter: Some("propresenter".into()),
+            ..SlidesPatch::default()
+        });
+        let check = state
+            .preflight
+            .iter()
+            .find(|c| c.id == "chk-presentation-link")
+            .expect("presentation check exists");
+        assert_eq!(check.status, "pass");
+        assert!(check.detail.contains("propresenter"));
+
+        state.apply_slides(SlidesPatch {
+            last_update_ms: Some(now_ms().saturating_sub(60_000)),
+            ..SlidesPatch::default()
+        });
+        let check = state
+            .preflight
+            .iter()
+            .find(|c| c.id == "chk-presentation-link")
+            .expect("presentation check exists");
+        assert_eq!(check.status, "warn");
+        assert!(check.detail.contains("stale"));
+    }
+
+    #[test]
+    fn apply_slides_maps_easyworship_screen_flags_and_image_metadata() {
+        let mut state = default_simulator_state();
+        let slides = state.apply_slides(SlidesPatch {
+            screen: Some(ScreenFlags {
+                black: false,
+                clear: true,
+                logo: true,
+            }),
+            image: Some(PresentationImage {
+                key: "current:hash-1".into(),
+                source: "current".into(),
+                imagehash: "hash-1".into(),
+                size: 2048,
+                updated_ms: 42,
+                ..PresentationImage::default()
+            }),
+            ..SlidesPatch::default()
+        });
+        assert!(slides.screen.clear);
+        assert!(slides.screen.logo);
+        assert!(!slides.screen.black);
+        let image = slides.image.expect("image metadata applied");
+        assert_eq!(image.key, "current:hash-1");
+        assert_eq!(image.imagehash, "hash-1");
+        assert_eq!(image.size, 2048);
+    }
 }

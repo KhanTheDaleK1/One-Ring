@@ -8,6 +8,7 @@ pub mod peer_discovery;
 
 use runtime::events::{CueProgressEvent, EventSink, HealthEvent, MeterEvent, StatePatch};
 use runtime::dante_adapter::DanteCommand;
+use runtime::easyworship_adapter::EasyWorshipCommand;
 use runtime::ndi_adapter::NdiCommand;
 use runtime::obs_adapter::ObsCommand;
 use runtime::propresenter_adapter::ProPresenterCommand;
@@ -423,6 +424,10 @@ fn trigger_slide_action(action: String, state: State<ManagedState>) -> AppStateS
                 &state,
                 AdapterCommand::ProPresenter(ProPresenterCommand::Next),
             );
+            dispatch(
+                &state,
+                AdapterCommand::EasyWorship(EasyWorshipCommand::NextSlide),
+            );
         }
         "prev" => {
             inner.slides.cleared = false;
@@ -432,6 +437,10 @@ fn trigger_slide_action(action: String, state: State<ManagedState>) -> AppStateS
             dispatch(
                 &state,
                 AdapterCommand::ProPresenter(ProPresenterCommand::Previous),
+            );
+            dispatch(
+                &state,
+                AdapterCommand::EasyWorship(EasyWorshipCommand::PreviousSlide),
             );
         }
         "clear" => {
@@ -447,6 +456,326 @@ fn trigger_slide_action(action: String, state: State<ManagedState>) -> AppStateS
         }
         _ => {}
     }
+    inner.clone()
+}
+
+#[tauri::command]
+fn go_to_slide(slide_number: u32, state: State<ManagedState>) -> AppStateSnapshot {
+    let mut inner = state.inner.lock().unwrap();
+    let total = inner.slides.total_slides.max(1);
+    let target = slide_number.max(1).min(total);
+    inner.slides.current_slide = target;
+    inner.slides.cleared = false;
+    let texts = inner.slides.slides.as_ref().and_then(|slides| {
+        slides
+            .iter()
+            .find(|slide| slide.number == target)
+            .map(|slide| {
+                (
+                    slide.text.clone(),
+                    slides
+                        .iter()
+                        .find(|slide| slide.number == target + 1)
+                        .map(|slide| slide.text.clone())
+                        .unwrap_or_default(),
+                )
+            })
+    });
+    if let Some((current_text, next_text)) = texts {
+        inner.slides.current_text = current_text;
+        inner.slides.next_text = next_text;
+    }
+    // ProPresenter's cue index is zero-based while One Ring's UI and EasyWorship's
+    // `gotoSlide<N>` action are one-based.
+    dispatch(
+        &state,
+        AdapterCommand::ProPresenter(ProPresenterCommand::GoToSlide(
+            target.saturating_sub(1),
+        )),
+    );
+    dispatch(
+        &state,
+        AdapterCommand::EasyWorship(EasyWorshipCommand::GoToSlide(target)),
+    );
+    inner.clone()
+}
+
+#[tauri::command]
+fn control_presentation_timer(operation: String, state: State<ManagedState>) -> AppStateSnapshot {
+    if !crate::protocols::propresenter::is_timer_operation(&operation) {
+        return state.inner.lock().unwrap().clone();
+    }
+    {
+        let mut inner = state.inner.lock().unwrap();
+        if let Some(timer) = inner.slides.timers.first_mut() {
+            match operation.as_str() {
+                "start" => timer.state = "running".into(),
+                "stop" | "reset" => timer.state = "stopped".into(),
+                _ => {}
+            }
+            if operation == "reset" {
+                timer.time = 0.0;
+                timer.formatted = "00:00".into();
+            }
+        }
+        inner.push_event_log(format!("[slides] timer {operation} requested"));
+    }
+    dispatch(
+        &state,
+        AdapterCommand::ProPresenter(ProPresenterCommand::TimerAction { operation }),
+    );
+    state.inner.lock().unwrap().clone()
+}
+
+#[tauri::command]
+fn set_stage_message(message: Option<String>, state: State<ManagedState>) -> AppStateSnapshot {
+    {
+        let mut inner = state.inner.lock().unwrap();
+        let text = message.clone().unwrap_or_default();
+        inner.slides.stage_message = text.clone();
+        inner.slides.stage_message_visible = !text.trim().is_empty();
+        inner.push_event_log(format!(
+            "[slides] stage message {}",
+            if text.trim().is_empty() { "cleared" } else { "set" }
+        ));
+    }
+    let command = match message {
+        Some(text) if !text.trim().is_empty() => ProPresenterCommand::SetStageMessage(text),
+        _ => ProPresenterCommand::ClearStageMessage,
+    };
+    dispatch(&state, AdapterCommand::ProPresenter(command));
+    state.inner.lock().unwrap().clone()
+}
+
+#[tauri::command]
+fn set_stage_message_flag(field: String, value: bool, state: State<ManagedState>) -> AppStateSnapshot {
+    let mut inner = state.inner.lock().unwrap();
+    match field.as_str() {
+        "visible" => inner.slides.stage_message_visible = value,
+        // Flash is a stage-display rendering flag. The documented v1 API has no
+        // show/hide or flash route, so these two flags stay local to One Ring.
+        "flash" => inner.slides.stage_message_flash = value,
+        _ => {}
+    }
+    inner.clone()
+}
+
+#[tauri::command]
+fn propresenter_playlist_control(
+    kind: String,
+    direction: String,
+    state: State<ManagedState>,
+) -> AppStateSnapshot {
+    let command = match (kind.as_str(), direction.as_str()) {
+        ("media", "next") => Some(ProPresenterCommand::MediaNext),
+        ("media", "previous") => Some(ProPresenterCommand::MediaPrevious),
+        ("audio", "next") => Some(ProPresenterCommand::AudioNext),
+        ("audio", "previous") => Some(ProPresenterCommand::AudioPrevious),
+        _ => None,
+    };
+    if let Some(command) = command {
+        state.inner.lock().unwrap().push_event_log(format!(
+            "[propresenter] {kind} playlist {direction} triggered"
+        ));
+        dispatch(&state, AdapterCommand::ProPresenter(command));
+    }
+    state.inner.lock().unwrap().clone()
+}
+
+#[tauri::command]
+fn propresenter_transport_control(
+    layer: String,
+    operation: String,
+    state: State<ManagedState>,
+) -> AppStateSnapshot {
+    if crate::protocols::propresenter::transport_path(&layer, &operation).is_none() {
+        return state.inner.lock().unwrap().clone();
+    }
+    state.inner.lock().unwrap().push_event_log(format!(
+        "[propresenter] {layer} transport {operation} requested"
+    ));
+    dispatch(
+        &state,
+        AdapterCommand::ProPresenter(ProPresenterCommand::Transport { layer, operation }),
+    );
+    state.inner.lock().unwrap().clone()
+}
+
+#[tauri::command]
+fn propresenter_transport_seek(
+    layer: String,
+    seconds: f64,
+    state: State<ManagedState>,
+) -> AppStateSnapshot {
+    if crate::protocols::propresenter::transport_seek_path(&layer).is_none()
+        || !seconds.is_finite()
+        || seconds < 0.0
+    {
+        return state.inner.lock().unwrap().clone();
+    }
+    state.inner.lock().unwrap().push_event_log(format!(
+        "[propresenter] {layer} transport seek to {seconds:.1}s requested"
+    ));
+    dispatch(
+        &state,
+        AdapterCommand::ProPresenter(ProPresenterCommand::TransportSeek { layer, seconds }),
+    );
+    state.inner.lock().unwrap().clone()
+}
+
+#[tauri::command]
+fn propresenter_clear_group(id: String, state: State<ManagedState>) -> AppStateSnapshot {
+    if id.trim().is_empty() {
+        return state.inner.lock().unwrap().clone();
+    }
+    state
+        .inner
+        .lock()
+        .unwrap()
+        .push_event_log(format!("[propresenter] clear group '{id}' triggered"));
+    dispatch(
+        &state,
+        AdapterCommand::ProPresenter(ProPresenterCommand::ClearGroup(id)),
+    );
+    state.inner.lock().unwrap().clone()
+}
+
+#[tauri::command]
+fn propresenter_catalog(kind: String, state: State<ManagedState>) -> AppStateSnapshot {
+    if crate::protocols::propresenter::catalog_path(&kind).is_none() {
+        return state.inner.lock().unwrap().clone();
+    }
+    state
+        .inner
+        .lock()
+        .unwrap()
+        .push_event_log(format!("[propresenter] refreshing {kind} catalog"));
+    dispatch(
+        &state,
+        AdapterCommand::ProPresenter(ProPresenterCommand::RefreshCatalog(kind)),
+    );
+    state.inner.lock().unwrap().clone()
+}
+
+#[tauri::command]
+fn propresenter_resource(
+    action: String,
+    id: String,
+    state: State<ManagedState>,
+) -> AppStateSnapshot {
+    let log_id = id.clone();
+    let command = match action.as_str() {
+        "trigger_look" => Some(ProPresenterCommand::TriggerLook(id)),
+        "trigger_prop" => Some(ProPresenterCommand::TriggerProp(id)),
+        "clear_prop" => Some(ProPresenterCommand::ClearProp(id)),
+        "trigger_macro" => Some(ProPresenterCommand::TriggerMacro(id)),
+        "prop_auto_clear_pause" => Some(ProPresenterCommand::PropAutoClear {
+            id,
+            action: "pause".into(),
+        }),
+        "prop_auto_clear_resume" => Some(ProPresenterCommand::PropAutoClear {
+            id,
+            action: "resume".into(),
+        }),
+        _ => None,
+    };
+    if let Some(command) = command {
+        state
+            .inner
+            .lock()
+            .unwrap()
+            .push_event_log(format!("[propresenter] {action} '{log_id}' requested"));
+        dispatch(&state, AdapterCommand::ProPresenter(command));
+    }
+    state.inner.lock().unwrap().clone()
+}
+
+#[tauri::command]
+fn easyworship_control(action: String, state: State<ManagedState>) -> AppStateSnapshot {
+    let command = match action.as_str() {
+        "nextSlide" => Some(EasyWorshipCommand::NextSlide),
+        "prevSlide" => Some(EasyWorshipCommand::PreviousSlide),
+        "nextBuild" => Some(EasyWorshipCommand::NextBuild),
+        "prevBuild" => Some(EasyWorshipCommand::PreviousBuild),
+        "nextSchedule" => Some(EasyWorshipCommand::NextSchedule),
+        "prevSchedule" => Some(EasyWorshipCommand::PreviousSchedule),
+        "gotoStartSlide" => Some(EasyWorshipCommand::GoToStartSlide),
+        "gotoStartPresentation" => Some(EasyWorshipCommand::GoToStartPresentation),
+        "Toggle" => Some(EasyWorshipCommand::Toggle),
+        "Play" => Some(EasyWorshipCommand::Play),
+        "Pause" => Some(EasyWorshipCommand::Pause),
+        "GetScheduleData" => Some(EasyWorshipCommand::GetScheduleData),
+        "GetLiveData" => Some(EasyWorshipCommand::GetLiveData),
+        "GetCurrentImage" => Some(EasyWorshipCommand::GetCurrentImage),
+        "Refresh" => Some(EasyWorshipCommand::Refresh),
+        _ => None,
+    };
+    if let Some(command) = command {
+        state
+            .inner
+            .lock()
+            .unwrap()
+            .push_event_log(format!("[easyworship] action {action} requested"));
+        dispatch(&state, AdapterCommand::EasyWorship(command));
+    }
+    state.inner.lock().unwrap().clone()
+}
+
+#[tauri::command]
+fn easyworship_get_slide_image(
+    rectype: String,
+    pres_rowid: String,
+    slide_rowid: String,
+    revision: String,
+    state: State<ManagedState>,
+) -> AppStateSnapshot {
+    state.inner.lock().unwrap().push_event_log(format!(
+        "[easyworship] getSlideImage {rectype}/{pres_rowid}/{slide_rowid} requested"
+    ));
+    dispatch(
+        &state,
+        AdapterCommand::EasyWorship(EasyWorshipCommand::GetSlideImage {
+            rectype,
+            pres_rowid,
+            slide_rowid,
+            revision,
+        }),
+    );
+    state.inner.lock().unwrap().clone()
+}
+
+#[tauri::command]
+fn easyworship_image(key: String, state: State<ManagedState>) -> Option<Vec<u8>> {
+    state
+        .runtime
+        .lock()
+        .unwrap()
+        .as_ref()
+        .and_then(|runtime| runtime.easyworship_image(&key))
+}
+
+/// Local-only display overrides. EasyWorship publishes black/clear/logo in `status`; the
+/// documented TCP action catalog has no toggle frame, so these never go on the wire and are
+/// overwritten by the next status report.
+#[tauri::command]
+fn easyworship_screen_flag(
+    field: String,
+    value: bool,
+    state: State<ManagedState>,
+) -> AppStateSnapshot {
+    let mut inner = state.inner.lock().unwrap();
+    match field.as_str() {
+        "black" => inner.slides.screen.black = value,
+        "clear" => {
+            inner.slides.screen.clear = value;
+            inner.slides.cleared = value;
+        }
+        "logo" => inner.slides.screen.logo = value,
+        _ => return inner.clone(),
+    }
+    inner.push_event_log(format!(
+        "[easyworship] local-only {field} override set to {value}; next status report wins"
+    ));
     inner.clone()
 }
 
@@ -1031,6 +1360,20 @@ pub fn run() {
             nudge_dca_level,
             recall_camera_preset,
             trigger_slide_action,
+            go_to_slide,
+            control_presentation_timer,
+            set_stage_message,
+            set_stage_message_flag,
+            propresenter_playlist_control,
+            propresenter_transport_control,
+            propresenter_transport_seek,
+            propresenter_clear_group,
+            propresenter_catalog,
+            propresenter_resource,
+            easyworship_control,
+            easyworship_get_slide_image,
+            easyworship_image,
+            easyworship_screen_flag,
             set_broadcast_state,
             switch_ndi_receiver,
             auto_heal_ndi_receivers,

@@ -32,10 +32,134 @@ pub mod paths {
     pub const PLAYLIST_ACTIVE: &str = "/v1/playlist/active";
     pub const TIMERS_CURRENT: &str = "/v1/timers/current";
     pub const TRANSPORT_PRESENTATION_TIME: &str = "/v1/transport/presentation/time";
+    pub const TRANSPORT_PRESENTATION_CURRENT: &str = "/v1/transport/presentation/current";
+    pub const MEDIA_PLAYLISTS: &str = "/v1/media/playlists";
+    pub const AUDIO_PLAYLISTS: &str = "/v1/audio/playlists";
     pub const TRIGGER_NEXT: &str = "/v1/trigger/next";
     pub const TRIGGER_PREVIOUS: &str = "/v1/trigger/previous";
     pub const STAGE_MESSAGE: &str = "/v1/stage/message";
+    pub const STATUS_AUDIENCE_SCREENS: &str = "/v1/status/audience_screens";
+    pub const STATUS_STAGE_SCREENS: &str = "/v1/status/stage_screens";
+    pub const LOOKS: &str = "/v1/looks";
+    pub const LOOK_CURRENT: &str = "/v1/look/current";
+    pub const PROPS: &str = "/v1/props";
+    pub const MACROS: &str = "/v1/macros";
+    pub const PROP_COLLECTIONS: &str = "/v1/prop_collections";
+    pub const MACRO_COLLECTIONS: &str = "/v1/macro_collections";
+    pub const CLEAR_GROUPS: &str = "/v1/clear/groups";
     pub const WS: &str = "/v1/ws";
+}
+
+/// Trigger a specific slide index in the active presentation.
+pub fn goto_slide_path(index: u32) -> String {
+    format!("/v1/presentation/active/{index}/trigger")
+}
+
+/// Set, update, or clear the stage message. `None` clears it.
+pub fn stage_message_path(message: Option<&str>) -> (&'static str, &'static str, Option<String>) {
+    match message {
+        Some(text) => (paths::STAGE_MESSAGE, "PUT", Some(stage_message_body(text))),
+        None => (paths::STAGE_MESSAGE, "DELETE", None),
+    }
+}
+
+/// JSON body for `PUT /v1/stage/message`.
+pub fn stage_message_body(text: &str) -> String {
+    json!({ "text": text }).to_string()
+}
+
+/// Validate a timer operation against the documented v1 catalog.
+pub fn is_timer_operation(operation: &str) -> bool {
+    matches!(operation, "start" | "stop" | "reset")
+}
+
+/// Timer operations documented by the v1 API.
+pub fn timer_operation_path(operation: &str) -> Option<String> {
+    match operation {
+        "start" | "stop" | "reset" => Some(format!("/v1/timers/{operation}")),
+        _ => None,
+    }
+}
+
+/// Trigger a named clear group.
+pub fn clear_group_path(id: &str) -> String {
+    format!("/v1/clear/group/{id}/trigger")
+}
+
+/// Resource ids are UUID-like tokens from the catalog endpoints. Reject path separators so a
+/// malformed id can never escape the documented `/v1/*` route shape.
+fn is_safe_resource_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 128
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
+}
+
+/// List catalogs documented in `looks.rs`, `props.rs`, `macros.rs` and `clear.rs`.
+pub fn catalog_path(kind: &str) -> Option<&'static str> {
+    match kind {
+        "looks" => Some(paths::LOOKS),
+        "look_current" => Some(paths::LOOK_CURRENT),
+        "props" => Some(paths::PROPS),
+        "macros" => Some(paths::MACROS),
+        "prop_collections" => Some(paths::PROP_COLLECTIONS),
+        "macro_collections" => Some(paths::MACRO_COLLECTIONS),
+        "clear_groups" => Some(paths::CLEAR_GROUPS),
+        _ => None,
+    }
+}
+
+/// Documented single-resource operations. `operation` is one of `trigger`, `clear`, or
+/// `auto_clear/pause` / `auto_clear/resume` for props.
+pub fn resource_path(kind: &str, id: &str, operation: Option<&str>) -> Option<String> {
+    if !is_safe_resource_id(id) {
+        return None;
+    }
+    match (kind, operation) {
+        ("look", None) => Some(format!("/v1/look/{id}")),
+        ("look", Some("trigger")) => Some(format!("/v1/look/{id}/trigger")),
+        ("prop", None) => Some(format!("/v1/prop/{id}")),
+        ("prop", Some("trigger")) => Some(format!("/v1/prop/{id}/trigger")),
+        ("prop", Some("clear")) => Some(format!("/v1/prop/{id}/clear")),
+        ("prop", Some("auto_clear/pause")) => Some(format!("/v1/prop/{id}/auto_clear/pause")),
+        ("prop", Some("auto_clear/resume")) => Some(format!("/v1/prop/{id}/auto_clear/resume")),
+        ("macro", None) => Some(format!("/v1/macro/{id}")),
+        ("macro", Some("trigger")) => Some(format!("/v1/macro/{id}/trigger")),
+        _ => None,
+    }
+}
+
+/// Trigger next/previous in the active media or audio playlist.
+pub fn playlist_trigger_path(kind: &str, direction: &str) -> Option<String> {
+    if !matches!(kind, "media" | "audio") || !matches!(direction, "next" | "previous") {
+        return None;
+    }
+    Some(format!("/v1/trigger/{kind}/{direction}"))
+}
+
+/// Transport operations documented by `transport.rs`.
+pub fn transport_path(layer: &str, operation: &str) -> Option<String> {
+    if !matches!(layer, "presentation" | "announcement" | "media" | "audio") {
+        return None;
+    }
+    match operation {
+        "play" | "pause" | "go_to_end" => Some(format!("/v1/transport/{layer}/{operation}")),
+        _ => None,
+    }
+}
+
+/// Body for `PUT /v1/transport/{layer}/time`.
+pub fn transport_seek_path(layer: &str) -> Option<String> {
+    if matches!(layer, "presentation" | "announcement" | "media" | "audio") {
+        Some(format!("/v1/transport/{layer}/time"))
+    } else {
+        None
+    }
+}
+
+pub fn transport_seek_body(seconds: f64) -> String {
+    json!({ "time": seconds }).to_string()
 }
 
 /// Normalize a `/v1/*` path into the relative form accepted by `POST /v1/status/updates`
@@ -77,6 +201,10 @@ impl StatusUpdateSubscription {
             paths::TRANSPORT_PRESENTATION_TIME,
             paths::PLAYLIST_ACTIVE,
             paths::STATUS_LAYERS,
+            paths::STATUS_SCREENS,
+            paths::PRESENTATION_SLIDE_INDEX,
+            paths::STAGE_MESSAGE,
+            paths::TRANSPORT_PRESENTATION_CURRENT,
         ])
     }
 
@@ -494,8 +622,100 @@ mod tests {
         assert_eq!(sub.path(), "/v1/status/updates");
         assert!(sub.paths.contains(&"status/slide".to_string()));
         assert!(sub.paths.contains(&"timers/current".to_string()));
+        assert!(sub.paths.contains(&"status/screens".to_string()));
+        assert!(sub.paths.contains(&"presentation/slide_index".to_string()));
+        assert!(sub.paths.contains(&"stage/message".to_string()));
+        assert!(sub.paths.contains(&"transport/presentation/current".to_string()));
         let body: Value = serde_json::from_str(&sub.body()).unwrap();
-        assert_eq!(body.as_array().unwrap().len(), 5);
+        assert_eq!(body.as_array().unwrap().len(), 9);
+    }
+
+    #[test]
+    fn stage_message_commands_are_typed() {
+        let (path, method, body) = stage_message_path(Some("Pastor enters in 2 minutes"));
+        assert_eq!(path, "/v1/stage/message");
+        assert_eq!(method, "PUT");
+        let parsed: Value = serde_json::from_str(&body.unwrap()).unwrap();
+        assert_eq!(parsed["text"], "Pastor enters in 2 minutes");
+
+        let (path, method, body) = stage_message_path(None);
+        assert_eq!(path, "/v1/stage/message");
+        assert_eq!(method, "DELETE");
+        assert!(body.is_none());
+    }
+
+    #[test]
+    fn timer_and_group_paths_match_route_catalog() {
+        assert_eq!(timer_operation_path("start").as_deref(), Some("/v1/timers/start"));
+        assert_eq!(timer_operation_path("stop").as_deref(), Some("/v1/timers/stop"));
+        assert_eq!(timer_operation_path("reset").as_deref(), Some("/v1/timers/reset"));
+        assert!(timer_operation_path("pause").is_none());
+        assert!(is_timer_operation("reset"));
+        assert!(!is_timer_operation("pause"));
+        assert_eq!(goto_slide_path(4), "/v1/presentation/active/4/trigger");
+        assert_eq!(clear_group_path("all"), "/v1/clear/group/all/trigger");
+    }
+
+    #[test]
+    fn look_prop_macro_paths_match_route_catalog() {
+        assert_eq!(catalog_path("looks"), Some("/v1/looks"));
+        assert_eq!(catalog_path("look_current"), Some("/v1/look/current"));
+        assert_eq!(catalog_path("props"), Some("/v1/props"));
+        assert_eq!(catalog_path("macros"), Some("/v1/macros"));
+        assert_eq!(catalog_path("clear_groups"), Some("/v1/clear/groups"));
+        assert!(catalog_path("themes").is_none());
+
+        assert_eq!(
+            resource_path("look", "abc-123", Some("trigger")).as_deref(),
+            Some("/v1/look/abc-123/trigger")
+        );
+        assert_eq!(
+            resource_path("prop", "abc", Some("clear")).as_deref(),
+            Some("/v1/prop/abc/clear")
+        );
+        assert_eq!(
+            resource_path("prop", "abc", Some("auto_clear/pause")).as_deref(),
+            Some("/v1/prop/abc/auto_clear/pause")
+        );
+        assert_eq!(
+            resource_path("macro", "abc", Some("trigger")).as_deref(),
+            Some("/v1/macro/abc/trigger")
+        );
+        assert!(resource_path("look", "../escape", Some("trigger")).is_none());
+        assert!(resource_path("prop", "abc", Some("delete")).is_none());
+    }
+
+    #[test]
+    fn playlist_transport_and_seek_paths_match_route_catalog() {
+        assert_eq!(
+            playlist_trigger_path("media", "next").as_deref(),
+            Some("/v1/trigger/media/next")
+        );
+        assert_eq!(
+            playlist_trigger_path("audio", "previous").as_deref(),
+            Some("/v1/trigger/audio/previous")
+        );
+        assert!(playlist_trigger_path("slide", "next").is_none());
+        assert!(playlist_trigger_path("media", "pause").is_none());
+
+        assert_eq!(
+            transport_path("presentation", "play").as_deref(),
+            Some("/v1/transport/presentation/play")
+        );
+        assert_eq!(
+            transport_path("media", "pause").as_deref(),
+            Some("/v1/transport/media/pause")
+        );
+        assert!(transport_path("presentation", "stop").is_none());
+        assert!(transport_path("video_input", "play").is_none());
+
+        assert_eq!(
+            transport_seek_path("announcement").as_deref(),
+            Some("/v1/transport/announcement/time")
+        );
+        assert!(transport_seek_path("unknown").is_none());
+        let body: Value = serde_json::from_str(&transport_seek_body(12.5)).unwrap();
+        assert_eq!(body["time"], 12.5);
     }
 
     #[test]

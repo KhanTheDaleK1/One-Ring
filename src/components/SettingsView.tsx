@@ -1,3 +1,4 @@
+import { MidiTriggerModal } from "./MidiTriggerModal";
 import React, { useEffect, useMemo, useState } from "react";
 import {
   Camera,

@@ -27,6 +27,7 @@ export interface X32MixerOverviewProps {
   channelLinks: Record<string, boolean>;
   clockSource: "48kHz Internal" | "AES50" | "Card";
   mainLrDb: number;
+  mainLrMeterLevel: number;
   mainLrMute: boolean;
   mainLrSolo: boolean;
   monoMcMode: boolean;
@@ -204,7 +205,7 @@ const HardwareFaderTrack: React.FC<HardwareFaderTrackProps> = ({
   );
 
   const frac = faderDbToFraction(valueDb);
-  const meterFrac = muted ? 0 : Math.max(0.05, Math.min(1, (meterLevel + 60) / 60));
+  const meterFrac = muted || meterLevel <= -60 ? 0 : Math.max(0, Math.min(1, (meterLevel + 60) / 60));
   const activeLeds = Math.round(meterFrac * 10);
 
   return (
@@ -396,6 +397,7 @@ export const X32MixerOverview: React.FC<X32MixerOverviewProps> = ({
   channelLinks,
   clockSource,
   mainLrDb,
+  mainLrMeterLevel,
   mainLrMute,
   mainLrSolo,
   monoMcMode,
@@ -562,9 +564,10 @@ export const X32MixerOverview: React.FC<X32MixerOverviewProps> = ({
                   left: 0,
                   right: 0,
                   bottom: 0,
-                  height: selectedChannel.mute
-                    ? "0%"
-                    : `${Math.max(10, Math.min(95, ((selectedChannel.meterLevel + 60) / 60) * 100))}%`,
+                  height:
+                    selectedChannel.mute || selectedChannel.meterLevel <= -60
+                      ? "0%"
+                      : `${Math.max(0, Math.min(95, ((selectedChannel.meterLevel + 60) / 60) * 100))}%`,
                   background: "linear-gradient(180deg, #F59E0B 0%, #22C55E 65%)",
                 }}
               />
@@ -1430,7 +1433,7 @@ export const X32MixerOverview: React.FC<X32MixerOverviewProps> = ({
             </div>
             <HardwareFaderTrack
               valueDb={activeBusChannel ? activeBusChannel.faderDb : mainLrDb}
-              meterLevel={activeBusChannel ? activeBusChannel.meterLevel : mainLrMute ? -90 : -11}
+              meterLevel={activeBusChannel ? activeBusChannel.meterLevel : mainLrMute ? -90 : mainLrMeterLevel}
               muted={activeBusChannel ? activeBusChannel.mute : mainLrMute}
               notchColor={sendsOnFader ? "#38BDF8" : "#F8FAFC"}
               stereoMeter={!activeBusChannel}

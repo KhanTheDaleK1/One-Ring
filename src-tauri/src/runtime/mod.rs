@@ -9,11 +9,13 @@
 //! | OBS | `RING_OBS_URL`, `RING_OBS_PASSWORD` | `ws://127.0.0.1:4455` |
 //! | Streamlabs | `RING_SLOBS_ADDR` | `127.0.0.1:28194` |
 //! | ProPresenter | `RING_PP_HOST`, `RING_PP_PORT` | `127.0.0.1:50000` |
+//! | EasyWorship | `RING_EZW_HOST`, `RING_EZW_PORT`, `RING_EZW_DISCOVER=1` | mDNS `_ezwremote._tcp` |
 //!
 //! Adapters are transport-only: they own sockets/backoff and emit the typed events in
 //! [`events`]. The cue engine and Tauri commands dispatch through [`AdapterRegistry`].
 
 pub mod dante_adapter;
+pub mod easyworship_adapter;
 pub mod events;
 pub mod health;
 pub mod ndi_adapter;
@@ -27,11 +29,12 @@ pub mod x32_adapter;
 use crate::protocols::{DeviceCapabilities, DeviceKind};
 use crate::state::SharedState;
 use dante_adapter::{DanteCommand, DanteConfig};
+use easyworship_adapter::{EasyWorshipCommand, EasyWorshipConfig, EasyWorshipImageCache};
 use events::EventSink;
 use ndi_adapter::{NdiCommand, NdiConfig};
 use obs_adapter::{ObsCommand, ObsConfig};
 use propresenter_adapter::{ProPresenterCommand, ProPresenterConfig};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use streamlabs_adapter::{StreamlabsCommand, StreamlabsConfig};
 use tokio::sync::mpsc;
 use x32_adapter::{X32Command, X32Config};
@@ -43,6 +46,7 @@ pub struct RuntimeConfig {
     pub obs: Option<ObsConfig>,
     pub streamlabs: Option<StreamlabsConfig>,
     pub propresenter: Option<ProPresenterConfig>,
+    pub easyworship: Option<EasyWorshipConfig>,
     pub dante: Option<DanteConfig>,
     pub ndi: Option<NdiConfig>,
 }
@@ -82,6 +86,22 @@ impl RuntimeConfig {
                 .unwrap_or(50_000),
         ));
 
+        // EasyWorship's listener uses an ephemeral port, so mDNS is the default when live mode is
+        // on. A static `RING_EZW_HOST`/`RING_EZW_PORT` (or full `RING_EZW_ENDPOINT`) overrides it.
+        let easyworship = if let Some(endpoint) = std::env::var("RING_EZW_ENDPOINT").ok() {
+            Some(EasyWorshipConfig::new(endpoint))
+        } else if let Some(host) = std::env::var("RING_EZW_HOST").ok() {
+            let port = std::env::var("RING_EZW_PORT")
+                .ok()
+                .and_then(|p| p.parse().ok())
+                .unwrap_or(55_000);
+            Some(EasyWorshipConfig::new(format!("{host}:{port}")))
+        } else if env_flag("RING_EZW_DISCOVER") {
+            Some(EasyWorshipConfig::discovered())
+        } else {
+            None
+        };
+
         let dante = Some(DanteConfig::default());
         let ndi = Some(NdiConfig {
             discovery_host: std::env::var("RING_NDI_HOST").unwrap_or_else(|_| "127.0.0.1".into()),
@@ -94,6 +114,7 @@ impl RuntimeConfig {
             obs,
             streamlabs,
             propresenter,
+            easyworship,
             dante,
             ndi,
         }
@@ -113,6 +134,7 @@ pub enum AdapterCommand {
     Obs(ObsCommand),
     Streamlabs(StreamlabsCommand),
     ProPresenter(ProPresenterCommand),
+    EasyWorship(EasyWorshipCommand),
     Dante(DanteCommand),
     Ndi(NdiCommand),
 }
@@ -130,6 +152,8 @@ pub struct AdapterRegistry {
     obs: Option<mpsc::UnboundedSender<ObsCommand>>,
     streamlabs: Option<mpsc::UnboundedSender<StreamlabsCommand>>,
     propresenter: Option<mpsc::UnboundedSender<ProPresenterCommand>>,
+    easyworship: Option<mpsc::UnboundedSender<EasyWorshipCommand>>,
+    image_cache: Arc<Mutex<EasyWorshipImageCache>>,
     dante: Option<mpsc::UnboundedSender<DanteCommand>>,
     ndi: Option<mpsc::UnboundedSender<NdiCommand>>,
     devices: Vec<DeviceStatus>,
@@ -147,6 +171,8 @@ impl AdapterRegistry {
             obs: None,
             streamlabs: None,
             propresenter: None,
+            easyworship: None,
+            image_cache: Arc::new(Mutex::new(EasyWorshipImageCache::default())),
             dante: None,
             ndi: None,
             devices: Vec::new(),
@@ -209,6 +235,27 @@ impl AdapterRegistry {
             ));
         }
 
+        if let Some(easyworship) = &config.easyworship {
+            let (tx, rx) = mpsc::unbounded_channel();
+            easyworship_adapter::spawn(
+                easyworship.clone(),
+                state.clone(),
+                sink.clone(),
+                registry.image_cache.clone(),
+                rx,
+            );
+            registry.easyworship = Some(tx);
+            registry.devices.push(DeviceStatus {
+                id: "slides-ew",
+                kind: DeviceKind::EasyWorship,
+                capabilities: DeviceCapabilities::for_kind(DeviceKind::EasyWorship),
+            });
+            sink.log(format!(
+                "[runtime] EasyWorship adapter started for {}",
+                easyworship.endpoint_label()
+            ));
+        }
+
         if let Some(dante) = &config.dante {
             let (tx, rx) = mpsc::unbounded_channel();
             dante_adapter::spawn(dante.clone(), state.clone(), sink.clone(), rx);
@@ -242,6 +289,11 @@ impl AdapterRegistry {
 
     pub fn has(&self, kind: DeviceKind) -> bool {
         self.devices.iter().any(|d| d.kind == kind)
+    }
+
+    /// Fetch cached EasyWorship JPEG bytes by the key published in `SlideState.image`.
+    pub fn easyworship_image(&self, key: &str) -> Option<Vec<u8>> {
+        self.image_cache.lock().unwrap().get(key)
     }
 
     /// Route a normalized command. Returns `false` when no live adapter owns that domain, which
@@ -278,6 +330,11 @@ impl AdapterRegistry {
                 .as_ref()
                 .map(|tx| tx.send(command).is_ok())
                 .unwrap_or(false),
+            AdapterCommand::EasyWorship(command) => self
+                .easyworship
+                .as_ref()
+                .map(|tx| tx.send(command).is_ok())
+                .unwrap_or(false),
         }
     }
 }
@@ -299,6 +356,21 @@ mod tests {
         let registry = AdapterRegistry::start(&RuntimeConfig::default(), state(), sink);
         assert!(registry.devices().is_empty());
         assert!(!registry.dispatch(AdapterCommand::X32(X32Command::Identify)));
+    }
+
+    #[test]
+    fn registry_exposes_cached_easyworship_image_bytes() {
+        let sink = Arc::new(RecordingSink::new());
+        let registry = AdapterRegistry::start(&RuntimeConfig::default(), state(), sink);
+        let jpeg = vec![0xff, 0xd8, 0xff, 0xd9];
+        registry
+            .image_cache
+            .lock()
+            .unwrap()
+            .insert("current:hash".into(), jpeg.clone())
+            .unwrap();
+        assert_eq!(registry.easyworship_image("current:hash"), Some(jpeg));
+        assert!(registry.easyworship_image("missing").is_none());
     }
 
     #[tokio::test]
@@ -324,5 +396,23 @@ mod tests {
         assert!(!registry.dispatch(AdapterCommand::ProPresenter(
             ProPresenterCommand::Next
         )));
+        assert!(!registry.dispatch(AdapterCommand::EasyWorship(
+            EasyWorshipCommand::NextSlide
+        )));
+    }
+
+    #[tokio::test]
+    async fn easyworship_registry_advertises_slide_capability() {
+        let sink = Arc::new(RecordingSink::new());
+        let config = RuntimeConfig {
+            live: true,
+            easyworship: Some(EasyWorshipConfig::new("127.0.0.1:55123")),
+            ..RuntimeConfig::default()
+        };
+        let registry = AdapterRegistry::start(&config, state(), sink);
+        assert!(registry.has(DeviceKind::EasyWorship));
+        let device = &registry.devices()[0];
+        assert!(device.capabilities.slides);
+        assert!(!device.capabilities.meters);
     }
 }
