@@ -22,6 +22,11 @@ export interface AoipMatrixViewProps {
   routes: AoipRoute[];
   onRoutePatch: (rxIp: string, rxChanId: number, txChan: string, txDev: string) => void;
   onIdentifyDevice: (deviceIp: string) => void;
+  onControlDevice?: (
+    targetIp: string,
+    action: "sample_rate" | "latency_ms" | "device_lock" | "clock_leader",
+    value: number
+  ) => void | Promise<unknown>;
 }
 
 type SampleRateKhz = 48 | 96;
@@ -195,6 +200,7 @@ export const AoipMatrixView: React.FC<AoipMatrixViewProps> = ({
   routes,
   onRoutePatch,
   onIdentifyDevice,
+  onControlDevice,
 }) => {
   const [deviceLocked, setDeviceLocked] = useState<boolean>(false);
   const [selectedDevice, setSelectedDevice] = useState<string>("");
@@ -415,6 +421,21 @@ export const AoipMatrixView: React.FC<AoipMatrixViewProps> = ({
         ...patch,
       },
     }));
+  };
+
+  const activeDeviceIp = activeDeviceCfg.ip || deviceIpMap[activeDevice] || "";
+  const emitControl = (
+    action: "sample_rate" | "latency_ms" | "device_lock" | "clock_leader",
+    value: number
+  ) => {
+    if (!activeDeviceIp.trim()) {
+      showNotice(
+        `No IP configured for ${activeDevice} — set a device IP before sending Audio Network controls`
+      );
+      return false;
+    }
+    onControlDevice?.(activeDeviceIp, action, value);
+    return true;
   };
 
   const visibleTxCols = useMemo(
@@ -648,8 +669,10 @@ export const AoipMatrixView: React.FC<AoipMatrixViewProps> = ({
             type="button"
             onClick={() => {
               const next = !deviceLocked;
-              setDeviceLocked(next);
-              showNotice(next ? "Device Lock engaged: matrix read-only" : "Device Lock released");
+              if (emitControl("device_lock", next ? 1 : 0)) {
+                setDeviceLocked(next);
+                showNotice(next ? "Device Lock engaged: matrix read-only" : "Device Lock released");
+              }
             }}
             style={{
               height: 34,
@@ -724,8 +747,10 @@ export const AoipMatrixView: React.FC<AoipMatrixViewProps> = ({
                   type="button"
                   disabled={deviceLocked}
                   onClick={() => {
-                    patchDeviceConfig({ sampleRate: sr });
-                    showNotice(`${activeDevice} Sample Rate set to ${sr} kHz`);
+                    if (emitControl("sample_rate", sr)) {
+                      patchDeviceConfig({ sampleRate: sr });
+                      showNotice(`${activeDevice} Sample Rate set to ${sr} kHz`);
+                    }
                   }}
                   style={{
                     height: 28,
@@ -779,8 +804,10 @@ export const AoipMatrixView: React.FC<AoipMatrixViewProps> = ({
                   type="button"
                   disabled={deviceLocked}
                   onClick={() => {
-                    patchDeviceConfig({ latencyMs: lat });
-                    showNotice(`${activeDevice} Rx Latency set to ${lat.toFixed(lat < 1 ? 2 : 1)} ms`);
+                    if (emitControl("latency_ms", lat)) {
+                      patchDeviceConfig({ latencyMs: lat });
+                      showNotice(`${activeDevice} Rx Latency set to ${lat.toFixed(lat < 1 ? 2 : 1)} ms`);
+                    }
                   }}
                   style={{
                     height: 28,
@@ -801,6 +828,34 @@ export const AoipMatrixView: React.FC<AoipMatrixViewProps> = ({
               );
             })}
           </div>
+
+          {/* Clock Leader */}
+          <button
+            type="button"
+            disabled={deviceLocked}
+            onClick={() => {
+              if (emitControl("clock_leader", 1)) {
+                showNotice(`${activeDevice} set as Clock Leader`);
+              }
+            }}
+            style={{
+              height: 28,
+              padding: "0 10px",
+              borderRadius: 5,
+              fontSize: 11,
+              fontWeight: 700,
+              cursor: deviceLocked ? "not-allowed" : "pointer",
+              background: "#161B24",
+              border: "1px solid #F59E0B",
+              color: "#FBBF24",
+              opacity: deviceLocked ? 0.6 : 1,
+              display: "flex",
+              alignItems: "center",
+              gap: 5,
+            }}
+          >
+            <Clock size={12} /> Set Clock Leader
+          </button>
         </div>
 
         {/* Search & Spare Channel Toggle */}

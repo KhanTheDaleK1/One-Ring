@@ -6,6 +6,7 @@ import {
   applyMeterEvent,
   applyStatePatch,
   bridge,
+  broadcastLanSyncEvent,
   subscribeEvents,
   UPDATE_REPO_URL,
 } from "./bridge";
@@ -37,8 +38,12 @@ export const App: React.FC = () => {
   const [discoveredPeer, setDiscoveredPeer] = useState<DiscoveredPeerInfo | null>(null);
   const [showPreflight, setShowPreflight] = useState(false);
   const [builderIntent, setBuilderIntent] = useState<BuilderIntent>(null);
+  const [lanSyncConnected, setLanSyncConnected] = useState(false);
   const dismissedPeersRef = useRef<Set<string>>(new Set());
   const stateRef = useRef<AppStateSnapshot | null>(null);
+  const applyingRemoteSyncRef = useRef(false);
+  const lanSyncSocketRef = useRef<WebSocket | null>(null);
+  const lanSyncReconnectTimerRef = useRef<number | null>(null);
   const [showWelcomeTour, setShowWelcomeTour] = useState(() => {
     return localStorage.getItem("onering_tour_completed") !== "true";
   });
@@ -314,6 +319,204 @@ export const App: React.FC = () => {
     };
   }, [executeMidiAction]);
 
+  const emitLanSync = useCallback((kind: string, payload: unknown) => {
+    if (applyingRemoteSyncRef.current) return;
+    void broadcastLanSyncEvent(kind, payload);
+  }, []);
+
+  useEffect(() => {
+    const sync = state?.settings.sync;
+    const enabled = !!sync?.lanDiscoveryEnabled;
+    let target: string | null = null;
+    if (enabled) {
+      try {
+        const url = new URL((sync?.hubAddress || "").trim());
+        if (
+          url.protocol === "ws:" &&
+          url.hostname &&
+          url.hostname !== "0.0.0.0" &&
+          url.port === "47800"
+        ) {
+          target = `ws://${url.hostname}:47800`;
+        }
+      } catch {}
+    }
+
+    const cleanupSocket = () => {
+      if (lanSyncReconnectTimerRef.current !== null) {
+        window.clearTimeout(lanSyncReconnectTimerRef.current);
+        lanSyncReconnectTimerRef.current = null;
+      }
+      const ws = lanSyncSocketRef.current;
+      if (ws) {
+        ws.onopen = null;
+        ws.onclose = null;
+        ws.onerror = null;
+        ws.onmessage = null;
+        try {
+          ws.close();
+        } catch {}
+        lanSyncSocketRef.current = null;
+      }
+    };
+
+    if (!target) {
+      cleanupSocket();
+      setLanSyncConnected(false);
+      return;
+    }
+
+    let disposed = false;
+
+    const applyRemote = (fn: () => void) => {
+      applyingRemoteSyncRef.current = true;
+      try {
+        fn();
+      } finally {
+        queueMicrotask(() => {
+          applyingRemoteSyncRef.current = false;
+        });
+      }
+    };
+
+    const applySlideNumber = (slideNumber: number) => {
+      setState((prev) => {
+        if (!prev) return prev;
+        const slidesArr = prev.slides.slides ?? [];
+        const total = Math.max(1, slidesArr.length || prev.slides.totalSlides || 1);
+        const targetNum = Math.max(1, Math.min(total, slideNumber));
+        return {
+          ...prev,
+          slides: {
+            ...prev.slides,
+            currentSlide: targetNum,
+            totalSlides: total,
+            cleared: false,
+            currentText: slidesArr[targetNum - 1]?.text ?? prev.slides.currentText,
+            nextText: slidesArr[targetNum]?.text ?? "",
+          },
+        };
+      });
+    };
+
+    const connect = () => {
+      if (disposed) return;
+      cleanupSocket();
+      try {
+        const ws = new WebSocket(target!);
+        lanSyncSocketRef.current = ws;
+        ws.onopen = () => {
+          if (!disposed) setLanSyncConnected(true);
+        };
+        ws.onclose = () => {
+          if (disposed) return;
+          setLanSyncConnected(false);
+          lanSyncSocketRef.current = null;
+          lanSyncReconnectTimerRef.current = window.setTimeout(connect, 2000);
+        };
+        ws.onerror = () => {
+          try {
+            ws.close();
+          } catch {}
+        };
+        ws.onmessage = (event) => {
+          let msg: any;
+          try {
+            msg = JSON.parse(String(event.data));
+          } catch {
+            return;
+          }
+          if (!msg || typeof msg.kind !== "string") return;
+          const payload = msg.payload ?? {};
+          if (msg.kind === "cue_triggered") {
+            const cueIndex =
+              typeof payload.cueIndex === "number"
+                ? payload.cueIndex
+                : typeof payload.index === "number"
+                  ? payload.index
+                  : null;
+            if (cueIndex !== null) {
+              applyRemote(() => {
+                setState((prev) => (prev ? { ...prev, activeCueIndex: cueIndex } : prev));
+              });
+            }
+          } else if (msg.kind === "slide_changed") {
+            applyRemote(() => {
+              if (payload && typeof payload === "object" && payload.slides && typeof payload.slides === "object") {
+                setState((prev) => (prev ? { ...prev, slides: payload.slides as any } : prev));
+                return;
+              }
+              if (typeof payload.slideNumber === "number") {
+                applySlideNumber(payload.slideNumber);
+                return;
+              }
+              if (typeof payload.action === "string") {
+                if (payload.action === "next" || payload.action === "prev") {
+                  setState((prev) => {
+                    if (!prev) return prev;
+                    const delta = payload.action === "next" ? 1 : -1;
+                    const slidesArr = prev.slides.slides ?? [];
+                    const total = Math.max(1, slidesArr.length || prev.slides.totalSlides || 1);
+                    const targetNum = Math.max(1, Math.min(total, (prev.slides.currentSlide || 1) + delta));
+                    return {
+                      ...prev,
+                      slides: {
+                        ...prev.slides,
+                        currentSlide: targetNum,
+                        totalSlides: total,
+                        cleared: false,
+                        currentText: slidesArr[targetNum - 1]?.text ?? prev.slides.currentText,
+                        nextText: slidesArr[targetNum]?.text ?? "",
+                      },
+                    };
+                  });
+                } else if (payload.action === "clear") {
+                  setState((prev) =>
+                    prev ? { ...prev, slides: { ...prev.slides, cleared: !prev.slides.cleared } } : prev
+                  );
+                }
+              }
+            });
+          } else if (msg.kind === "stage_alert") {
+            applyRemote(() => {
+              setState((prev) => {
+                if (!prev) return prev;
+                const slides = { ...prev.slides };
+                if (typeof payload.message === "string" || payload.message === null) {
+                  const text = payload.message ?? "";
+                  slides.stageMessage = text;
+                  if (typeof payload.visible === "boolean") {
+                    slides.stageMessageVisible = payload.visible;
+                  } else if (typeof payload.stageMessageVisible !== "boolean") {
+                    slides.stageMessageVisible = text.trim().length > 0;
+                  }
+                } else if (typeof payload.stageMessage === "string") {
+                  slides.stageMessage = payload.stageMessage;
+                }
+                if (typeof payload.visible === "boolean") slides.stageMessageVisible = payload.visible;
+                if (typeof payload.stageMessageVisible === "boolean") slides.stageMessageVisible = payload.stageMessageVisible;
+                if (typeof payload.flash === "boolean") slides.stageMessageFlash = payload.flash;
+                if (typeof payload.stageMessageFlash === "boolean") slides.stageMessageFlash = payload.stageMessageFlash;
+                return { ...prev, slides };
+              });
+            });
+          }
+        };
+      } catch {
+        setLanSyncConnected(false);
+        lanSyncReconnectTimerRef.current = window.setTimeout(connect, 2000);
+      }
+    };
+
+    connect();
+
+    return () => {
+      disposed = true;
+      cleanupSocket();
+      setLanSyncConnected(false);
+    };
+  }, [state?.settings.sync.lanDiscoveryEnabled, state?.settings.sync.hubAddress]);
+
   const isOutputWindow = typeof window !== "undefined" && new URLSearchParams(window.location.search).has("output");
 
   useEffect(() => {
@@ -426,6 +629,33 @@ export const App: React.FC = () => {
         </div>
 
         <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          {lanSyncConnected && (
+            <span
+              className="mono"
+              title="Connected to paired station sync"
+              style={{
+                fontSize: 11,
+                padding: "4px 9px",
+                borderRadius: 999,
+                background: "#052E2B",
+                border: "1px solid #0F766E",
+                color: "#99F6E4",
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 6,
+              }}
+            >
+              <span
+                style={{
+                  width: 7,
+                  height: 7,
+                  borderRadius: "50%",
+                  background: "#14B8A6",
+                }}
+              />
+              Synced
+            </span>
+          )}
           {(state.settings.general.canvasTabs || [
             { id: "mixing", label: "Mixing", enabled: true },
             { id: "video", label: "Video", enabled: true },
@@ -550,9 +780,11 @@ export const App: React.FC = () => {
         <SlidesCanvasView
           state={state}
           onSelectSlide={(slideNumber) => {
+            emitLanSync("slide_changed", { slideNumber });
             bridge.goToSlide(slideNumber).then(setState);
           }}
           onSlideAction={(act) => {
+            emitLanSync("slide_changed", { action: act });
             bridge.triggerSlideAction(act).then(setState);
           }}
           onImportSong={(title, importedSlides) => {
@@ -574,6 +806,7 @@ export const App: React.FC = () => {
                 slides: importedSlides,
               };
               bridge.syncWorkspaceState({ slides: nextSlides }).catch(() => {});
+              emitLanSync("slide_changed", { slides: nextSlides });
               return { ...prev, slides: nextSlides };
             });
           }}
@@ -593,6 +826,7 @@ export const App: React.FC = () => {
             };
             setState((prev) => (prev ? { ...prev, slides: nextSlides } : prev));
             bridge.syncWorkspaceState({ slides: nextSlides }).catch(() => {});
+            emitLanSync("slide_changed", { slides: nextSlides });
           }}
           onRemoveSong={(songId) => {
             const remaining = (state.slides.songs || []).filter((s) => s.id !== songId);
@@ -613,11 +847,13 @@ export const App: React.FC = () => {
             };
             setState((prev) => (prev ? { ...prev, slides: nextSlides } : prev));
             bridge.syncWorkspaceState({ slides: nextSlides }).catch(() => {});
+            emitLanSync("slide_changed", { slides: nextSlides });
           }}
           onUpdateTheme={(theme) => {
             const nextSlides = { ...state.slides, theme };
             setState((prev) => (prev ? { ...prev, slides: nextSlides } : prev));
             bridge.syncWorkspaceState({ slides: nextSlides }).catch(() => {});
+            emitLanSync("slide_changed", { slides: nextSlides });
           }}
         />
       )}
@@ -667,13 +903,22 @@ export const App: React.FC = () => {
       {mode === "master" && (
         <ShowModeView
           state={state}
-          onTriggerCue={(idx) => bridge.triggerCue(idx).then(setState)}
+          onTriggerCue={(idx) => {
+            emitLanSync("cue_triggered", { cueIndex: idx });
+            return bridge.triggerCue(idx).then(setState);
+          }}
           onUndoCue={() => bridge.undoLastCue().then(setState)}
           onToggleDcaMute={(id) => bridge.toggleDcaMute(id).then(setState)}
           onNudgeDca={(id, delta) => bridge.nudgeDcaLevel(id, delta).then(setState)}
           onRecallCamera={(id) => bridge.recallCameraPreset(id).then(setState)}
-          onSlideAction={(act) => bridge.triggerSlideAction(act).then(setState)}
-          onSelectSlide={(slideNumber) => bridge.goToSlide(slideNumber).then(setState)}
+          onSlideAction={(act) => {
+            emitLanSync("slide_changed", { action: act });
+            return bridge.triggerSlideAction(act).then(setState);
+          }}
+          onSelectSlide={(slideNumber) => {
+            emitLanSync("slide_changed", { slideNumber });
+            return bridge.goToSlide(slideNumber).then(setState);
+          }}
           onTimerControl={(operation) => bridge.controlPresentationTimer(operation).then(setState)}
           onStageMessage={(message) => bridge.setStageMessage(message).then(setState)}
           onStageMessageFlag={(field, value) => bridge.setStageMessageFlag(field, value).then(setState)}

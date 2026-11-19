@@ -45,6 +45,23 @@ interface PtzControlDeckModalProps {
   onDrive?: (pan: number, tilt: number, zoom: number, ip: string, port: number) => void;
   onRecallPreset?: (presetNum: number, ip: string, port: number) => void;
   onSavePreset?: (presetNum: number, name: string, ip: string, port: number) => void;
+  onOptics?: (
+    ip: string,
+    port: number,
+    action:
+      | "home"
+      | "focus_auto"
+      | "focus_manual"
+      | "focus_near"
+      | "focus_far"
+      | "focus_stop"
+      | "iris_up"
+      | "iris_down"
+      | "iris_reset"
+      | "wb_mode"
+      | "exposure_mode",
+    value?: number
+  ) => void | Promise<unknown>;
   // Optics / home hooks are optional so existing callers keep working unchanged.
   onFocusMode?: (mode: "auto" | "manual", ip: string, port: number) => void;
   onFocusDrive?: (dir: -1 | 0 | 1, ip: string, port: number) => void;
@@ -256,6 +273,7 @@ export const PtzControlDeckModal: React.FC<PtzControlDeckModalProps> = ({
   onDrive,
   onRecallPreset,
   onSavePreset,
+  onOptics,
   onFocusMode,
   onFocusDrive,
   onIrisStep,
@@ -318,13 +336,14 @@ export const PtzControlDeckModal: React.FC<PtzControlDeckModalProps> = ({
     const ip = selectedCamera.ip.trim();
     const port = selectedCamera.port;
     if (active === "FOCUS_NEAR" || active === "FOCUS_FAR") {
+      onOptics?.(ip, port, "focus_stop");
       onFocusDrive?.(0, ip, port);
     } else if (active === "IRIS_OPEN" || active === "IRIS_CLOSE") {
       onIrisStep?.(0, ip, port);
     } else {
       onDrive?.(0, 0, 0, ip, port);
     }
-  }, [onDrive, onFocusDrive, onIrisStep, selectedCamera.ip, selectedCamera.port]);
+  }, [onDrive, onFocusDrive, onIrisStep, onOptics, selectedCamera.ip, selectedCamera.port]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -393,7 +412,12 @@ export const PtzControlDeckModal: React.FC<PtzControlDeckModalProps> = ({
     });
 
   const driveFocus = (dir: -1 | 0 | 1, key: string) => {
-    onFocusDrive?.(dir, selectedCamera.ip.trim(), selectedCamera.port);
+    const ip = selectedCamera.ip.trim();
+    const port = selectedCamera.port;
+    if (dir === 1) onOptics?.(ip, port, "focus_far");
+    else if (dir === -1) onOptics?.(ip, port, "focus_near");
+    else onOptics?.(ip, port, "focus_stop");
+    onFocusDrive?.(dir, ip, port);
     setStatusNote(
       dir === 0
         ? `Focus drive stopped on ${selectedCamera.name}`
@@ -406,10 +430,15 @@ export const PtzControlDeckModal: React.FC<PtzControlDeckModalProps> = ({
   };
 
   const driveIris = (dir: -1 | 0 | 1, key: string) => {
-    onIrisStep?.(dir, selectedCamera.ip.trim(), selectedCamera.port);
+    const ip = selectedCamera.ip.trim();
+    const port = selectedCamera.port;
+    if (dir === 1) onOptics?.(ip, port, "iris_up");
+    else if (dir === -1) onOptics?.(ip, port, "iris_down");
+    else onOptics?.(ip, port, "iris_reset");
+    onIrisStep?.(dir, ip, port);
     setStatusNote(
       dir === 0
-        ? `Iris reset/stopped on ${selectedCamera.name}`
+        ? `Iris reset on ${selectedCamera.name}`
         : `Iris ${dir > 0 ? "OPEN" : "CLOSE"} -> ${target}`
     );
     if (dir !== 0) {
@@ -851,8 +880,11 @@ export const PtzControlDeckModal: React.FC<PtzControlDeckModalProps> = ({
                         key={m}
                         type="button"
                         onClick={() => {
+                          const ip = selectedCamera.ip.trim();
+                          const port = selectedCamera.port;
                           setFocusMode(m);
-                          onFocusMode?.(m, selectedCamera.ip.trim(), selectedCamera.port);
+                          onOptics?.(ip, port, m === "auto" ? "focus_auto" : "focus_manual");
+                          onFocusMode?.(m, ip, port);
                           setStatusNote(`Focus mode -> ${m.toUpperCase()} on ${selectedCamera.name} (${target})`);
                         }}
                         style={{
@@ -937,8 +969,11 @@ export const PtzControlDeckModal: React.FC<PtzControlDeckModalProps> = ({
                         key={wb.mode}
                         type="button"
                         onClick={() => {
+                          const ip = selectedCamera.ip.trim();
+                          const port = selectedCamera.port;
                           setWhiteBalanceMode(wb.mode);
-                          onWhiteBalance?.(wb.mode, selectedCamera.ip.trim(), selectedCamera.port);
+                          onOptics?.(ip, port, "wb_mode", wb.mode);
+                          onWhiteBalance?.(wb.mode, ip, port);
                           setStatusNote(`White balance -> ${wb.label} on ${selectedCamera.name} (${target})`);
                         }}
                         style={{
@@ -968,8 +1003,11 @@ export const PtzControlDeckModal: React.FC<PtzControlDeckModalProps> = ({
                         key={ex.mode}
                         type="button"
                         onClick={() => {
+                          const ip = selectedCamera.ip.trim();
+                          const port = selectedCamera.port;
                           setExposureMode(ex.mode);
-                          onExposureMode?.(ex.mode, selectedCamera.ip.trim(), selectedCamera.port);
+                          onOptics?.(ip, port, "exposure_mode", ex.mode);
+                          onExposureMode?.(ex.mode, ip, port);
                           setStatusNote(`Exposure -> ${ex.label} on ${selectedCamera.name} (${target})`);
                         }}
                         style={{
@@ -993,7 +1031,10 @@ export const PtzControlDeckModal: React.FC<PtzControlDeckModalProps> = ({
               <button
                 type="button"
                 onClick={() => {
-                  onHome?.(selectedCamera.ip.trim(), selectedCamera.port);
+                  const ip = selectedCamera.ip.trim();
+                  const port = selectedCamera.port;
+                  onOptics?.(ip, port, "home");
+                  onHome?.(ip, port);
                   setStatusNote(`HOME sent to ${selectedCamera.name} (${target})`);
                 }}
                 className="btn"

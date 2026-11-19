@@ -1,5 +1,5 @@
 import { PtzControlDeckModal } from "./PtzControlDeckModal";
-import { ptzDriveCamera, ptzRecallPreset, ptzStorePreset } from "../bridge";
+import { ptzDriveCamera, ptzOpticsCommand, ptzRecallPreset, ptzStorePreset } from "../bridge";
 import React, { useEffect, useRef, useState } from "react";
 import {
   Play,
@@ -1826,6 +1826,9 @@ export const ShowModeView: React.FC<ShowModeViewProps> = ({
           }}
           onSavePreset={(presetNum, _name, ip, port) => {
             ptzStorePreset(ip, port, presetNum).catch(() => {});
+          }}
+          onOptics={(ip, port, action, value) => {
+            ptzOpticsCommand(ip, port, action, value).catch(() => {});
           }}
         />
       )}

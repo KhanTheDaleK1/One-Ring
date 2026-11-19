@@ -19,6 +19,7 @@ import type {
   RecordingFormat,
   VideoEncoder,
 } from "../types";
+import { listHostDisplays, type HostDisplayInfo } from "../bridge";
 
 interface SettingsViewProps {
   state: AppStateSnapshot;
@@ -116,6 +117,51 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ state, onSave, onChe
   const [showSecret, setShowSecret] = useState(false);
   const [showMidiModal, setShowMidiModal] = useState(false);
   const [saveNote, setSaveNote] = useState<string | null>(null);
+  const [hostDisplays, setHostDisplays] = useState<HostDisplayInfo[]>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    listHostDisplays()
+      .then((displays) => {
+        if (!cancelled) setHostDisplays(Array.isArray(displays) ? displays : []);
+      })
+      .catch(() => {
+        if (!cancelled) setHostDisplays([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const renderDisplaySelect = (
+    value: string,
+    onChange: (next: string) => void,
+    ariaLabel: string
+  ) => {
+    const options = [...hostDisplays];
+    const hasCurrent = value && !options.some((d) => d.id === value || d.name === value);
+    return (
+      <select
+        aria-label={ariaLabel}
+        style={inputStyle}
+        className="mono"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+      >
+        <option value="">Unassigned</option>
+        {hasCurrent && <option value={value}>{value} (current)</option>}
+        {options.map((d) => {
+          const label = `${d.name}${d.primary ? " (Primary)" : ""} — ${d.width}x${d.height} @ ${d.x},${d.y}`;
+          const optionValue = d.id || d.name;
+          return (
+            <option key={d.id || `${d.name}-${d.x}-${d.y}`} value={optionValue}>
+              {label}
+            </option>
+          );
+        })}
+      </select>
+    );
+  };
 
   // Re-hydrate the form whenever the authoritative AppState settings actually
   // change (initial load, save round-trip, or a pushed IPC patch). Compare the
@@ -654,62 +700,46 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ state, onSave, onChe
             description="Choose which output surface receives each presentation role."
           >
             <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 12 }}>
-              <Field label="FOH Window" hint="Operator preview / control surface.">
-                <input
-                  style={inputStyle}
-                  className="mono"
-                  list="display-assignments"
-                  value={draft.slides.displayAssignments.fohWindow}
-                  onChange={(e) =>
+              <Field label="FOH Display" hint="Operator preview / FOH output window.">
+                {renderDisplaySelect(
+                  draft.slides.displayAssignments.fohWindow,
+                  (next) =>
                     patchSection("slides", {
                       displayAssignments: {
                         ...draft.slides.displayAssignments,
-                        fohWindow: e.target.value,
+                        fohWindow: next,
                       },
-                    })
-                  }
-                />
+                    }),
+                  "FOH Display"
+                )}
               </Field>
-              <Field label="Stage Display Window" hint="Confidence lyrics / clock output.">
-                <input
-                  style={inputStyle}
-                  className="mono"
-                  list="display-assignments"
-                  value={draft.slides.displayAssignments.stageDisplayWindow}
-                  onChange={(e) =>
+              <Field label="Stage Display" hint="Confidence lyrics / clock output.">
+                {renderDisplaySelect(
+                  draft.slides.displayAssignments.stageDisplayWindow,
+                  (next) =>
                     patchSection("slides", {
                       displayAssignments: {
                         ...draft.slides.displayAssignments,
-                        stageDisplayWindow: e.target.value,
+                        stageDisplayWindow: next,
                       },
-                    })
-                  }
-                />
+                    }),
+                  "Stage Display"
+                )}
               </Field>
-              <Field label="Alpha key output" hint="Lower-third key or alpha channel destination.">
-                <input
-                  style={inputStyle}
-                  className="mono"
-                  list="display-assignments"
-                  value={draft.slides.displayAssignments.ipVideoAlphaOutput}
-                  onChange={(e) =>
+              <Field label="Multiview Output" hint="Multiview / alpha key or secondary output window.">
+                {renderDisplaySelect(
+                  draft.slides.displayAssignments.ipVideoAlphaOutput,
+                  (next) =>
                     patchSection("slides", {
                       displayAssignments: {
                         ...draft.slides.displayAssignments,
-                        ipVideoAlphaOutput: e.target.value,
+                        ipVideoAlphaOutput: next,
                       },
-                    })
-                  }
-                />
+                    }),
+                  "Multiview Output"
+                )}
               </Field>
             </div>
-            <datalist id="display-assignments">
-              <option value="DISPLAY1 — FOH Operator (1920x1080)" />
-              <option value="DISPLAY2 — Stage Confidence (1920x1080)" />
-              <option value="DISPLAY3 — 4K Broadcast (3840x2160)" />
-              <option value="Network Video — Stage Display" />
-              <option value="Network Video — Audience Alpha Key" />
-            </datalist>
           </SubSection>
         </div>
       )}

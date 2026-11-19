@@ -26,7 +26,7 @@ import {
   toEditableSlide,
   type EditableSlide,
 } from "./SlideEditorModal";
-import { importSlideArchive, bridge } from "../bridge";
+import { bridge, importSlideArchive, listHostDisplays, type HostDisplayInfo } from "../bridge";
 import { BibleLookupModal } from "./BibleLookupModal";
 import { TimersAndAlertsModal } from "./TimersAndAlertsModal";
 
@@ -277,7 +277,43 @@ export const SlidesCanvasView: React.FC<SlidesCanvasViewProps> = ({
   const [showSlideEditor, setShowSlideEditor] = useState(false);
   const [editorInitialIndex, setEditorInitialIndex] = useState(0);
   const [stageLayout, setStageLayout] = useState<StageLayoutMode>("classic");
+  const [hostDisplays, setHostDisplays] = useState<HostDisplayInfo[]>([]);
   const fileImportRef = React.useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    listHostDisplays()
+      .then((displays) => {
+        if (!cancelled) setHostDisplays(Array.isArray(displays) ? displays : []);
+      })
+      .catch(() => {
+        if (!cancelled) setHostDisplays([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const openOutputWindow = (
+    path: string,
+    target: string,
+    assignmentKey: "fohWindow" | "stageDisplayWindow" | "ipVideoAlphaOutput",
+    fallback: { w: number; h: number }
+  ) => {
+    const assignment = state.settings?.slides?.displayAssignments?.[assignmentKey] || "";
+    const display =
+      hostDisplays.find((d) => d.id === assignment || d.name === assignment) ||
+      hostDisplays.find((d) => d.primary) ||
+      hostDisplays[0];
+    const w = display?.width || fallback.w;
+    const h = display?.height || fallback.h;
+    const left = display?.x ?? 0;
+    const top = display?.y ?? 0;
+    const features = `popup=yes,left=${Math.round(left)},top=${Math.round(top)},width=${Math.round(
+      w
+    )},height=${Math.round(h)}`;
+    window.open(window.location.origin + path, target, features);
+  };
 
   const handleFileImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -531,7 +567,7 @@ export const SlidesCanvasView: React.FC<SlidesCanvasViewProps> = ({
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <button
             type="button"
-            onClick={() => window.open(window.location.origin + "/?output=foh", "onering_foh", "popup,width=1280,height=720")}
+            onClick={() => openOutputWindow("/?output=foh", "onering_foh", "fohWindow", { w: 1280, h: 720 })}
             title="Open dedicated fullscreen/second-monitor FOH output window"
             style={{
               height: 34,
@@ -552,7 +588,9 @@ export const SlidesCanvasView: React.FC<SlidesCanvasViewProps> = ({
           </button>
           <button
             type="button"
-            onClick={() => window.open(window.location.origin + "/?output=lower_third", "onering_lower", "popup,width=1280,height=720")}
+            onClick={() =>
+              openOutputWindow("/?output=lower_third", "onering_lower", "ipVideoAlphaOutput", { w: 1280, h: 720 })
+            }
             title="Open Lower Thirds Overlay Window"
             style={{
               height: 34,
@@ -573,7 +611,9 @@ export const SlidesCanvasView: React.FC<SlidesCanvasViewProps> = ({
           </button>
           <button
             type="button"
-            onClick={() => window.open(window.location.origin + "/?output=stage", "onering_stage", "popup,width=1024,height=600")}
+            onClick={() =>
+              openOutputWindow("/?output=stage", "onering_stage", "stageDisplayWindow", { w: 1024, h: 600 })
+            }
             title="Open Stage Confidence Window"
             style={{
               height: 34,

@@ -2,7 +2,7 @@ import React, { useState } from "react";
 import type { AppStateSnapshot } from "../types";
 import { ConsoleFullMixerModal } from "./ConsoleFullMixerModal";
 import { AoipMatrixView } from "./AoipMatrixView";
-import { routeAoipCrosspoint, sendConsoleOsc } from "../bridge";
+import { aoipControlCommand, routeAoipCrosspoint, sendConsoleOsc } from "../bridge";
 
 interface EngineerViewProps {
   state: AppStateSnapshot;
@@ -359,6 +359,9 @@ export const EngineerView: React.FC<EngineerViewProps> = ({
               routeAoipCrosspoint(rxIp, rxChanId, txChan, txDev).catch(() => {});
             }}
             onIdentifyDevice={(deviceIp) => onFlashAoipIdentify(deviceIp)}
+            onControlDevice={(targetIp, action, value) => {
+              aoipControlCommand(targetIp, action, value).catch(() => {});
+            }}
           />
         </div>
       )}

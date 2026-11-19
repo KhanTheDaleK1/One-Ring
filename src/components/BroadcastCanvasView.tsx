@@ -34,13 +34,17 @@ import { AddSourceModal } from "./AddSourceModal";
 import { BroadcastAudioMixerPanel } from "./BroadcastAudioMixerPanel";
 import {
   getMediaEngineStatus,
-  startHeadlessMediaDaemon,
-  startDirectFfmpegStream,
-  stopDirectFfmpegStream,
-  startReplayBuffer,
-  stopReplayBuffer,
-  saveReplayBuffer,
+  probeHardwareEncoders,
   remuxRecordingToMp4,
+  saveReplayBuffer,
+  startDirectFfmpegStream,
+  startHeadlessMediaDaemon,
+  startReplayBuffer,
+  startStudioCompositor,
+  stopDirectFfmpegStream,
+  stopReplayBuffer,
+  stopStudioCompositor,
+  type EncoderCapability,
   type MediaEngineStatus,
 } from "../bridge";
 import { ProgramCanvasRenderer } from "./ProgramCanvasRenderer";
@@ -241,7 +245,30 @@ export const BroadcastCanvasView: React.FC<BroadcastCanvasViewProps> = ({
   const [renameText, setRenameText] = useState("");
   const [showAddSource, setShowAddSource] = useState(false);
   const [showBroadcastSettings, setShowBroadcastSettings] = useState(false);
+  const [hardwareEncoders, setHardwareEncoders] = useState<EncoderCapability[]>([]);
+  const [encodersLoading, setEncodersLoading] = useState(false);
+  const [nativeCompositorRunning, setNativeCompositorRunning] = useState(false);
+  const [nativeCompositorBusy, setNativeCompositorBusy] = useState(false);
   const [studioMode, setStudioMode] = useState(false);
+
+  const refreshHardwareEncoders = useCallback(async () => {
+    setEncodersLoading(true);
+    try {
+      const encoders = await probeHardwareEncoders();
+      setHardwareEncoders(Array.isArray(encoders) ? encoders : []);
+    } catch {
+      setHardwareEncoders([]);
+    } finally {
+      setEncodersLoading(false);
+    }
+  }, []);
+
+  const handleOpenBroadcastSettings = useCallback(() => {
+    setShowBroadcastSettings(true);
+    void refreshHardwareEncoders();
+  }, [refreshHardwareEncoders]);
+
+  // (moved below after profile/stream state and notify are initialized)
   const [tBarValue, setTBarValue] = useState(0);
   const [transitionType, setTransitionType] = useState<"Cut" | "Fade" | "Slide" | "Stinger">("Fade");
   const [stingerPath, setStingerPath] = useState("");
@@ -310,6 +337,62 @@ export const BroadcastCanvasView: React.FC<BroadcastCanvasViewProps> = ({
       toastTimerRef.current = null;
     }, 2600);
   }, []);
+
+  const handleToggleNativeCompositor = useCallback(async () => {
+    if (nativeCompositorBusy) return;
+    setNativeCompositorBusy(true);
+    try {
+      const [wStr, hStr] = (broadcastProfile.outputResolution || "1920x1080").split("x");
+      const width = Number.parseInt(wStr || "1920", 10) || 1920;
+      const height = Number.parseInt(hStr || "1080", 10) || 1080;
+      if (nativeCompositorRunning) {
+        const msg = await stopStudioCompositor();
+        setNativeCompositorRunning(false);
+        notify(msg || "Native compositor worker stopped");
+      } else {
+        const dest =
+          state.settings?.broadcast?.destinations?.find((d) => d.enabled) ||
+          state.settings?.broadcast?.destinations?.[0];
+        const effectiveUrl = streamConfig.rtmpUrl || dest?.rtmpUrl || "";
+        const effectiveKey = streamConfig.streamKey || dest?.streamKey || "";
+        const rtmpUrl = effectiveUrl
+          ? effectiveKey
+            ? `${effectiveUrl.replace(/\/$/, "")}/${effectiveKey}`
+            : effectiveUrl
+          : null;
+        const recExt = broadcastProfile.recordingFormat || "mp4";
+        const recordPath = state.settings?.broadcast?.recordingPath
+          ? `${state.settings.broadcast.recordingPath.replace(/[\/]+$/, "")}/compositor_${Date.now()}.${recExt}`
+          : null;
+        const msg = await startStudioCompositor({
+          rtmpUrl,
+          recordPath,
+          width,
+          height,
+          fps: broadcastProfile.fps || 30,
+          videoBitrateKbps: broadcastProfile.bitrateKbps || 6000,
+        });
+        setNativeCompositorRunning(true);
+        notify(msg || "Native compositor worker started");
+      }
+    } catch (err) {
+      notify(`Native compositor worker error: ${String(err)}`);
+    } finally {
+      setNativeCompositorBusy(false);
+    }
+  }, [
+    nativeCompositorBusy,
+    nativeCompositorRunning,
+    broadcastProfile.outputResolution,
+    broadcastProfile.recordingFormat,
+    broadcastProfile.fps,
+    broadcastProfile.bitrateKbps,
+    state.settings?.broadcast?.destinations,
+    state.settings?.broadcast?.recordingPath,
+    streamConfig.rtmpUrl,
+    streamConfig.streamKey,
+    notify,
+  ]);
 
   useEffect(() => {
     return () => {
@@ -1186,7 +1269,7 @@ export const BroadcastCanvasView: React.FC<BroadcastCanvasViewProps> = ({
 
           <button
             type="button"
-            onClick={() => setShowBroadcastSettings(true)}
+            onClick={handleOpenBroadcastSettings}
             title="Open Broadcast Settings (Stream, Output, Video, Hotkeys)"
             style={{
               height: 36,
@@ -2645,6 +2728,11 @@ export const BroadcastCanvasView: React.FC<BroadcastCanvasViewProps> = ({
         onSaveStreamConfig={handleSaveBroadcastStreamConfig}
         hotkeys={hotkeys}
         onSaveHotkeys={handleSaveBroadcastHotkeys}
+        hardwareEncoders={hardwareEncoders}
+        encodersLoading={encodersLoading}
+        nativeCompositorRunning={nativeCompositorRunning}
+        nativeCompositorBusy={nativeCompositorBusy}
+        onToggleNativeCompositor={handleToggleNativeCompositor}
       />
 
       {/* Source Settings & Properties Modal */}

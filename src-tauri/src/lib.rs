@@ -1,10 +1,15 @@
 
 use peer_discovery::{PeerRegistry, DiscoveredPeer};
 pub mod protocols;
-mod runtime;
+pub mod runtime;
 mod state;
 pub mod updater;
 pub mod peer_discovery;
+
+use futures_util::SinkExt;
+use serde::{Deserialize, Serialize};
+use tokio::sync::mpsc;
+use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 use runtime::events::{CueProgressEvent, EventSink, HealthEvent, MeterEvent, StatePatch};
 use runtime::aoip_adapter::AoipCommand;
@@ -16,15 +21,116 @@ use runtime::dual_stream_adapter::DualStreamCommand;
 use runtime::console_adapter::ConsoleCommand;
 use runtime::{AdapterCommand, AdapterRegistry, RuntimeConfig};
 use state::{
-    recompute_derived_alerts, with_state, AppSettings, AppStateSnapshot, CueVerificationReport,
-    CueVerificationStep, AoipRoute, ManagedState, SceneSourceItem, ServiceCue, SharedState,
-    ShowFile, SlideState, UndoEntry,
+    recompute_derived_alerts, with_state, AoipRoute, AppSettings, AppStateSnapshot,
+    CueVerificationReport, CueVerificationStep, ManagedState, PreflightCheck, SceneSourceItem,
+    ServiceCue, SharedState, ShowFile, SlideState, UndoEntry,
 };
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 
 static PTZ_IP_SEQ: AtomicU32 = AtomicU32::new(1);
 use tauri::{Emitter, Manager, State};
+
+/// A physical display attached to the host, reported in physical pixels.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HostDisplayInfo {
+    pub name: String,
+    pub width: u32,
+    pub height: u32,
+    pub x: i32,
+    pub y: i32,
+    pub scale_factor: f64,
+    pub is_primary: bool,
+}
+
+/// Outbound LAN sync relay. envelopes are queued to one background WebSocket client that posts
+/// them into the hub started alongside peer discovery; the hub fans them out to the other stations.
+#[derive(Clone)]
+pub struct LanSyncHub {
+    outbound: mpsc::UnboundedSender<String>,
+    station_id: String,
+}
+
+impl LanSyncHub {
+    pub fn connect(hub_address: &str, station_id: String) -> Self {
+        let (outbound, inbound) = mpsc::unbounded_channel::<String>();
+        let url = normalize_lan_sync_url(hub_address);
+        std::thread::spawn(move || {
+            let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            else {
+                return;
+            };
+            runtime.block_on(relay_lan_sync_envelopes(url, inbound));
+        });
+        Self {
+            outbound,
+            station_id,
+        }
+    }
+
+    /// Serialize one sync envelope and hand it to the relay. Returns an error only when the relay
+    /// task has gone away, so callers never silently drop an envelope without knowing.
+    pub fn publish(&self, kind: &str, payload: serde_json::Value) -> Result<(), String> {
+        if kind.trim().is_empty() {
+            return Err("LAN sync kind must not be empty".into());
+        }
+        let envelope = serde_json::json!({
+            "senderId": self.station_id,
+            "kind": kind,
+            "payload": payload,
+            "sentAtMs": unix_millis(),
+        });
+        self.outbound
+            .send(envelope.to_string())
+            .map_err(|_| "LAN sync relay is offline".into())
+    }
+}
+
+fn normalize_lan_sync_url(address: &str) -> String {
+    let trimmed = address.trim();
+    let with_scheme = if trimmed.starts_with("ws://") || trimmed.starts_with("wss://") {
+        trimmed.to_string()
+    } else {
+        format!("ws://{trimmed}")
+    };
+    with_scheme.replace("ws://0.0.0.0", "ws://127.0.0.1")
+}
+
+fn unix_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+async fn relay_lan_sync_envelopes(url: String, mut inbound: mpsc::UnboundedReceiver<String>) {
+    let mut pending: Option<String> = None;
+    loop {
+        if pending.is_none() {
+            pending = inbound.recv().await;
+        }
+        let Some(text) = pending.clone() else {
+            break;
+        };
+        match connect_async(&url).await {
+            Ok((mut socket, _)) => {
+                if socket.send(Message::Text(text.clone().into())).await.is_ok() {
+                    pending = None;
+                    while let Some(next) = inbound.recv().await {
+                        if socket.send(Message::Text(next.into())).await.is_err() {
+                            break;
+                        }
+                    }
+                }
+                let _ = socket.close(None).await;
+            }
+            Err(_) => tokio::time::sleep(std::time::Duration::from_millis(200)).await,
+        }
+    }
+}
 
 /// Tauri implementation of the adapter event surface.
 struct TauriEventSink {
@@ -1548,6 +1654,214 @@ async fn ptz_store_preset(
     .map_err(|e| e.to_string())?
 }
 
+/// Send one clean-room PTZ_IP optics command over UDP (standard control port 52381).
+#[tauri::command]
+async fn ptz_optics_command(
+    ip: String,
+    port: u16,
+    action: String,
+    value: Option<u8>,
+) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || {
+        let socket = std::net::UdpSocket::bind("0.0.0.0:0").map_err(|e| e.to_string())?;
+        socket
+            .set_write_timeout(Some(std::time::Duration::from_millis(1500)))
+            .map_err(|e| e.to_string())?;
+        let target = format!("{ip}:{port}");
+        let seq = PTZ_IP_SEQ.fetch_add(1, Ordering::Relaxed);
+        let packet = match action.as_str() {
+            "home" => protocols::ptz_ip::PtzIpPacket::home(seq),
+            "focus_auto" => protocols::ptz_ip::PtzIpPacket::focus_mode(seq, true),
+            "focus_manual" => protocols::ptz_ip::PtzIpPacket::focus_mode(seq, false),
+            "focus_near" => protocols::ptz_ip::PtzIpPacket::focus_drive(seq, -1),
+            "focus_far" => protocols::ptz_ip::PtzIpPacket::focus_drive(seq, 1),
+            "focus_stop" => protocols::ptz_ip::PtzIpPacket::focus_drive(seq, 0),
+            "iris_up" => protocols::ptz_ip::PtzIpPacket::iris_step(seq, 1),
+            "iris_down" => protocols::ptz_ip::PtzIpPacket::iris_step(seq, -1),
+            "iris_reset" => protocols::ptz_ip::PtzIpPacket::iris_step(seq, 0),
+            "wb_mode" => protocols::ptz_ip::PtzIpPacket::white_balance_mode(seq, value.unwrap_or(0)),
+            "exposure_mode" => protocols::ptz_ip::PtzIpPacket::exposure_mode(seq, value.unwrap_or(0)),
+            _ => return Err(format!("Unsupported PTZ optics action: {action}")),
+        };
+        socket
+            .send_to(&packet.to_bytes(), &target)
+            .map_err(|e| e.to_string())?;
+        Ok(format!("PTZ_IP {action} sent to {target}"))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Route a device-control action through the live AoIP adapter and record it in the event log.
+#[tauri::command]
+fn aoip_control_command(
+    target_ip: String,
+    action: String,
+    value: f64,
+    state: State<ManagedState>,
+) -> Result<String, String> {
+    let parsed_ip: std::net::IpAddr = target_ip
+        .trim()
+        .parse()
+        .map_err(|_| format!("Invalid AoIP target address: {target_ip}"))?;
+    if !value.is_finite() {
+        return Err("AoIP control value must be finite".into());
+    }
+    let target_ip = parsed_ip.to_string();
+    let command = match action.as_str() {
+        "sample_rate" => {
+            if value <= 0.0 {
+                return Err("Sample rate must be positive".into());
+            }
+            AoipCommand::SetSampleRate {
+                target_ip: target_ip.clone(),
+                sample_rate_hz: value as u32,
+            }
+        }
+        "latency_ms" => AoipCommand::SetLatencyMs {
+            target_ip: target_ip.clone(),
+            latency_ms: value as f32,
+        },
+        "device_lock" => AoipCommand::SetDeviceLock {
+            target_ip: target_ip.clone(),
+            locked: value != 0.0,
+        },
+        // The control surface exposes one numeric value; here it selects the leader ordinal.
+        "clock_leader" => AoipCommand::SetClockLeader {
+            target_ip: target_ip.clone(),
+            leader: format!("leader-{}", value as u32),
+        },
+        _ => return Err(format!("Unsupported AoIP control action: {action}")),
+    };
+    let dispatched = dispatch(&state, AdapterCommand::Aoip(command));
+    let line = format!(
+        "[aoip-control] {action} -> {target_ip} value={value} {}",
+        if dispatched {
+            "dispatched to live adapter"
+        } else {
+            "queued (no live adapter connected)"
+        }
+    );
+    state.inner.lock().unwrap().push_event_log(line.clone());
+    Ok(line)
+}
+
+#[tauri::command]
+fn probe_hardware_encoders() -> Vec<runtime::broadcast_daemon::EncoderCapability> {
+    runtime::broadcast_daemon::probe_available_encoders()
+}
+
+#[tauri::command]
+fn list_host_displays(app: tauri::AppHandle) -> Vec<HostDisplayInfo> {
+    let primary = app.primary_monitor().ok().flatten();
+    let primary_key = primary.as_ref().map(|monitor| {
+        (
+            monitor.position().x,
+            monitor.position().y,
+            monitor.size().width,
+            monitor.size().height,
+        )
+    });
+    app.available_monitors()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|monitor| {
+            let x = monitor.position().x;
+            let y = monitor.position().y;
+            let width = monitor.size().width;
+            let height = monitor.size().height;
+            HostDisplayInfo {
+                name: monitor
+                    .name()
+                    .cloned()
+                    .unwrap_or_else(|| format!("Display {width}x{height}")),
+                width,
+                height,
+                x,
+                y,
+                scale_factor: monitor.scale_factor(),
+                is_primary: primary_key == Some((x, y, width, height)),
+            }
+        })
+        .collect()
+}
+
+#[tauri::command]
+fn start_studio_compositor(
+    rtmp_url: Option<String>,
+    record_path: Option<String>,
+    width: Option<u32>,
+    height: Option<u32>,
+    fps: Option<u32>,
+    video_bitrate_kbps: Option<u32>,
+    worker: State<runtime::broadcast_worker_ipc::BroadcastWorkerSupervisor>,
+) -> Result<String, String> {
+    use runtime::broadcast_worker_ipc::{
+        AudioSourceSpec, RecordContainer, RecordOutputSpec, StudioCompositorPlan,
+        StreamOutputSpec, StreamProtocol, VideoLayerSpec,
+    };
+    let canvas_width = width.unwrap_or(1920).max(1);
+    let canvas_height = height.unwrap_or(1080).max(1);
+    let plan = StudioCompositorPlan {
+        canvas_width,
+        canvas_height,
+        frame_rate: fps.unwrap_or(30).max(1),
+        video_layers: vec![VideoLayerSpec {
+            input_index: 0,
+            x: 0,
+            y: 0,
+            width: canvas_width,
+            height: canvas_height,
+            crop: None,
+            chroma_key: None,
+            enabled: true,
+        }],
+        audio_sources: vec![AudioSourceSpec {
+            input_index: 0,
+            gain_db: 0.0,
+            muted: false,
+            delay_ms: 0,
+            enabled: true,
+        }],
+        stream_outputs: rtmp_url
+            .filter(|url| !url.trim().is_empty())
+            .map(|url| {
+                vec![StreamOutputSpec {
+                    protocol: StreamProtocol::Rtmps,
+                    url,
+                }]
+            })
+            .unwrap_or_default(),
+        record_outputs: record_path
+            .filter(|path| !path.trim().is_empty())
+            .map(|path| {
+                vec![RecordOutputSpec {
+                    container: RecordContainer::Mkv,
+                    path,
+                }]
+            })
+            .unwrap_or_default(),
+    };
+    worker.start_compositor(&plan, video_bitrate_kbps)
+}
+
+#[tauri::command]
+fn stop_studio_compositor(
+    worker: State<runtime::broadcast_worker_ipc::BroadcastWorkerSupervisor>,
+) -> String {
+    worker.stop();
+    "Studio compositor stopped".into()
+}
+
+#[tauri::command]
+fn broadcast_lan_sync_event(
+    kind: String,
+    payload: serde_json::Value,
+    hub: State<LanSyncHub>,
+) -> Result<(), String> {
+    hub.publish(&kind, payload)
+}
+
 #[tauri::command]
 fn list_open_windows() -> Vec<String> {
     let mut windows = Vec::new();
@@ -1621,16 +1935,367 @@ async fn check_update() -> Result<Option<updater::UpdateInfo>, String> {
         .map_err(|e| format!("Failed to spawn update task: {e}"))?
 }
 
+/// Bounded budget for every individual connectivity probe.
+const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(250);
+
+#[derive(Debug, Clone)]
+struct ProbeOutcome {
+    check: PreflightCheck,
+    protocol: &'static str,
+    latency_ms: u32,
+}
+
+fn probe_outcome(
+    id: &str,
+    domain: &str,
+    title: &str,
+    status: &str,
+    detail: String,
+    protocol: &'static str,
+    latency_ms: u32,
+    fix_label: Option<&str>,
+) -> ProbeOutcome {
+    ProbeOutcome {
+        check: PreflightCheck {
+            id: id.into(),
+            domain: domain.into(),
+            title: title.into(),
+            status: status.into(),
+            detail: detail.clone(),
+            evidence: detail,
+            fix_label: fix_label.map(str::to_string),
+        },
+        protocol,
+        latency_ms,
+    }
+}
+
+fn elapsed_ms(started: std::time::Instant) -> u32 {
+    (started.elapsed().as_secs_f64() * 1000.0).round() as u32
+}
+
+/// Extract `host:port` from a configured URL, applying `default_port` when absent.
+fn endpoint_authority(url: &str, default_port: u16) -> Option<String> {
+    let rest = url.split_once("://").map(|(_, rest)| rest).unwrap_or(url);
+    let authority = rest.split(['/', '?', '#']).next()?.trim();
+    if authority.is_empty() {
+        return None;
+    }
+    let has_port = authority
+        .rsplit_once(':')
+        .map(|(_, port)| port.parse::<u16>().is_ok())
+        .unwrap_or(false);
+    if has_port {
+        Some(authority.to_string())
+    } else {
+        Some(format!("{authority}:{default_port}"))
+    }
+}
+
+fn probe_tcp_endpoint(target: &str) -> (String, String, u32) {
+    use std::net::{TcpStream, ToSocketAddrs};
+    let started = std::time::Instant::now();
+    let Some(addr) = target.to_socket_addrs().ok().and_then(|mut addrs| addrs.next()) else {
+        return (
+            "fail".into(),
+            format!("{target} could not be resolved to a socket address"),
+            elapsed_ms(started),
+        );
+    };
+    match TcpStream::connect_timeout(&addr, PROBE_TIMEOUT) {
+        Ok(_) => {
+            let latency = elapsed_ms(started);
+            (
+                "pass".into(),
+                format!("TCP connect to {target} succeeded in {latency} ms"),
+                latency,
+            )
+        }
+        Err(err) => {
+            let latency = elapsed_ms(started);
+            (
+                "fail".into(),
+                format!("TCP connect to {target} failed after {latency} ms ({err})"),
+                latency,
+            )
+        }
+    }
+}
+
+/// Send a real OSC `/xinfo` request and wait up to the probe budget for a reply. UDP has no
+/// transport-level acknowledgement, so a silent endpoint is reported as `warn`, not `pass`.
+fn probe_console_osc(target: &str) -> (String, String, u32) {
+    use std::io::ErrorKind;
+    use std::net::UdpSocket;
+    let started = std::time::Instant::now();
+    let Ok(socket) = UdpSocket::bind("0.0.0.0:0") else {
+        return ("fail".into(), "Could not bind an ephemeral UDP socket".into(), elapsed_ms(started));
+    };
+    if socket.set_read_timeout(Some(PROBE_TIMEOUT)).is_err()
+        || socket.set_write_timeout(Some(PROBE_TIMEOUT)).is_err()
+    {
+        return ("fail".into(), "Could not apply the 250 ms UDP probe timeout".into(), elapsed_ms(started));
+    }
+    let packet = protocols::console_osc::OscMessage::xinfo().encode();
+    if let Err(err) = socket.send_to(&packet, target) {
+        return (
+            "fail".into(),
+            format!("OSC /xinfo send to {target} failed ({err})"),
+            elapsed_ms(started),
+        );
+    }
+    let mut buf = [0u8; 2048];
+    match socket.recv_from(&mut buf) {
+        Ok((len, from)) => {
+            let latency = elapsed_ms(started);
+            (
+                "pass".into(),
+                format!("OSC /xinfo reply from {from} in {latency} ms ({len} bytes)"),
+                latency,
+            )
+        }
+        Err(err) if matches!(err.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {
+            (
+                "warn".into(),
+                format!("OSC /xinfo sent to {target}; no reply within 250 ms (UDP is unacknowledged)"),
+                elapsed_ms(started),
+            )
+        }
+        Err(err) => (
+            "fail".into(),
+            format!("OSC /xinfo receive from {target} failed ({err})"),
+            elapsed_ms(started),
+        ),
+    }
+}
+
+fn connectivity_probe_checks(settings: &AppSettings, mock_mode: bool) -> Vec<ProbeOutcome> {
+    let mut outcomes = Vec::new();
+
+    // Console OSC UDP reachability.
+    let console_host = if !settings.console.ip_address.trim().is_empty() {
+        settings.console.ip_address.trim().to_string()
+    } else {
+        std::env::var("RING_CONSOLE_HOST").unwrap_or_default()
+    };
+    let console_port = if settings.console.osc_port > 0 {
+        settings.console.osc_port
+    } else {
+        std::env::var("RING_CONSOLE_PORT")
+            .ok()
+            .and_then(|port| port.parse().ok())
+            .unwrap_or(10023)
+    };
+    if console_host.trim().is_empty() {
+        outcomes.push(probe_outcome(
+            "chk-probe-console-osc",
+            "Console",
+            "Console OSC UDP endpoint is reachable",
+            "fail",
+            "No mixer endpoint configured (set the IP in Settings or RING_CONSOLE_HOST)".into(),
+            "Console OSC",
+            0,
+            Some("Configure the mixer endpoint"),
+        ));
+    } else {
+        let target = format!("{}:{}", console_host.trim(), console_port);
+        let (status, detail, latency) = probe_console_osc(&target);
+        outcomes.push(probe_outcome(
+            "chk-probe-console-osc",
+            "Console",
+            "Console OSC UDP endpoint is reachable",
+            &status,
+            detail,
+            "Console OSC",
+            latency,
+            if status == "pass" { None } else { Some("Verify mixer OSC IP/port") },
+        ));
+    }
+
+    // Broadcast WebSocket over TCP.
+    let ws_override = std::env::var("RING_BROADCAST_URL").ok().filter(|url| !url.trim().is_empty());
+    if mock_mode && ws_override.is_none() {
+        outcomes.push(probe_outcome(
+            "chk-probe-broadcast-ws",
+            "Broadcasting",
+            "Broadcast WebSocket endpoint is reachable",
+            "warn",
+            "Simulator mode: set RING_BROADCAST_URL to probe a live endpoint".into(),
+            "Broadcast WS",
+            0,
+            Some("Configure the broadcast endpoint"),
+        ));
+    } else {
+        let url = ws_override.unwrap_or_else(|| "ws://127.0.0.1:4455".into());
+        match endpoint_authority(&url, 4455) {
+            Some(target) => {
+                let (status, detail, latency) = probe_tcp_endpoint(&target);
+                outcomes.push(probe_outcome(
+                    "chk-probe-broadcast-ws",
+                    "Broadcasting",
+                    "Broadcast WebSocket endpoint is reachable",
+                    &status,
+                    detail,
+                    "Broadcast WS",
+                    latency,
+                    if status == "pass" { None } else { Some("Verify the broadcast WebSocket host/port") },
+                ));
+            }
+            None => outcomes.push(probe_outcome(
+                "chk-probe-broadcast-ws",
+                "Broadcasting",
+                "Broadcast WebSocket endpoint is reachable",
+                "fail",
+                format!("Invalid broadcast endpoint '{url}'"),
+                "Broadcast WS",
+                0,
+                Some("Configure the broadcast endpoint"),
+            )),
+        }
+    }
+
+    // Slide HTTP and Slide TCP each get their own bounded TCP connect probe.
+    let slide_tcp_url = std::env::var("RING_EZW_ENDPOINT").ok().filter(|url| !url.trim().is_empty());
+    let slide_targets: [(&str, &str, String, u16, &str, &str); 2] = [
+        (
+            "chk-probe-slide-http",
+            "Slides",
+            std::env::var("RING_PP_HOST").unwrap_or_else(|_| "127.0.0.1".into()),
+            std::env::var("RING_PP_PORT")
+                .ok()
+                .and_then(|port| port.parse().ok())
+                .unwrap_or(50_000),
+            "Slide HTTP",
+            "Verify the presentation HTTP host/port",
+        ),
+        (
+            "chk-probe-slide-tcp",
+            "Slides",
+            slide_tcp_url
+                .as_deref()
+                .and_then(|url| endpoint_authority(url, 55_000))
+                .or_else(|| std::env::var("RING_EZW_HOST").ok())
+                .unwrap_or_else(|| "127.0.0.1".into()),
+            std::env::var("RING_EZW_PORT")
+                .ok()
+                .and_then(|port| port.parse().ok())
+                .unwrap_or(55_000),
+            "Slide TCP",
+            "Verify the presentation TCP host/port",
+        ),
+    ];
+    for (id, domain, host, port, protocol, fix_label) in slide_targets {
+        let explicitly_configured = std::env::var("RING_PP_HOST").is_ok()
+            || std::env::var("RING_EZW_HOST").is_ok()
+            || std::env::var("RING_EZW_ENDPOINT").is_ok();
+        if mock_mode && !explicitly_configured {
+            outcomes.push(probe_outcome(
+                id,
+                domain,
+                "Presentation source endpoint is reachable",
+                "warn",
+                format!("Simulator mode: {protocol} not configured (set RING_PP_HOST or RING_EZW_HOST)"),
+                protocol,
+                0,
+                Some(fix_label),
+            ));
+            continue;
+        }
+        let target = if host.contains(':') {
+            host.clone()
+        } else {
+            format!("{host}:{port}")
+        };
+        let (status, detail, latency) = probe_tcp_endpoint(&target);
+        outcomes.push(probe_outcome(
+            id,
+            domain,
+            "Presentation source endpoint is reachable",
+            &status,
+            detail,
+            protocol,
+            latency,
+            if status == "pass" { None } else { Some(fix_label) },
+        ));
+    }
+
+    // IP Video discovery/control service on TCP :5959.
+    let configured_ip_video = if !settings.ip_video_ptz.discovery_range_start.trim().is_empty() {
+        settings.ip_video_ptz.discovery_range_start.trim().to_string()
+    } else {
+        std::env::var("RING_IP_VIDEO_HOST").unwrap_or_default()
+    };
+    if configured_ip_video.is_empty() {
+        outcomes.push(probe_outcome(
+            "chk-probe-ip-video-5959",
+            "Cameras",
+            "IP Video discovery endpoint :5959 is reachable",
+            "fail",
+            "No IP Video discovery host configured".into(),
+            "IP Video TCP",
+            0,
+            Some("Configure an IP Video discovery host"),
+        ));
+    } else {
+        let host = configured_ip_video.split([',', '-']).next().unwrap_or(&configured_ip_video).trim();
+        let target = if host.contains(':') {
+            host.to_string()
+        } else {
+            format!("{host}:5959")
+        };
+        let (status, detail, latency) = probe_tcp_endpoint(&target);
+        outcomes.push(probe_outcome(
+            "chk-probe-ip-video-5959",
+            "Cameras",
+            "IP Video discovery endpoint :5959 is reachable",
+            &status,
+            detail,
+            "IP Video TCP",
+            latency,
+            if status == "pass" { None } else { Some("Verify the IP Video discovery host") },
+        ));
+    }
+
+    outcomes
+}
+
 #[tauri::command]
-fn run_preflight_probes(state: State<ManagedState>) -> AppStateSnapshot {
+async fn run_preflight_probes(state: State<'_, ManagedState>) -> Result<AppStateSnapshot, String> {
+    let (settings, mock_mode) = {
+        let inner = state.inner.lock().unwrap();
+        (inner.settings.clone(), inner.mock_mode)
+    };
+    let outcomes = tokio::task::spawn_blocking(move || connectivity_probe_checks(&settings, mock_mode))
+        .await
+        .unwrap_or_default();
     let mut inner = state.inner.lock().unwrap();
     inner.rebuild_preflight();
-    let passed = inner.preflight.iter().filter(|c| c.status == "pass").count();
+    for outcome in outcomes {
+        let check = outcome.check;
+        let health_status = match check.status.as_str() {
+            "pass" => "ok",
+            "fail" => "error",
+            _ => "warn",
+        };
+        inner.set_health(
+            &check.id,
+            &check.title,
+            health_status,
+            &check.detail,
+            outcome.protocol,
+            outcome.latency_ms,
+        );
+        match inner.preflight.iter_mut().find(|existing| existing.id == check.id) {
+            Some(existing) => *existing = check,
+            None => inner.preflight.push(check),
+        }
+    }
+    let passed = inner.preflight.iter().filter(|check| check.status == "pass").count();
     let total = inner.preflight.len();
     inner.push_event_log(format!(
-        "[preflight] Readiness sweep complete: {passed}/{total} checks passing"
+        "[preflight] Connectivity sweep complete: {passed}/{total} checks passing (250 ms probe budget)"
     ));
-    inner.clone()
+    Ok(inner.clone())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -1640,6 +2305,7 @@ pub fn run() {
         .manage(runtime::broadcast_daemon::BroadcastDaemonSupervisor::default())
         .manage(runtime::broadcast_daemon::FfmpegStreamProcess::default())
         .manage(runtime::broadcast_daemon::ReplayBufferProcess::default())
+        .manage(runtime::broadcast_worker_ipc::BroadcastWorkerSupervisor::default())
         .setup(|app| {
             let managed = app.state::<ManagedState>();
 
@@ -1727,11 +2393,25 @@ pub fn run() {
                 with_state(&shared, |snapshot| snapshot.mock_mode = false);
                 let sink: Arc<dyn EventSink> =
                     Arc::new(TauriEventSink::new(app.handle().clone(), shared.clone()));
-                let registry = AdapterRegistry::start(&config, shared, sink);
+                let registry = AdapterRegistry::start(&config, shared.clone(), sink);
                 *managed.runtime.lock().unwrap() = Some(Arc::new(registry));
             } else {
                 with_state(&shared, |snapshot| snapshot.mock_mode = true);
             }
+
+            // One outbound client per station posts LAN sync envelopes into the hub started by
+            // peer discovery, which relays them to every other connected station.
+            let settings = shared.lock().unwrap().settings.clone();
+            let station_id = if settings.station.station_name.trim().is_empty() {
+                format!("one-ring-{}", std::process::id())
+            } else {
+                format!(
+                    "{}-{}",
+                    settings.station.station_name.trim(),
+                    std::process::id()
+                )
+            };
+            app.manage(LanSyncHub::connect(&settings.sync.hub_address, station_id));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -1792,6 +2472,13 @@ pub fn run() {
             ptz_drive_camera,
             ptz_recall_preset,
             ptz_store_preset,
+            ptz_optics_command,
+            aoip_control_command,
+            probe_hardware_encoders,
+            list_host_displays,
+            start_studio_compositor,
+            stop_studio_compositor,
+            broadcast_lan_sync_event,
             send_console_osc,
             open_in_browser
         ])
@@ -1802,6 +2489,7 @@ pub fn run() {
                 app_handle.state::<runtime::broadcast_daemon::BroadcastDaemonSupervisor>().stop();
                 app_handle.state::<runtime::broadcast_daemon::FfmpegStreamProcess>().stop();
                 app_handle.state::<runtime::broadcast_daemon::ReplayBufferProcess>().stop();
+                app_handle.state::<runtime::broadcast_worker_ipc::BroadcastWorkerSupervisor>().stop();
             }
         });
 }

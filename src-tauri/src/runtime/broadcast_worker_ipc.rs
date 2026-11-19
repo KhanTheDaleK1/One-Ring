@@ -117,7 +117,7 @@ fn ffmpeg_escape_label(label: &str) -> String {
 }
 
 fn format_db(db: f32) -> String {
-    if (db.fract() == 0.0) {
+    if db.fract() == 0.0 {
         format!("{db:.0}dB")
     } else {
         format!("{db:.2}dB")
@@ -338,6 +338,34 @@ impl BroadcastWorkerSupervisor {
             .map_err(|e| format!("Failed to spawn broadcast worker: {e}"))?;
         *self.child.lock().unwrap_or_else(|e| e.into_inner()) = Some(child);
         Ok(())
+    }
+
+    /// Turn a compositor plan into a worker process. The executable is taken from
+    /// `RING_MEDIA_WORKER` when set, otherwise the locally installed encoder binary is used.
+    pub fn start_compositor(
+        &self,
+        plan: &StudioCompositorPlan,
+        video_bitrate_kbps: Option<u32>,
+    ) -> Result<String, String> {
+        let mut args = vec!["-hide_banner".to_string(), "-y".to_string()];
+        args.extend(build_ffmpeg_filtergraph(plan));
+        if let Some(kbps) = video_bitrate_kbps.filter(|kbps| *kbps > 0) {
+            args.push("-b:v".into());
+            args.push(format!("{kbps}k"));
+        }
+        let program = std::env::var("RING_MEDIA_WORKER")
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| "ffmpeg".into());
+        self.spawn(&program, &args)?;
+        Ok(format!(
+            "Studio compositor started: {}x{} @ {} fps ({} stream, {} record)",
+            plan.canvas_width,
+            plan.canvas_height,
+            plan.frame_rate,
+            plan.stream_outputs.len(),
+            plan.record_outputs.len()
+        ))
     }
 }
 

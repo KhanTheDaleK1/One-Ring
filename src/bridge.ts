@@ -1225,3 +1225,133 @@ export async function ptzStorePreset(
   }
   return `PTZ-IP Preset ${preset} saved on ${ip}:${port}`;
 }
+
+export interface EncoderCapability {
+  id: string;
+  name: string;
+  codec: string;
+  kind: "gpu" | "cpu" | "hardware" | "software";
+  available: boolean;
+  vendor?: string;
+  description?: string;
+}
+
+export interface HostDisplayInfo {
+  id: string;
+  name: string;
+  width: number;
+  height: number;
+  x: number;
+  y: number;
+  scaleFactor?: number;
+  primary: boolean;
+}
+
+export async function ptzOpticsCommand(
+  ip: string,
+  port: number,
+  action:
+    | "home"
+    | "focus_auto"
+    | "focus_manual"
+    | "focus_near"
+    | "focus_far"
+    | "focus_stop"
+    | "iris_up"
+    | "iris_down"
+    | "iris_reset"
+    | "wb_mode"
+    | "exposure_mode",
+  value?: number
+): Promise<string> {
+  if (isTauri()) {
+    return invokeTauri<string>("ptz_optics_command", { ip, port, action, value });
+  }
+  return `PTZ optics ${action} @ ${ip}:${port} (browser simulator)`;
+}
+
+export async function aoipControlCommand(
+  targetIp: string,
+  action: "sample_rate" | "latency_ms" | "device_lock" | "clock_leader",
+  value: number
+): Promise<string> {
+  if (isTauri()) {
+    return invokeTauri<string>("aoip_control_command", { targetIp, action, value });
+  }
+  return `Audio network ${action}=${value} -> ${targetIp} (browser simulator)`;
+}
+
+export async function probeHardwareEncoders(): Promise<EncoderCapability[]> {
+  if (isTauri()) {
+    return invokeTauri<EncoderCapability[]>("probe_hardware_encoders");
+  }
+  return [
+    {
+      id: "sim-gpu-h264",
+      name: "Simulated GPU H.264",
+      codec: "h264",
+      kind: "gpu",
+      available: true,
+      vendor: "Simulator",
+      description: "Browser preview encoder",
+    },
+    {
+      id: "sim-cpu-x264",
+      name: "Simulated CPU x264",
+      codec: "h264",
+      kind: "cpu",
+      available: true,
+      vendor: "Simulator",
+      description: "Software fallback encoder",
+    },
+  ];
+}
+
+export async function listHostDisplays(): Promise<HostDisplayInfo[]> {
+  if (isTauri()) {
+    return invokeTauri<HostDisplayInfo[]>("list_host_displays");
+  }
+  const w = typeof window !== "undefined" ? window.screen.width : 1920;
+  const h = typeof window !== "undefined" ? window.screen.height : 1080;
+  const availLeft = typeof window !== "undefined" ? (window.screen as any).availLeft ?? 0 : 0;
+  const availTop = typeof window !== "undefined" ? (window.screen as any).availTop ?? 0 : 0;
+  return [
+    {
+      id: "browser-primary",
+      name: `Primary Display (${w}x${h})`,
+      width: w,
+      height: h,
+      x: availLeft,
+      y: availTop,
+      scaleFactor: typeof window !== "undefined" ? window.devicePixelRatio || 1 : 1,
+      primary: true,
+    },
+  ];
+}
+
+export async function startStudioCompositor(opts: {
+  rtmpUrl?: string | null;
+  recordPath?: string | null;
+  width?: number;
+  height?: number;
+  fps?: number;
+  videoBitrateKbps?: number;
+}): Promise<string> {
+  if (isTauri()) {
+    return invokeTauri<string>("start_studio_compositor", { opts });
+  }
+  return "Native compositor worker started (browser simulator)";
+}
+
+export async function stopStudioCompositor(): Promise<string> {
+  if (isTauri()) {
+    return invokeTauri<string>("stop_studio_compositor");
+  }
+  return "Native compositor worker stopped (browser simulator)";
+}
+
+export async function broadcastLanSyncEvent(kind: string, payload: unknown): Promise<void> {
+  if (isTauri()) {
+    await invokeTauri<void>("broadcast_lan_sync_event", { kind, payload });
+  }
+}

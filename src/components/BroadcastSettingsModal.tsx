@@ -1,17 +1,21 @@
 import React, { useEffect, useState } from "react";
 import {
   Check,
+  Cpu,
   Eye,
   EyeOff,
   Keyboard,
   Monitor,
+  Play,
   Radio,
   RotateCcw,
   Settings,
   Sliders,
+  Square,
   X,
 } from "lucide-react";
 import type { BroadcastProfileSettings } from "../types";
+import type { EncoderCapability } from "../bridge";
 
 export interface BroadcastSettingsModalProps {
   isOpen: boolean;
@@ -23,6 +27,11 @@ export interface BroadcastSettingsModalProps {
   onSaveStreamConfig: (url: string, key: string) => void;
   hotkeys: Record<string, string>;
   onSaveHotkeys: (hk: Record<string, string>) => void;
+  hardwareEncoders?: EncoderCapability[];
+  encodersLoading?: boolean;
+  nativeCompositorRunning?: boolean;
+  nativeCompositorBusy?: boolean;
+  onToggleNativeCompositor?: () => void | Promise<void>;
 }
 
 type BroadcastSettingsTab = "stream" | "output" | "video" | "hotkeys";
@@ -356,6 +365,11 @@ export const BroadcastSettingsModal: React.FC<BroadcastSettingsModalProps> = ({
   onSaveStreamConfig,
   hotkeys,
   onSaveHotkeys,
+  hardwareEncoders = [],
+  encodersLoading = false,
+  nativeCompositorRunning = false,
+  nativeCompositorBusy = false,
+  onToggleNativeCompositor,
 }) => {
   const [activeTab, setActiveTab] = useState<BroadcastSettingsTab>("stream");
   const [draftProfile, setDraftProfile] = useState<BroadcastProfileSettings>({ ...profile });
@@ -625,6 +639,104 @@ export const BroadcastSettingsModal: React.FC<BroadcastSettingsModalProps> = ({
               gap: 16,
             }}
           >
+            <div
+              style={{
+                background: "#0B0E14",
+                border: "1px solid #1E2533",
+                borderRadius: 8,
+                padding: 12,
+                display: "flex",
+                flexDirection: "column",
+                gap: 10,
+              }}
+            >
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <Cpu size={15} color="#60A5FA" />
+                  <span style={{ fontSize: 13, fontWeight: 700, color: "#FFFFFF" }}>
+                    Hardware Encoder Availability
+                  </span>
+                  <span style={{ fontSize: 11, color: "#94A3B8" }}>
+                    {encodersLoading ? "Detecting…" : `${hardwareEncoders.length} detected`}
+                  </span>
+                </div>
+                {onToggleNativeCompositor && (
+                  <button
+                    type="button"
+                    onClick={() => void onToggleNativeCompositor()}
+                    disabled={nativeCompositorBusy}
+                    style={{
+                      height: 34,
+                      padding: "0 12px",
+                      borderRadius: 7,
+                      fontSize: 12,
+                      fontWeight: 700,
+                      cursor: nativeCompositorBusy ? "wait" : "pointer",
+                      background: nativeCompositorRunning ? "#7F1D1D" : "#065F46",
+                      border: `1px solid ${nativeCompositorRunning ? "#EF4444" : "#10B981"}`,
+                      color: "#FFFFFF",
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 6,
+                      opacity: nativeCompositorBusy ? 0.75 : 1,
+                    }}
+                  >
+                    {nativeCompositorRunning ? <Square size={13} /> : <Play size={13} />}
+                    Native Compositor Worker: {nativeCompositorRunning ? "Running (Stop)" : "Stopped (Start)"}
+                  </button>
+                )}
+              </div>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                {encodersLoading ? (
+                  <span style={{ fontSize: 12, color: "#94A3B8" }}>Probing hardware encoders…</span>
+                ) : hardwareEncoders.length === 0 ? (
+                  <span style={{ fontSize: 12, color: "#94A3B8" }}>
+                    No hardware encoders reported. Software encoding remains available.
+                  </span>
+                ) : (
+                  hardwareEncoders.map((enc) => {
+                    const isGpu = enc.kind === "gpu" || enc.kind === "hardware";
+                    const badgeColor = enc.available ? (isGpu ? "#34D399" : "#60A5FA") : "#9CA3AF";
+                    const badgeBorder = enc.available ? (isGpu ? "#10B981" : "#3B82F6") : "#4B5563";
+                    return (
+                      <span
+                        key={enc.id}
+                        title={enc.description || enc.vendor || enc.codec}
+                        style={{
+                          display: "inline-flex",
+                          alignItems: "center",
+                          gap: 6,
+                          padding: "4px 8px",
+                          borderRadius: 999,
+                          border: `1px solid ${badgeBorder}`,
+                          color: badgeColor,
+                          background: "rgba(15, 20, 29, 0.9)",
+                          fontSize: 11,
+                          fontWeight: 700,
+                        }}
+                      >
+                        <span
+                          style={{
+                            fontSize: 9,
+                            padding: "1px 5px",
+                            borderRadius: 999,
+                            background: isGpu ? "rgba(16,185,129,0.18)" : "rgba(59,130,246,0.18)",
+                            color: isGpu ? "#6EE7B7" : "#93C5FD",
+                            border: `1px solid ${isGpu ? "#065F46" : "#1D4ED8"}`,
+                          }}
+                        >
+                          {isGpu ? "GPU" : "CPU"}
+                        </span>
+                        {enc.name}
+                        <span style={{ fontSize: 10, color: enc.available ? "#A7F3D0" : "#9CA3AF" }}>
+                          {enc.available ? "Available" : "Unavailable"}
+                        </span>
+                      </span>
+                    );
+                  })
+                )}
+              </div>
+            </div>
             {activeTab === "stream" && (
               <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
                 <div>
