@@ -527,3 +527,51 @@ export interface UpdateInfo {
   update_available: boolean;
   assets: ReleaseAsset[];
 }
+
+// ---------------------------------------------------------------------------------------------
+// Live Stream Telemetry, Audience Relay & On-Air Overlay
+// ---------------------------------------------------------------------------------------------
+
+/** Point-in-time encoder and audience health sample published by the broadcast domain. */
+export interface StreamStatsSnapshot {
+  live: boolean;
+  recording: boolean;
+  source: string;
+  fps: number;
+  bitrateKbps: number;
+  droppedFrames: number;
+  totalFrames: number;
+  droppedPct: number;
+  congestion: number;
+  cpuUsagePct: number;
+  renderFrameTimeMs: number;
+  elapsedSec: number;
+  bytesSent: number;
+  viewerCount: number;
+  peakViewers: number;
+  updatedAtMs: number;
+}
+
+export type AudienceChatRole = "HOST" | "MOD" | "VIEWER";
+
+/** A relayed audience chat entry that can be promoted to the on-air lower-third. */
+export interface AudienceChatMessage {
+  id: string;
+  author: string;
+  role: AudienceChatRole;
+  text: string;
+  channel: string;
+  timestampMs: number;
+  pinnedOnAir: boolean;
+}
+
+/** Operator-authored connection settings for the chat and viewer-statistics relay. */
+export interface AudienceRelayConfig {
+  enabled: boolean;
+  mode: "websocket" | "webhook" | "irc";
+  endpointUrl: string;
+  authToken: string;
+  channelName: string;
+  hostDisplayName: string;
+  statsWebhookUrl: string;
+}

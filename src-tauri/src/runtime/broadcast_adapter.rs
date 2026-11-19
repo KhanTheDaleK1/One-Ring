@@ -9,6 +9,7 @@ use crate::protocols::broadcast_ws::{
     compute_authentication, event_subscription, broadcast_identify, BatchExecutionType, BroadcastEvent, BroadcastFrame,
     BroadcastRequest, BroadcastRequestBatch, BroadcastResponse, OpCode,
 };
+use crate::runtime::audience_relay::{compute_bitrate_delta_kbps, now_ms, StreamStatsSnapshot};
 use crate::runtime::events::{state_patch, EventSink};
 use crate::runtime::health::HealthReporter;
 use crate::state::{with_state, BroadcastCanvas, SharedState};
@@ -18,7 +19,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 static BROADCAST_REQ_SEQ: AtomicU64 = AtomicU64::new(1);
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::http::HeaderValue;
@@ -191,10 +192,15 @@ async fn serve(
     let mut last_frame = tokio::time::Instant::now();
     let mut ping = tokio::time::interval(Duration::from_secs(20));
     let mut liveness = tokio::time::interval(Duration::from_secs(10));
+    let mut telemetry = tokio::time::interval(Duration::from_secs(1));
     ping.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     liveness.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    telemetry.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     ping.tick().await;
     liveness.tick().await;
+    telemetry.tick().await;
+
+    let mut telem = TelemetryState::default();
 
     loop {
         tokio::select! {
@@ -231,7 +237,7 @@ async fn serve(
                             }
                             OpCode::RequestResponse => {
                                 if let Ok(response) = BroadcastResponse::from_frame(&frame) {
-                                    handle_response(response, state, sink);
+                                    handle_response_telemetry(response, state, sink, &mut telem);
                                 }
                             }
                             OpCode::Event => {
@@ -240,7 +246,7 @@ async fn serve(
                                         event.event_type.as_str(),
                                         "CanvasCreated" | "CanvasRemoved" | "SceneListChanged" | "OutputListChanged"
                                     );
-                                    handle_event(event, state, sink);
+                                    handle_event_telemetry(event, state, sink, &mut telem);
                                     if needs_refresh {
                                         for req in [
                                             BroadcastRequest::get_canvas_list(),
@@ -277,6 +283,18 @@ async fn serve(
             _ = liveness.tick() => {
                 if last_frame.elapsed() > Duration::from_secs(15) {
                     send_text(&mut ws, BroadcastRequest::get_version().to_json()).await?;
+                }
+            }
+            _ = telemetry.tick() => {
+                if identified {
+                    telem.idle_ticks = telem.idle_ticks.saturating_add(1);
+                    let active = telem.stream_live || telem.record_live;
+                    if active || telem.idle_ticks >= 3 {
+                        telem.idle_ticks = 0;
+                        let _ = ws_request(&mut ws, "GetStats", None, "telemetry_stats").await;
+                        let _ = send_text(&mut ws, BroadcastRequest::get_stream_status().to_json()).await;
+                        let _ = send_text(&mut ws, BroadcastRequest::get_record_status().to_json()).await;
+                    }
                 }
             }
         }
@@ -396,7 +414,42 @@ async fn send_command(
     }
 }
 
+#[derive(Debug, Default)]
+struct TelemetryState {
+    stream_live: bool,
+    record_live: bool,
+    idle_ticks: u8,
+    prev_output_bytes: Option<u64>,
+    prev_output_bytes_at: Option<Instant>,
+    latest: StreamStatsSnapshot,
+}
+
+impl TelemetryState {
+    fn emit(&mut self, sink: &Arc<dyn EventSink>) {
+        self.latest.live = self.stream_live;
+        self.latest.recording = self.record_live;
+        self.latest.source = "broadcast".into();
+        self.latest.updated_at_ms = now_ms();
+        if self.latest.total_frames > 0 {
+            self.latest.dropped_pct =
+                (self.latest.dropped_frames as f64 / self.latest.total_frames as f64) * 100.0;
+        }
+        sink.emit_raw("broadcast://stats", serde_json::to_value(&self.latest).unwrap_or(json!({})));
+    }
+}
+
+#[allow(dead_code)]
 fn handle_response(response: BroadcastResponse, state: &SharedState, sink: &Arc<dyn EventSink>) {
+    let mut telem = TelemetryState::default();
+    handle_response_telemetry(response, state, sink, &mut telem);
+}
+
+fn handle_response_telemetry(
+    response: BroadcastResponse,
+    state: &SharedState,
+    sink: &Arc<dyn EventSink>,
+    telem: &mut TelemetryState,
+) {
     if !response.is_ok() {
         sink.log(format!(
             "[broadcast-ws-v5] {} failed ({}): {}",
@@ -435,22 +488,13 @@ fn handle_response(response: BroadcastResponse, state: &SharedState, sink: &Arc<
             sink.state(state_patch("broadcast", json!({ "broadcasts": broadcasts })));
         }
         "GetStreamStatus" => {
-            let active = response
-                .response_data
-                .get("outputActive")
-                .and_then(Value::as_bool);
-            if let Some(active) = active {
-                emit_broadcast_state(state, sink, Some(active), None);
-            }
+            apply_stream_status(&response.response_data, state, sink, telem);
         }
         "GetRecordStatus" => {
-            let active = response
-                .response_data
-                .get("outputActive")
-                .and_then(Value::as_bool);
-            if let Some(active) = active {
-                emit_broadcast_state(state, sink, None, Some(active));
-            }
+            apply_record_status(&response.response_data, state, sink, telem);
+        }
+        "GetStats" => {
+            apply_stats_response(&response.response_data, state, sink, telem);
         }
         "GetVersion" => {
             let version = response
@@ -467,7 +511,18 @@ fn handle_response(response: BroadcastResponse, state: &SharedState, sink: &Arc<
     }
 }
 
+#[allow(dead_code)]
 fn handle_event(event: BroadcastEvent, state: &SharedState, sink: &Arc<dyn EventSink>) {
+    let mut telem = TelemetryState::default();
+    handle_event_telemetry(event, state, sink, &mut telem);
+}
+
+fn handle_event_telemetry(
+    event: BroadcastEvent,
+    state: &SharedState,
+    sink: &Arc<dyn EventSink>,
+    telem: &mut TelemetryState,
+) {
     match event.event_type.as_str() {
         "CurrentProgramSceneChanged" => {
             if let Some(scene) = event
@@ -486,12 +541,16 @@ fn handle_event(event: BroadcastEvent, state: &SharedState, sink: &Arc<dyn Event
         }
         "StreamStateChanged" => {
             if let Some(active) = event.event_data.get("outputActive").and_then(Value::as_bool) {
+                telem.stream_live = active;
                 emit_broadcast_state(state, sink, Some(active), None);
+                telem.emit(sink);
             }
         }
         "RecordStateChanged" => {
             if let Some(active) = event.event_data.get("outputActive").and_then(Value::as_bool) {
+                telem.record_live = active;
                 emit_broadcast_state(state, sink, None, Some(active));
+                telem.emit(sink);
             }
         }
         "CanvasCreated" | "CanvasRemoved" | "SceneListChanged" | "OutputListChanged" => {
@@ -505,6 +564,140 @@ fn handle_event(event: BroadcastEvent, state: &SharedState, sink: &Arc<dyn Event
         }
         _ => {}
     }
+}
+
+fn as_u64(v: &Value, key: &str) -> Option<u64> {
+    v.get(key)
+        .and_then(|x| x.as_u64().or_else(|| x.as_i64().and_then(|n| u64::try_from(n).ok())))
+}
+
+fn as_u32(v: &Value, key: &str) -> Option<u32> {
+    as_u64(v, key).and_then(|n| u32::try_from(n).ok())
+}
+
+fn as_f64(v: &Value, key: &str) -> Option<f64> {
+    v.get(key).and_then(|x| x.as_f64().or_else(|| x.as_u64().map(|n| n as f64)).or_else(|| x.as_i64().map(|n| n as f64)))
+}
+
+fn apply_stats_response(
+    data: &Value,
+    state: &SharedState,
+    sink: &Arc<dyn EventSink>,
+    telem: &mut TelemetryState,
+) {
+    if let Some(fps) = as_f64(data, "activeFps") {
+        telem.latest.fps = fps.max(0.0);
+    }
+    if let Some(cpu) = as_f64(data, "cpuUsage") {
+        telem.latest.cpu_usage_pct = cpu.max(0.0);
+    }
+    if let Some(ms) = as_f64(data, "averageFrameRenderTime") {
+        telem.latest.render_frame_time_ms = ms.max(0.0);
+    }
+    if let Some(total) = as_u32(data, "renderTotalFrames") {
+        telem.latest.total_frames = total;
+    }
+    if let Some(skipped) = as_u32(data, "renderSkippedFrames") {
+        telem.latest.dropped_frames = skipped;
+    }
+    update_broadcast_targets(state, telem);
+    telem.emit(sink);
+}
+
+fn apply_stream_status(
+    data: &Value,
+    state: &SharedState,
+    sink: &Arc<dyn EventSink>,
+    telem: &mut TelemetryState,
+) {
+    if let Some(active) = data.get("outputActive").and_then(Value::as_bool) {
+        telem.stream_live = active;
+        emit_broadcast_state(state, sink, Some(active), None);
+    }
+    if let Some(bytes) = as_u64(data, "outputBytes") {
+        let now = Instant::now();
+        if let (Some(prev), Some(prev_at)) = (telem.prev_output_bytes, telem.prev_output_bytes_at) {
+            let delta_ms = now.duration_since(prev_at).as_millis() as u64;
+            if let Some(kbps) = compute_bitrate_delta_kbps(prev, bytes, delta_ms) {
+                telem.latest.bitrate_kbps = kbps;
+            }
+        }
+        telem.prev_output_bytes = Some(bytes);
+        telem.prev_output_bytes_at = Some(now);
+        telem.latest.bytes_sent = bytes;
+    }
+    if let Some(skipped) = as_u32(data, "outputSkippedFrames") {
+        telem.latest.dropped_frames = skipped;
+    }
+    if let Some(total) = as_u32(data, "outputTotalFrames") {
+        telem.latest.total_frames = total;
+    }
+    if let Some(congestion) = as_f64(data, "outputCongestion") {
+        telem.latest.congestion = congestion.clamp(0.0, 1.0);
+    }
+    if let Some(duration_ms) = as_u64(data, "outputDuration") {
+        telem.latest.elapsed_sec = duration_ms / 1000;
+    }
+    update_broadcast_targets(state, telem);
+    telem.emit(sink);
+}
+
+fn apply_record_status(
+    data: &Value,
+    state: &SharedState,
+    sink: &Arc<dyn EventSink>,
+    telem: &mut TelemetryState,
+) {
+    if let Some(active) = data.get("outputActive").and_then(Value::as_bool) {
+        telem.record_live = active;
+        emit_broadcast_state(state, sink, None, Some(active));
+    }
+    // If not streaming, prefer record duration/bytes for visibility.
+    if !telem.stream_live {
+        if let Some(bytes) = as_u64(data, "outputBytes") {
+            telem.latest.bytes_sent = bytes;
+        }
+        if let Some(duration_ms) = as_u64(data, "outputDuration") {
+            telem.latest.elapsed_sec = duration_ms / 1000;
+        }
+    }
+    update_broadcast_targets(state, telem);
+    telem.emit(sink);
+}
+
+fn update_broadcast_targets(state: &SharedState, telem: &TelemetryState) {
+    let bitrate = telem.latest.bitrate_kbps;
+    let dropped = telem.latest.dropped_frames;
+    let elapsed = telem.latest.elapsed_sec.min(u32::MAX as u64) as u32;
+    let stream_live = telem.stream_live;
+    let record_live = telem.record_live;
+    with_state(state, |snapshot| {
+        for b in &mut snapshot.broadcasts {
+            if b.id == "record" {
+                b.live = record_live;
+                if record_live {
+                    b.elapsed_sec = elapsed;
+                    b.dropped_frames = dropped;
+                    if b.bitrate_kbps == 0 {
+                        b.bitrate_kbps = 12_000;
+                    }
+                } else {
+                    b.bitrate_kbps = 0;
+                    b.elapsed_sec = 0;
+                }
+            } else {
+                b.live = stream_live;
+                if stream_live {
+                    b.elapsed_sec = elapsed;
+                    b.dropped_frames = dropped;
+                    b.bitrate_kbps = if bitrate > 0 { bitrate } else { b.bitrate_kbps.max(5_800) };
+                } else {
+                    b.bitrate_kbps = 0;
+                    b.elapsed_sec = 0;
+                }
+            }
+        }
+    });
 }
 
 fn parse_canvases(data: &Value) -> Vec<BroadcastCanvas> {
@@ -614,9 +807,31 @@ fn emit_broadcast_state(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::runtime::events::RecordingSink;
+    use crate::runtime::events::{CueProgressEvent, EventSink, HealthEvent, MeterEvent, RecordingSink, StatePatch};
     use crate::state::default_simulator_state;
     use std::sync::Mutex;
+
+    #[derive(Default)]
+    struct CaptureSink {
+        emitted: Mutex<Vec<(String, Value)>>,
+    }
+
+    impl EventSink for CaptureSink {
+        fn health(&self, _event: HealthEvent) {}
+        fn meter(&self, _event: MeterEvent) {}
+        fn state(&self, _patch: StatePatch) {}
+        fn cue_progress(&self, _event: CueProgressEvent) {}
+        fn log(&self, _line: String) {}
+        fn emit_raw(&self, channel: &str, payload: Value) {
+            self.emitted.lock().unwrap().push((channel.to_string(), payload));
+        }
+    }
+
+    impl CaptureSink {
+        fn emitted(&self) -> Vec<(String, Value)> {
+            self.emitted.lock().unwrap().clone()
+        }
+    }
 
     fn fixture() -> (SharedState, Arc<RecordingSink>) {
         use crate::state::{BroadcastCanvas, BroadcastTarget};
@@ -642,6 +857,19 @@ mod tests {
             });
         }
         (Arc::new(Mutex::new(s)), Arc::new(RecordingSink::new()))
+    }
+
+    fn response(request_type: &str, data: Value) -> BroadcastResponse {
+        let frame = BroadcastFrame::new(
+            OpCode::RequestResponse,
+            json!({
+                "requestType": request_type,
+                "requestId": "r1",
+                "requestStatus": { "result": true, "code": 100 },
+                "responseData": data
+            }),
+        );
+        BroadcastResponse::from_frame(&frame).unwrap()
     }
 
     #[test]
@@ -716,5 +944,84 @@ mod tests {
             .iter()
             .filter(|b| b.id != "record")
             .all(|b| b.live)));
+    }
+
+    #[test]
+    fn telemetry_responses_emit_stats_and_update_targets() {
+        let (state, _sink) = fixture();
+        let capture = Arc::new(CaptureSink::default());
+        let events: Arc<dyn EventSink> = capture.clone();
+        let mut telem = TelemetryState::default();
+
+        handle_response_telemetry(
+            response("GetStats", json!({
+                "activeFps": 30.0,
+                "cpuUsage": 12.5,
+                "averageFrameRenderTime": 4.2,
+                "renderSkippedFrames": 2,
+                "renderTotalFrames": 100
+            })),
+            &state,
+            &events,
+            &mut telem,
+        );
+        handle_response_telemetry(
+            response("GetStreamStatus", json!({
+                "outputActive": true,
+                "outputBytes": 125000,
+                "outputSkippedFrames": 2,
+                "outputTotalFrames": 100,
+                "outputCongestion": 0.25,
+                "outputDuration": 5000
+            })),
+            &state,
+            &events,
+            &mut telem,
+        );
+        telem.prev_output_bytes = Some(0);
+        telem.prev_output_bytes_at = Some(Instant::now() - Duration::from_secs(1));
+        handle_response_telemetry(
+            response("GetStreamStatus", json!({
+                "outputActive": true,
+                "outputBytes": 125000,
+                "outputSkippedFrames": 2,
+                "outputTotalFrames": 100,
+                "outputCongestion": 0.25,
+                "outputDuration": 6000
+            })),
+            &state,
+            &events,
+            &mut telem,
+        );
+        handle_response_telemetry(
+            response("GetRecordStatus", json!({
+                "outputActive": true,
+                "outputBytes": 64000,
+                "outputDuration": 6000
+            })),
+            &state,
+            &events,
+            &mut telem,
+        );
+
+        assert!(telem.stream_live);
+        assert!(telem.record_live);
+        assert_eq!(telem.latest.fps, 30.0);
+        assert_eq!(telem.latest.elapsed_sec, 6);
+        assert!(telem.latest.bitrate_kbps > 0);
+
+        let (bitrate, dropped, elapsed, live_stream, live_record) = with_state(&state, |s| {
+            let stream = s.broadcasts.iter().find(|b| b.id == "primary_rtmp").cloned().unwrap();
+            let rec = s.broadcasts.iter().find(|b| b.id == "record").cloned().unwrap();
+            (stream.bitrate_kbps, stream.dropped_frames, stream.elapsed_sec, stream.live, rec.live)
+        });
+        assert!(bitrate > 0);
+        assert_eq!(dropped, 2);
+        assert_eq!(elapsed, 6);
+        assert!(live_stream);
+        assert!(live_record);
+
+        let emitted = capture.emitted();
+        assert!(emitted.iter().any(|(ch, _)| ch == "broadcast://stats"));
     }
 }

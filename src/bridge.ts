@@ -2,11 +2,14 @@ import type {
   AppSettings,
   UpdateInfo,
   AppStateSnapshot,
+  AudienceChatMessage,
+  AudienceRelayConfig,
   BroadcastTarget,
   CueVerificationStep,
   PreflightCheck,
   SceneSourceItem,
   SlideState,
+  StreamStatsSnapshot,
 } from "./types";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import { applyShowFileToSnapshot } from "./showFile";
@@ -495,6 +498,20 @@ const initialSimState = (): AppStateSnapshot => ({
 
 let simState: AppStateSnapshot = initialSimState();
 let undoStack: Array<{ label: string; snapshot: AppStateSnapshot }> = [];
+
+/** Neutral defaults for the browser simulator; no real endpoint or credential is stored. */
+export const DEFAULT_AUDIENCE_RELAY_CONFIG: AudienceRelayConfig = {
+  enabled: false,
+  mode: "websocket",
+  endpointUrl: "",
+  authToken: "",
+  channelName: "",
+  hostDisplayName: "Host",
+  statsWebhookUrl: "",
+};
+
+let simAudienceRelay: AudienceRelayConfig = { ...DEFAULT_AUDIENCE_RELAY_CONFIG };
+let simAudienceChat: AudienceChatMessage[] = [];
 
 function syncSimUndo() {
   simState.undoDepth = undoStack.length;
@@ -1354,4 +1371,131 @@ export async function broadcastLanSyncEvent(kind: string, payload: unknown): Pro
   if (isTauri()) {
     await invokeTauri<void>("broadcast_lan_sync_event", { kind, payload });
   }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Live stream telemetry + audience relay — browser simulator fallbacks stay intentionally neutral
+// ---------------------------------------------------------------------------------------------
+
+function simulatorStreamStats(): StreamStatsSnapshot {
+  const onAir = simState.broadcasts.filter((b) => b.live);
+  const primary = onAir.find((b) => b.id !== "record") ?? onAir[0] ?? null;
+  const elapsedSec = onAir.reduce((max, b) => Math.max(max, b.elapsedSec), 0);
+  const bitrateKbps = primary?.bitrateKbps ?? 0;
+  return {
+    live: onAir.length > 0,
+    recording: onAir.some((b) => b.id === "record"),
+    source: primary?.canvas || primary?.platform || "Standby",
+    fps: onAir.length > 0 ? 60 : 0,
+    bitrateKbps,
+    droppedFrames: 0,
+    totalFrames: elapsedSec * 60,
+    droppedPct: 0,
+    congestion: 0,
+    cpuUsagePct: 0,
+    renderFrameTimeMs: 0,
+    elapsedSec,
+    bytesSent: Math.round((bitrateKbps * 1000 * elapsedSec) / 8),
+    viewerCount: 0,
+    peakViewers: 0,
+    updatedAtMs: Date.now(),
+  };
+}
+
+/** Current encoder / audience health snapshot. */
+export async function getStreamStats(): Promise<StreamStatsSnapshot> {
+  if (isTauri()) {
+    try {
+      return await invokeTauri<StreamStatsSnapshot>("get_stream_stats");
+    } catch {
+      return simulatorStreamStats();
+    }
+  }
+  return simulatorStreamStats();
+}
+
+/** Recent relayed audience chat entries, oldest first. */
+export async function getAudienceChatHistory(): Promise<AudienceChatMessage[]> {
+  if (isTauri()) {
+    try {
+      const history = await invokeTauri<AudienceChatMessage[]>("get_audience_chat_history");
+      return Array.isArray(history) ? history : [];
+    } catch {
+      return [];
+    }
+  }
+  return simAudienceChat.map((message) => ({ ...message }));
+}
+
+/** Apply (or disable) the operator-authored chat / viewer-statistics relay configuration. */
+export async function configureAudienceRelay(config: AudienceRelayConfig): Promise<string> {
+  if (isTauri()) {
+    try {
+      return await invokeTauri<string>("configure_audience_relay", { config });
+    } catch (err) {
+      return `Relay configuration could not be applied: ${String(err)}`;
+    }
+  }
+  simAudienceRelay = { ...config };
+  return config.enabled
+    ? `Audience relay configured (${config.mode}, browser simulator)`
+    : "Audience relay disabled (browser simulator)";
+}
+
+/** Send an operator message to the audience feed, optionally mirroring it into closed captions. */
+export async function sendAudienceMessage(
+  text: string,
+  sendToCaption = false
+): Promise<AudienceChatMessage> {
+  const trimmed = text.trim();
+  if (isTauri()) {
+    try {
+      return await invokeTauri<AudienceChatMessage>("send_audience_message", {
+        text: trimmed,
+        sendToCaption,
+      });
+    } catch {
+      // fall through to the local simulator feed
+    }
+  }
+
+  if (sendToCaption && trimmed) {
+    try {
+      await sendBroadcastStreamCaption(trimmed);
+    } catch {
+      // captioning is best-effort in simulator mode
+    }
+  }
+
+  const message: AudienceChatMessage = {
+    id: `operator_${Date.now()}_${Math.floor(Math.random() * 1000)}`,
+    author: simAudienceRelay.hostDisplayName.trim() || "Host",
+    role: "HOST",
+    text: trimmed,
+    channel: simAudienceRelay.channelName.trim() || "Program",
+    timestampMs: Date.now(),
+    pinnedOnAir: false,
+  };
+  simAudienceChat = [...simAudienceChat, message].slice(-200);
+  return { ...message };
+}
+
+/** Pin a message to the on-air overlay, or pass null to clear it. */
+export async function pinAudienceMessage(
+  messageId: string | null
+): Promise<AudienceChatMessage | null> {
+  if (isTauri()) {
+    try {
+      return await invokeTauri<AudienceChatMessage | null>("pin_audience_message", { messageId });
+    } catch {
+      return null;
+    }
+  }
+  simAudienceChat = simAudienceChat.map((message) => ({
+    ...message,
+    pinnedOnAir: messageId !== null && message.id === messageId,
+  }));
+  return messageId
+    ? simAudienceChat.find((message) => message.id === messageId && message.pinnedOnAir) ?? null
+    : null;
 }

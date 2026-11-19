@@ -5,11 +5,15 @@
 //! and streaming when external BROADCAST Desktop is not open.
 
 use serde::{Deserialize, Serialize};
-use std::io::Write;
+use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+use crate::runtime::audience_relay::{
+    now_ms, parse_ffmpeg_progress_line, FfmpegProgressSample, StreamStatsSnapshot,
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -455,13 +459,25 @@ pub fn probe_available_encoders() -> Vec<EncoderCapability> {
     caps
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct LatestFfmpegStats {
+    pub snapshot: StreamStatsSnapshot,
+    pub sample: FfmpegProgressSample,
+}
+
 pub struct FfmpegStreamProcess {
     pub child: Arc<Mutex<Option<Child>>>,
+    pub latest_stats: Arc<Mutex<LatestFfmpegStats>>,
+    reader_thread: Mutex<Option<std::thread::JoinHandle<()>>>,
 }
 
 impl Default for FfmpegStreamProcess {
     fn default() -> Self {
-        Self { child: Arc::new(Mutex::new(None)) }
+        Self {
+            child: Arc::new(Mutex::new(None)),
+            latest_stats: Arc::new(Mutex::new(LatestFfmpegStats::default())),
+            reader_thread: Mutex::new(None),
+        }
     }
 }
 
@@ -488,6 +504,24 @@ impl FfmpegStreamProcess {
         if let Some(mut c) = guard.take() {
             stop_child_gracefully(&mut c, true);
         }
+        drop(guard);
+        if let Some(handle) = self.reader_thread.lock().unwrap().take() {
+            let _ = handle.join();
+        }
+        let mut latest = self.latest_stats.lock().unwrap();
+        latest.snapshot.live = false;
+        latest.snapshot.recording = false;
+        latest.snapshot.updated_at_ms = now_ms();
+    }
+
+    pub fn latest_snapshot(&self) -> StreamStatsSnapshot {
+        let mut snap = self.latest_stats.lock().unwrap().snapshot.clone();
+        snap.live = self.is_running();
+        if !snap.live {
+            snap.fps = 0.0;
+            snap.bitrate_kbps = 0;
+        }
+        snap
     }
 
     /// Starts native standalone FFmpeg screen/audio capture -> RTMP/RTMPS and/or local MKV/MP4.
@@ -565,11 +599,66 @@ impl FfmpegStreamProcess {
             args.extend(["-f".into(), "flv".into(), rtmp_clean.to_string()]);
         }
 
-        let child = Command::new(&bin)
+        args.extend(["-progress".into(), "pipe:1".into(), "-nostats".into()]);
+
+        let mut child = Command::new(&bin)
             .args(&args)
             .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
             .spawn()
             .map_err(|e| format!("Failed to spawn FFmpeg encoder: {e}"))?;
+
+        {
+            let mut latest = self.latest_stats.lock().unwrap();
+            *latest = LatestFfmpegStats::default();
+            latest.snapshot.source = "ffmpeg".into();
+            latest.snapshot.live = !rtmp_clean.is_empty();
+            latest.snapshot.recording = rec_clean.is_some();
+            latest.snapshot.updated_at_ms = now_ms();
+        }
+
+        if let Some(stdout) = child.stdout.take() {
+            let stats = self.latest_stats.clone();
+            let started = Instant::now();
+            let handle = std::thread::spawn(move || {
+                let reader = BufReader::new(stdout);
+                let mut sample = FfmpegProgressSample::default();
+                for line in reader.lines().flatten() {
+                    parse_ffmpeg_progress_line(&line, &mut sample);
+                    // Apply snapshot on every meaningful update or when a progress block key arrives.
+                    let mut latest = stats.lock().unwrap();
+                    latest.sample = sample.clone();
+                    let snap = &mut latest.snapshot;
+                    if let Some(fps) = sample.fps {
+                        snap.fps = fps;
+                    }
+                    if let Some(br) = sample.bitrate_kbps {
+                        snap.bitrate_kbps = br;
+                    }
+                    if let Some(dropped) = sample.drop_frames {
+                        snap.dropped_frames = dropped;
+                    }
+                    if let Some(total) = sample.total_frames {
+                        snap.total_frames = total;
+                    }
+                    if let Some(out_ms) = sample.out_time_ms {
+                        snap.elapsed_sec = out_ms / 1000;
+                    } else {
+                        snap.elapsed_sec = started.elapsed().as_secs();
+                    }
+                    if snap.total_frames > 0 {
+                        snap.dropped_pct =
+                            (snap.dropped_frames as f64 / snap.total_frames as f64) * 100.0;
+                    } else {
+                        snap.dropped_pct = 0.0;
+                    }
+                    snap.updated_at_ms = now_ms();
+                }
+            });
+            *self.reader_thread.lock().unwrap() = Some(handle);
+        }
+
         *self.child.lock().unwrap() = Some(child);
         Ok(format!("Started standalone FFmpeg encoder ({bin})"))
     }

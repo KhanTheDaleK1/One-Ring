@@ -1,4 +1,5 @@
 import { PtzControlDeckModal } from "./PtzControlDeckModal";
+import { StreamAudienceDock } from "./StreamAudienceDock";
 import { ptzDriveCamera, ptzOpticsCommand, ptzRecallPreset, ptzStorePreset } from "../bridge";
 import React, { useEffect, useRef, useState } from "react";
 import {
@@ -1533,6 +1534,9 @@ export const ShowModeView: React.FC<ShowModeViewProps> = ({
 
       {/* RIGHT: BROADCAST MONITOR + GUARDED STREAM CONTROLS */}
       <div style={{ display: "flex", flexDirection: "column", gap: 12, minHeight: 0 }}>
+        {/* Compact live telemetry pill + Audience Chat & Stats drawer from Master Show Mode */}
+        <StreamAudienceDock variant="compact" liveHint={anyLive} />
+
         <div className="card" style={{ padding: 14 }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 9 }}>
             <span style={sectionLabelStyle}>LIVE PROGRAM MONITOR</span>

@@ -1846,6 +1846,167 @@ fn start_studio_compositor(
 }
 
 #[tauri::command]
+fn get_stream_stats(
+    audience: State<runtime::audience_relay::AudienceState>,
+    ffmpeg: State<runtime::broadcast_daemon::FfmpegStreamProcess>,
+    state: State<ManagedState>,
+) -> runtime::audience_relay::StreamStatsSnapshot {
+    let mut snap = if ffmpeg.is_running() {
+        ffmpeg.latest_snapshot()
+    } else {
+        audience.get_stats()
+    };
+
+    if snap.updated_at_ms == 0 {
+        snap.updated_at_ms = runtime::audience_relay::now_ms();
+    }
+
+    if let Ok(inner) = state.inner.lock() {
+        let live = inner.broadcasts.iter().any(|b| b.id != "record" && b.live);
+        let recording = inner.broadcasts.iter().any(|b| b.id == "record" && b.live);
+        if live {
+            snap.live = true;
+        }
+        if recording {
+            snap.recording = true;
+        }
+        // If we have no telemetry source yet, reflect aggregate target metrics.
+        if snap.source.is_empty() || snap.source == "none" {
+            if let Some(b) = inner.broadcasts.iter().find(|b| b.id != "record" && b.live).or_else(|| inner.broadcasts.iter().find(|b| b.live)) {
+                if snap.bitrate_kbps == 0 {
+                    snap.bitrate_kbps = b.bitrate_kbps;
+                }
+                if snap.dropped_frames == 0 {
+                    snap.dropped_frames = b.dropped_frames;
+                }
+                if snap.elapsed_sec == 0 {
+                    snap.elapsed_sec = b.elapsed_sec as u64;
+                }
+            }
+            snap.source = "state".into();
+        }
+    }
+
+    let mut merged = audience.get_stats();
+    if snap.viewer_count.is_none() {
+        snap.viewer_count = merged.viewer_count;
+    }
+    if snap.peak_viewers.is_none() {
+        snap.peak_viewers = merged.peak_viewers;
+    }
+    // Preserve latest viewer peaks tracked by audience state.
+    if let Some(v) = merged.viewer_count {
+        if snap.viewer_count.is_none() {
+            snap.viewer_count = Some(v);
+        }
+    }
+    audience.set_stats(snap.clone());
+    // Return possibly enriched snapshot.
+    if snap.peak_viewers.is_none() {
+        merged = audience.get_stats();
+        snap.peak_viewers = merged.peak_viewers;
+    }
+    snap
+}
+
+#[tauri::command]
+fn get_audience_chat_history(
+    audience: State<runtime::audience_relay::AudienceState>,
+) -> Vec<runtime::audience_relay::AudienceChatMessage> {
+    audience.history()
+}
+
+#[tauri::command]
+fn configure_audience_relay(
+    config: runtime::audience_relay::AudienceRelayConfig,
+    app: tauri::AppHandle,
+    audience: State<runtime::audience_relay::AudienceState>,
+) -> Result<String, String> {
+    let emit: runtime::audience_relay::AudienceEmit = Arc::new(move |channel: &str, payload: serde_json::Value| {
+        let _ = app.emit(channel, payload);
+    });
+    runtime::audience_relay::configure_relay(&audience, emit, config)
+}
+
+#[tauri::command]
+fn send_audience_message(
+    text: String,
+    send_to_caption: Option<bool>,
+    app: tauri::AppHandle,
+    audience: State<runtime::audience_relay::AudienceState>,
+    state: State<ManagedState>,
+) -> Result<runtime::audience_relay::AudienceChatMessage, String> {
+    let trimmed = text.trim().to_string();
+    if trimmed.is_empty() {
+        return Err("Message text is empty".into());
+    }
+    let config = audience.get_config();
+    let author = if config.host_display_name.trim().is_empty() {
+        "Host".to_string()
+    } else {
+        config.host_display_name.trim().to_string()
+    };
+    let channel = config.channel_name.clone();
+    let msg = runtime::audience_relay::AudienceChatMessage {
+        id: String::new(),
+        author: author.clone(),
+        role: "host".into(),
+        text: trimmed.clone(),
+        channel: channel.clone(),
+        timestamp_ms: runtime::audience_relay::now_ms(),
+        pinned_on_air: false,
+    };
+    let stored = audience.push_message(msg);
+    let _ = app.emit("audience://chat", stored.clone());
+
+    if config.enabled {
+        let mode = config.mode.trim().to_ascii_lowercase();
+        match mode.as_str() {
+            "websocket" => {
+                let outbound = serde_json::json!({
+                    "type": "chat",
+                    "author": author,
+                    "text": trimmed,
+                    "channel": channel,
+                })
+                .to_string();
+                let _ = audience.try_send_outbound(outbound);
+            }
+            "webhook" => {
+                runtime::audience_relay::send_webhook_message(&config, &author, &trimmed, &channel)?;
+            }
+            "irc" => {
+                let line = runtime::audience_relay::format_irc_outbound_privmsg(&config, &trimmed);
+                if !audience.try_send_outbound(line) {
+                    return Err("IRC relay is not connected".into());
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if send_to_caption.unwrap_or(false) {
+        dispatch(&state, AdapterCommand::Broadcast(BroadcastCommand::SendStreamCaption(stored.text.clone())));
+        if let Ok(mut inner) = state.inner.lock() {
+            inner.push_event_log(format!("[broadcast-caption] CEA-608/708 -> {}", stored.text));
+        }
+    }
+
+    Ok(stored)
+}
+
+#[tauri::command]
+fn pin_audience_message(
+    message_id: Option<String>,
+    app: tauri::AppHandle,
+    audience: State<runtime::audience_relay::AudienceState>,
+) -> Result<Option<runtime::audience_relay::AudienceChatMessage>, String> {
+    let pinned = audience.pin_message(message_id);
+    let _ = app.emit("audience://pin", serde_json::json!({ "pinned": pinned.clone() }));
+    Ok(pinned)
+}
+
+#[tauri::command]
 fn stop_studio_compositor(
     worker: State<runtime::broadcast_worker_ipc::BroadcastWorkerSupervisor>,
 ) -> String {
@@ -2306,6 +2467,7 @@ pub fn run() {
         .manage(runtime::broadcast_daemon::FfmpegStreamProcess::default())
         .manage(runtime::broadcast_daemon::ReplayBufferProcess::default())
         .manage(runtime::broadcast_worker_ipc::BroadcastWorkerSupervisor::default())
+        .manage(runtime::audience_relay::AudienceState::default())
         .setup(|app| {
             let managed = app.state::<ManagedState>();
 
@@ -2479,6 +2641,11 @@ pub fn run() {
             start_studio_compositor,
             stop_studio_compositor,
             broadcast_lan_sync_event,
+            get_stream_stats,
+            get_audience_chat_history,
+            configure_audience_relay,
+            send_audience_message,
+            pin_audience_message,
             send_console_osc,
             open_in_browser
         ])

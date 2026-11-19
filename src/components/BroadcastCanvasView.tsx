@@ -48,6 +48,7 @@ import {
   type MediaEngineStatus,
 } from "../bridge";
 import { ProgramCanvasRenderer } from "./ProgramCanvasRenderer";
+import { StreamAudienceDock } from "./StreamAudienceDock";
 import { SourceSettingsModal } from "./SourceSettingsModal";
 import { SourceFiltersModal } from "./SourceFiltersModal";
 import { SourceTransformModal, DEFAULT_TRANSFORM } from "./SourceTransformModal";
@@ -2354,6 +2355,9 @@ export const BroadcastCanvasView: React.FC<BroadcastCanvasViewProps> = ({
           }))
         }
       />
+
+      {/* Live stream telemetry + audience chat docked below the canvas/mixer area */}
+      <StreamAudienceDock liveHint={anyLive} />
 
       {/* Right-Click Context Menu */}
       {contextMenu && (

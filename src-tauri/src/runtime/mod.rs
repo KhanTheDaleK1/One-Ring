@@ -15,6 +15,7 @@
 //! [`events`]. The cue engine and Tauri commands dispatch through [`AdapterRegistry`].
 
 pub mod aoip_adapter;
+pub mod audience_relay;
 pub mod slide_tcp_adapter;
 pub mod events;
 pub mod health;

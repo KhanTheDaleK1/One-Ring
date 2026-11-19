@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { Monitor, Radio, Tv } from "lucide-react";
-import type { SceneSourceItem, SlideCue, SlideState, SlideTheme } from "../types";
+import type { AudienceChatMessage, SceneSourceItem, SlideCue, SlideState, SlideTheme } from "../types";
 import { ProgramCanvasRenderer, type BroadcastSceneDefinition } from "./ProgramCanvasRenderer";
 import {
   editableSlideTextStyle,
@@ -14,6 +14,7 @@ type StageLayoutMode = "classic" | "clock_focus" | "notes_focus";
 
 const STAGE_LAYOUT_KEY = "onering_stage_layout";
 const SLIDE_EXTRAS_KEY = "onering_slide_editor_extras";
+const AUDIENCE_OVERLAY_KEY = "onering_audience_overlay";
 const STAGE_LAYOUT_MODES: StageLayoutMode[] = ["classic", "clock_focus", "notes_focus"];
 
 interface StoredSlideExtras {
@@ -37,6 +38,101 @@ function readStageLayout(): StageLayoutMode {
     if (raw && STAGE_LAYOUT_MODES.includes(raw as StageLayoutMode)) return raw as StageLayoutMode;
   } catch {}
   return "classic";
+}
+
+function readStoredAudienceOverlay(): AudienceChatMessage | null {
+  try {
+    const raw = localStorage.getItem(AUDIENCE_OVERLAY_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as AudienceChatMessage | null;
+    if (!parsed || typeof parsed.id !== "string" || typeof parsed.text !== "string") return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+const AUDIENCE_ROLE_COLOR: Record<string, string> = {
+  HOST: "#FBBF24",
+  MOD: "#A78BFA",
+  VIEWER: "#60A5FA",
+};
+
+/** Broadcast-grade lower-third plate for a pinned audience message. */
+function AudienceLowerThirdCard({ message }: { message: AudienceChatMessage }) {
+  const role = (message.role || "VIEWER").toUpperCase();
+  const accent = AUDIENCE_ROLE_COLOR[role] || "#3B82F6";
+  return (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "stretch",
+        width: "100%",
+        background: "linear-gradient(100deg, rgba(8,12,20,0.96) 0%, rgba(16,23,36,0.94) 100%)",
+        border: "1px solid rgba(148,163,184,0.35)",
+        borderRadius: "0.9vh",
+        boxShadow: "0 1.8vh 5vh rgba(0,0,0,0.7)",
+        overflow: "hidden",
+        textAlign: "left",
+      }}
+    >
+      <div style={{ width: "0.9vh", minWidth: 5, flexShrink: 0, background: accent }} />
+      <div style={{ padding: "1.8vh 2.6vw", minWidth: 0, flex: 1 }}>
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: "1vw",
+            flexWrap: "wrap",
+            marginBottom: "0.7vh",
+          }}
+        >
+          <span
+            className="mono"
+            style={{
+              fontSize: "1.5vh",
+              fontWeight: 900,
+              letterSpacing: "0.1em",
+              padding: "0.35vh 0.8vw",
+              borderRadius: "0.4vh",
+              color: accent,
+              background: "rgba(2,6,23,0.85)",
+              border: `1px solid ${accent}`,
+            }}
+          >
+            {role}
+          </span>
+          <strong
+            style={{
+              fontSize: "2.4vh",
+              color: "#FFFFFF",
+              letterSpacing: "0.01em",
+              textShadow: "0 2px 8px rgba(0,0,0,0.9)",
+            }}
+          >
+            {message.author}
+          </strong>
+          {message.channel && (
+            <span className="mono" style={{ fontSize: "1.5vh", color: "#94A3B8" }}>
+              #{message.channel}
+            </span>
+          )}
+        </div>
+        <div
+          style={{
+            fontSize: "3vh",
+            lineHeight: 1.25,
+            fontWeight: 700,
+            color: "#F8FAFC",
+            whiteSpace: "pre-wrap",
+            textShadow: "0 2px 10px rgba(0,0,0,0.9)",
+          }}
+        >
+          {message.text}
+        </div>
+      </div>
+    </div>
+  );
 }
 
 /** Overlay editor-authored overrides onto the live slide list by id, number, or exact text. */
@@ -145,6 +241,9 @@ export const SecondaryOutputWindow: React.FC = () => {
   );
   const [slideExtras, setSlideExtras] = useState<StoredSlideExtras>(() => readStoredSlideExtras());
   const [stageLayout, setStageLayout] = useState<StageLayoutMode>(() => readStageLayout());
+  const [audienceOverlay, setAudienceOverlay] = useState<AudienceChatMessage | null>(() =>
+    readStoredAudienceOverlay()
+  );
 
   useEffect(() => {
     const handleMessage = (data: any) => {
@@ -164,6 +263,14 @@ export const SecondaryOutputWindow: React.FC = () => {
       }
       if (data.type === "ACTIVE_SCENE_UPDATE" && typeof data.sceneId === "string") {
         setBroadcastScenes((prev) => ({ ...prev, activeSceneId: data.sceneId }));
+      }
+      if (data.type === "AUDIENCE_OVERLAY") {
+        const message = data.message as AudienceChatMessage | null;
+        setAudienceOverlay(
+          message && typeof message.id === "string" && typeof message.text === "string"
+            ? message
+            : null
+        );
       }
       if (
         data.type === "STAGE_LAYOUT_UPDATE" &&
@@ -222,6 +329,8 @@ export const SecondaryOutputWindow: React.FC = () => {
         }
       } else if (ev.key === SLIDE_EXTRAS_KEY && ev.newValue) {
         setSlideExtras(readStoredSlideExtras());
+      } else if (ev.key === AUDIENCE_OVERLAY_KEY) {
+        setAudienceOverlay(readStoredAudienceOverlay());
       }
     };
 
@@ -856,6 +965,11 @@ export const SecondaryOutputWindow: React.FC = () => {
             </div>
           </div>
         )}
+        {audienceOverlay && (
+          <div style={{ marginTop: "1.5vh" }}>
+            <AudienceLowerThirdCard message={audienceOverlay} />
+          </div>
+        )}
       </div>
     );
   }
@@ -940,6 +1054,20 @@ export const SecondaryOutputWindow: React.FC = () => {
       ) : (
         <div style={{ position: "relative", opacity: 0.12, display: "flex", alignItems: "center", gap: 8, color: "#FFFFFF", fontSize: 13 }}>
           <Monitor size={16} /> <Radio size={14} /> FOH Output Standby
+        </div>
+      )}
+      {audienceOverlay && (
+        <div
+          style={{
+            position: "absolute",
+            left: "3vw",
+            right: "3vw",
+            bottom: "3vh",
+            zIndex: 20,
+            pointerEvents: "none",
+          }}
+        >
+          <AudienceLowerThirdCard message={audienceOverlay} />
         </div>
       )}
     </div>
