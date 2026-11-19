@@ -1,5 +1,5 @@
 // Clean-room MIDI 1.0 message codec for control surface mapping
-// (Stream Deck, MIDI fader controllers, Akai APC, Behringer X-Touch, pedal triggers).
+// (Control Surface, MIDI fader controllers, Akai APC, Console Control Surface, pedal triggers).
 
 use serde::{Deserialize, Serialize};
 

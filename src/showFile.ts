@@ -45,9 +45,9 @@ export function buildShowFile(state: AppStateSnapshot): RingShowFile {
     broadcasts: state.broadcasts,
     recordChapters: state.recordChapters,
     sources: state.sources || [],
-    danteRoutes: state.danteRoutes,
-    ndiReceivers: state.ndiReceivers,
-    ndiSources: state.ndiSources,
+    aoipRoutes: state.aoipRoutes,
+    ipVideoReceivers: state.ipVideoReceivers,
+    ipVideoSources: state.ipVideoSources,
     slides: state.slides,
   };
 }
@@ -64,7 +64,7 @@ export function applyShowFileToSnapshot(
   const cues = show.cues ?? [];
 
   const activeCameraPresetId = cameras[0]?.id ?? "";
-  const obsScene = canvases[0]?.activeScene ?? "";
+  const broadcastScene = canvases[0]?.activeScene ?? "";
   const verticalScene = canvases[1]?.activeScene ?? "";
 
   const nextCameras = cameras.map((camera) => ({
@@ -82,13 +82,13 @@ export function applyShowFileToSnapshot(
     broadcasts: show.broadcasts ?? [],
     sources: show.sources ?? [],
     recordChapters: show.recordChapters ?? [],
-    danteRoutes: show.danteRoutes ?? [],
-    ndiReceivers: show.ndiReceivers ?? [],
-    ndiSources: show.ndiSources ?? [],
+    aoipRoutes: show.aoipRoutes ?? [],
+    ipVideoReceivers: show.ipVideoReceivers ?? [],
+    ipVideoSources: show.ipVideoSources ?? [],
     slides,
     activeCueIndex: 0,
     activeCameraPresetId,
-    obsScene,
+    broadcastScene,
     verticalScene,
     canUndo: false,
     undoDepth: 0,
@@ -160,9 +160,9 @@ export async function readShowFile(file: File): Promise<RingShowFile> {
     broadcasts: candidate.broadcasts ?? [],
     recordChapters: candidate.recordChapters ?? [],
     sources: candidate.sources ?? [],
-    danteRoutes: candidate.danteRoutes ?? [],
-    ndiReceivers: candidate.ndiReceivers ?? [],
-    ndiSources: candidate.ndiSources ?? [],
+    aoipRoutes: candidate.aoipRoutes ?? [],
+    ipVideoReceivers: candidate.ipVideoReceivers ?? [],
+    ipVideoSources: candidate.ipVideoSources ?? [],
     slides: candidate.slides ?? emptySlides(),
   };
 }

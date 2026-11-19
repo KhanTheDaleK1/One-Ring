@@ -23,12 +23,12 @@ interface AddSourceModalProps {
   onAddSource: (source: SceneSourceItem) => void;
 }
 
-export const OBS_SOURCE_DEFINITIONS: SourceDefinition[] = [
+export const BROADCAST_SOURCE_DEFINITIONS: SourceDefinition[] = [
   {
     type: "video_capture_device",
     label: "Video Capture Device",
     category: "video",
-    description: "Capture cards (Elgato, Magewell, DeckLink) or USB webcams.",
+    description: "Capture cards (Capture cards) or USB webcams.",
     defaultSettings: { device: "", resolution: "1920x1080", fps: 60 },
   },
   {
@@ -63,7 +63,7 @@ export const OBS_SOURCE_DEFINITIONS: SourceDefinition[] = [
     type: "window_capture",
     label: "Window Capture",
     category: "video",
-    description: "Capture a specific window (e.g. PowerPoint, browser, media player).",
+    description: "Capture a specific window (e.g. Presentation, browser, media player).",
     defaultSettings: { window: "", priority: 1 },
   },
   {
@@ -173,11 +173,11 @@ export const AddSourceModal: React.FC<AddSourceModalProps> = ({
 
   if (!isOpen) return null;
 
-  const currentDef = OBS_SOURCE_DEFINITIONS.find((d) => d.type === selectedType)!;
+  const currentDef = BROADCAST_SOURCE_DEFINITIONS.find((d) => d.type === selectedType)!;
 
   const filtered = categoryFilter === "all"
-    ? OBS_SOURCE_DEFINITIONS
-    : OBS_SOURCE_DEFINITIONS.filter((d) => d.category === categoryFilter);
+    ? BROADCAST_SOURCE_DEFINITIONS
+    : BROADCAST_SOURCE_DEFINITIONS.filter((d) => d.category === categoryFilter);
 
   const handleAdd = () => {
     const name = sourceName.trim() || currentDef.label;
@@ -249,10 +249,10 @@ export const AddSourceModal: React.FC<AddSourceModalProps> = ({
             </div>
             <div>
               <h3 style={{ margin: 0, fontSize: 18, fontWeight: 700, color: "#FFFFFF" }}>
-                Add OBS Source
+                Add Broadcast Source
               </h3>
               <p style={{ margin: "2px 0 0", color: "#94A3B8", fontSize: 12 }}>
-                Select from all 15 native OBS source types to add to your active canvas.
+                Select from all 15 native Broadcast source types to add to your active canvas.
               </p>
             </div>
           </div>

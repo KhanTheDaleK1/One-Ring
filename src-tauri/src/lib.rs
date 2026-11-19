@@ -7,23 +7,23 @@ pub mod updater;
 pub mod peer_discovery;
 
 use runtime::events::{CueProgressEvent, EventSink, HealthEvent, MeterEvent, StatePatch};
-use runtime::dante_adapter::DanteCommand;
-use runtime::easyworship_adapter::EasyWorshipCommand;
-use runtime::ndi_adapter::NdiCommand;
-use runtime::obs_adapter::ObsCommand;
-use runtime::propresenter_adapter::ProPresenterCommand;
-use runtime::streamlabs_adapter::StreamlabsCommand;
-use runtime::x32_adapter::X32Command;
+use runtime::aoip_adapter::AoipCommand;
+use runtime::slide_tcp_adapter::SlideTcpCommand;
+use runtime::ip_video_adapter::IpVideoCommand;
+use runtime::broadcast_adapter::BroadcastCommand;
+use runtime::slide_http_adapter::SlideHttpCommand;
+use runtime::dual_stream_adapter::DualStreamCommand;
+use runtime::console_adapter::ConsoleCommand;
 use runtime::{AdapterCommand, AdapterRegistry, RuntimeConfig};
 use state::{
     recompute_derived_alerts, with_state, AppSettings, AppStateSnapshot, CueVerificationReport,
-    CueVerificationStep, DanteRoute, ManagedState, SceneSourceItem, ServiceCue, SharedState,
+    CueVerificationStep, AoipRoute, ManagedState, SceneSourceItem, ServiceCue, SharedState,
     ShowFile, SlideState, UndoEntry,
 };
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 
-static VISCA_SEQ: AtomicU32 = AtomicU32::new(1);
+static PTZ_IP_SEQ: AtomicU32 = AtomicU32::new(1);
 use tauri::{Emitter, Manager, State};
 
 /// Tauri implementation of the adapter event surface.
@@ -133,10 +133,10 @@ fn trigger_cue(
     if !inner.rehearsal_mode {
         push_undo(&state, &inner, format!("Cue {}: {}", cue.index, cue.title));
         inner.active_cue_index = cue_index;
-        inner.obs_scene = cue.obs_scene.clone();
+        inner.broadcast_scene = cue.broadcast_scene.clone();
         inner.vertical_scene = cue.vertical_scene.clone();
         if let Some(c0) = inner.canvases.get_mut(0) {
-            c0.active_scene = cue.obs_scene.clone();
+            c0.active_scene = cue.broadcast_scene.clone();
         }
         if let Some(c1) = inner.canvases.get_mut(1) {
             c1.active_scene = cue.vertical_scene.clone();
@@ -166,7 +166,7 @@ fn trigger_cue(
             }
         }
 
-        // OBS 33 CreateRecordChapter on every cue transition
+        // Broadcast 33 CreateRecordChapter on every cue transition
         let chapter_entry = format!("Cue {:02} — {}", cue.index, cue.record_chapter);
         if !inner.record_chapters.contains(&chapter_entry) {
             inner.record_chapters.push(chapter_entry);
@@ -236,22 +236,22 @@ fn trigger_cue(
 fn verification_steps(cue: &ServiceCue, mode_tag: &str) -> Vec<CueVerificationStep> {
     vec![
         CueVerificationStep {
-            domain: "ProPresenter v1".into(),
+            domain: "SlideHttp v1".into(),
             expected: format!("Presentation == '{}'", cue.slide_label),
             observed: format!("POST /v1/status/updates confirmed '{}'", cue.slide_label),
             status: mode_tag.into(),
             latency_ms: 4,
         },
         CueVerificationStep {
-            domain: "Behringer X32 OSC".into(),
+            domain: "Console Console OSC".into(),
             expected: format!("Unmute {:?}, Mute {:?}", cue.unmute_dcas, cue.mute_dcas),
             observed: "UDP :10023 /dca/1..4/on verified".into(),
             status: mode_tag.into(),
             latency_ms: 2,
         },
         CueVerificationStep {
-            domain: "OBS 33 + Streamlabs Dual-Canvas".into(),
-            expected: format!("16:9='{}', 9:16='{}'", cue.obs_scene, cue.vertical_scene),
+            domain: "Broadcast 33 + DualStream Dual-Canvas".into(),
+            expected: format!("16:9='{}', 9:16='{}'", cue.broadcast_scene, cue.vertical_scene),
             observed: format!(
                 "SerialFrame + CreateRecordChapter('{}') acked",
                 cue.record_chapter
@@ -260,7 +260,7 @@ fn verification_steps(cue: &ServiceCue, mode_tag: &str) -> Vec<CueVerificationSt
             latency_ms: 5,
         },
         CueVerificationStep {
-            domain: "NDI 6 / VISCA PTZ".into(),
+            domain: "IP_VIDEO 6 / PTZ_IP PTZ".into(),
             expected: format!("Preset == '{}'", cue.camera_preset_id),
             observed: "Tally + PTZ preset settled".into(),
             status: mode_tag.into(),
@@ -278,7 +278,7 @@ fn dispatch_cue_actions(
         if let Some(number) = dca_number(id) {
             dispatch(
                 state,
-                AdapterCommand::X32(X32Command::SetDcaMute {
+                AdapterCommand::Console(ConsoleCommand::SetDcaMute {
                     number,
                     muted: false,
                 }),
@@ -289,7 +289,7 @@ fn dispatch_cue_actions(
         if let Some(number) = dca_number(id) {
             dispatch(
                 state,
-                AdapterCommand::X32(X32Command::SetDcaMute {
+                AdapterCommand::Console(ConsoleCommand::SetDcaMute {
                     number,
                     muted: true,
                 }),
@@ -299,17 +299,17 @@ fn dispatch_cue_actions(
 
     dispatch(
         state,
-        AdapterCommand::Obs(ObsCommand::SetProgramScene(cue.obs_scene.clone())),
+        AdapterCommand::Broadcast(BroadcastCommand::SetProgramScene(cue.broadcast_scene.clone())),
     );
     dispatch(
         state,
-        AdapterCommand::Obs(ObsCommand::CreateRecordChapter(cue.record_chapter.clone())),
+        AdapterCommand::Broadcast(BroadcastCommand::CreateRecordChapter(cue.record_chapter.clone())),
     );
 
     if let Some((source_id, preset_index)) = cam_target {
         dispatch(
             state,
-            AdapterCommand::Ndi(NdiCommand::RecallPtzPreset {
+            AdapterCommand::IpVideo(IpVideoCommand::RecallPtzPreset {
                 source_id,
                 preset_index,
                 speed: 0.75,
@@ -318,8 +318,8 @@ fn dispatch_cue_actions(
     }
 
     if !cue.slide_label.trim().is_empty() {
-        dispatch(state, AdapterCommand::ProPresenter(ProPresenterCommand::GoToSlide(0)));
-        dispatch(state, AdapterCommand::EasyWorship(EasyWorshipCommand::GoToStartSlide));
+        dispatch(state, AdapterCommand::SlideHttp(SlideHttpCommand::GoToSlide(0)));
+        dispatch(state, AdapterCommand::SlideTcp(SlideTcpCommand::GoToStartSlide));
     }
 
     let triggers_broadcast = cue.actions.iter().any(|a| {
@@ -327,8 +327,8 @@ fn dispatch_cue_actions(
         low.contains("start_stream") || low.contains("go live") || low.contains("start broadcast")
     });
     if triggers_broadcast {
-        dispatch(state, AdapterCommand::Obs(ObsCommand::StartStream));
-        dispatch(state, AdapterCommand::Obs(ObsCommand::StartRecord));
+        dispatch(state, AdapterCommand::Broadcast(BroadcastCommand::StartStream));
+        dispatch(state, AdapterCommand::Broadcast(BroadcastCommand::StartRecord));
     }
 }
 
@@ -337,14 +337,14 @@ fn apply_live_status(state: &State<ManagedState>, steps: &mut [CueVerificationSt
         return;
     };
     for step in steps {
-        let kind = if step.domain.contains("ProPresenter") {
-            protocols::DeviceKind::ProPresenter
-        } else if step.domain.contains("X32") {
-            protocols::DeviceKind::X32
-        } else if step.domain.contains("OBS") {
-            protocols::DeviceKind::Obs
-        } else if step.domain.contains("NDI") {
-            protocols::DeviceKind::Ndi
+        let kind = if step.domain.contains("SlideHttp") {
+            protocols::DeviceKind::SlideHttp
+        } else if step.domain.contains("Console") {
+            protocols::DeviceKind::Console
+        } else if step.domain.contains("BROADCAST") {
+            protocols::DeviceKind::Broadcast
+        } else if step.domain.contains("IP_VIDEO") {
+            protocols::DeviceKind::IpVideo
         } else {
             continue;
         };
@@ -367,7 +367,7 @@ fn undo_last_cue(state: State<ManagedState>) -> AppStateSnapshot {
         let current_stations = inner.connected_stations.clone();
         let current_sources = inner.sources.clone();
         let prev_dcas = entry.snapshot.dcas.clone();
-        let prev_scene = entry.snapshot.obs_scene.clone();
+        let prev_scene = entry.snapshot.broadcast_scene.clone();
         let prev_cam_target = entry
             .snapshot
             .cameras
@@ -394,19 +394,19 @@ fn undo_last_cue(state: State<ManagedState>) -> AppStateSnapshot {
         for dca in &prev_dcas {
             dispatch(
                 &state,
-                AdapterCommand::X32(X32Command::SetDcaMute {
+                AdapterCommand::Console(ConsoleCommand::SetDcaMute {
                     number: dca.number,
                     muted: dca.muted,
                 }),
             );
         }
         if !prev_scene.is_empty() {
-            dispatch(&state, AdapterCommand::Obs(ObsCommand::SetProgramScene(prev_scene)));
+            dispatch(&state, AdapterCommand::Broadcast(BroadcastCommand::SetProgramScene(prev_scene)));
         }
         if let Some((source_id, preset_index)) = prev_cam_target {
             dispatch(
                 &state,
-                AdapterCommand::Ndi(NdiCommand::RecallPtzPreset {
+                AdapterCommand::IpVideo(IpVideoCommand::RecallPtzPreset {
                     source_id,
                     preset_index,
                     speed: 0.75,
@@ -436,11 +436,11 @@ fn toggle_beltpack_fault(state: State<ManagedState>) -> AppStateSnapshot {
     let mut inner = state.inner.lock().unwrap();
     inner.beltpack_fault_simulated = !inner.beltpack_fault_simulated;
     let status = if inner.beltpack_fault_simulated {
-        "SIMULATED (Dante UDP :8751 reporting 0xFE mute on ULXD4-Pastor-Tx1)"
+        "SIMULATED (Aoip UDP :8751 reporting 0xFE mute on WirelessMic-Pastor-Tx1)"
     } else {
-        "CLEARED (Normal -11.5 dBFS signal on ULXD4-Pastor-Tx1)"
+        "CLEARED (Normal -11.5 dBFS signal on WirelessMic-Pastor-Tx1)"
     };
-    inner.push_event_log(format!("[dante-conmon] Pastor Beltpack Fault {}", status));
+    inner.push_event_log(format!("[aoip-conmon] Pastor Beltpack Fault {}", status));
     recompute_derived_alerts(&mut inner);
     inner.clone()
 }
@@ -457,7 +457,7 @@ fn toggle_dca_mute(dca_id: String, state: State<ManagedState>) -> AppStateSnapsh
     if let Some((number, muted)) = command {
         dispatch(
             &state,
-            AdapterCommand::X32(X32Command::SetDcaMute { number, muted }),
+            AdapterCommand::Console(ConsoleCommand::SetDcaMute { number, muted }),
         );
     }
     inner.clone()
@@ -474,7 +474,7 @@ fn nudge_dca_level(dca_id: String, delta_db: f32, state: State<ManagedState>) ->
     if let Some((number, db)) = command {
         dispatch(
             &state,
-            AdapterCommand::X32(X32Command::SetDcaLevel { number, db }),
+            AdapterCommand::Console(ConsoleCommand::SetDcaLevel { number, db }),
         );
     }
     inner.clone()
@@ -499,7 +499,7 @@ fn recall_camera_preset(preset_id: String, state: State<ManagedState>) -> AppSta
     if let Some((source_id, preset_index, _)) = target {
         dispatch(
             &state,
-            AdapterCommand::Ndi(NdiCommand::RecallPtzPreset {
+            AdapterCommand::IpVideo(IpVideoCommand::RecallPtzPreset {
                 source_id,
                 preset_index,
                 speed: 0.75,
@@ -545,11 +545,11 @@ fn trigger_slide_action(action: String, state: State<ManagedState>) -> AppStateS
             refresh_slide_texts(&mut inner.slides);
             dispatch(
                 &state,
-                AdapterCommand::ProPresenter(ProPresenterCommand::Next),
+                AdapterCommand::SlideHttp(SlideHttpCommand::Next),
             );
             dispatch(
                 &state,
-                AdapterCommand::EasyWorship(EasyWorshipCommand::NextSlide),
+                AdapterCommand::SlideTcp(SlideTcpCommand::NextSlide),
             );
         }
         "prev" => {
@@ -560,11 +560,11 @@ fn trigger_slide_action(action: String, state: State<ManagedState>) -> AppStateS
             refresh_slide_texts(&mut inner.slides);
             dispatch(
                 &state,
-                AdapterCommand::ProPresenter(ProPresenterCommand::Previous),
+                AdapterCommand::SlideHttp(SlideHttpCommand::Previous),
             );
             dispatch(
                 &state,
-                AdapterCommand::EasyWorship(EasyWorshipCommand::PreviousSlide),
+                AdapterCommand::SlideTcp(SlideTcpCommand::PreviousSlide),
             );
         }
         "clear" => {
@@ -572,7 +572,7 @@ fn trigger_slide_action(action: String, state: State<ManagedState>) -> AppStateS
             if inner.slides.cleared {
                 dispatch(
                     &state,
-                    AdapterCommand::ProPresenter(ProPresenterCommand::ClearLayer(
+                    AdapterCommand::SlideHttp(SlideHttpCommand::ClearLayer(
                         "slide".into(),
                     )),
                 );
@@ -591,24 +591,24 @@ fn go_to_slide(slide_number: u32, state: State<ManagedState>) -> AppStateSnapsho
     inner.slides.current_slide = target;
     inner.slides.cleared = false;
     refresh_slide_texts(&mut inner.slides);
-    // ProPresenter's cue index is zero-based while One Ring's UI and EasyWorship's
+    // SlideHttp's cue index is zero-based while One Ring's UI and SlideTcp's
     // `gotoSlide<N>` action are one-based.
     dispatch(
         &state,
-        AdapterCommand::ProPresenter(ProPresenterCommand::GoToSlide(
+        AdapterCommand::SlideHttp(SlideHttpCommand::GoToSlide(
             target.saturating_sub(1),
         )),
     );
     dispatch(
         &state,
-        AdapterCommand::EasyWorship(EasyWorshipCommand::GoToSlide(target)),
+        AdapterCommand::SlideTcp(SlideTcpCommand::GoToSlide(target)),
     );
     inner.clone()
 }
 
 #[tauri::command]
 fn control_presentation_timer(operation: String, state: State<ManagedState>) -> AppStateSnapshot {
-    if !crate::protocols::propresenter::is_timer_operation(&operation) {
+    if !crate::protocols::slide_http::is_timer_operation(&operation) {
         return state.inner.lock().unwrap().clone();
     }
     {
@@ -628,7 +628,7 @@ fn control_presentation_timer(operation: String, state: State<ManagedState>) -> 
     }
     dispatch(
         &state,
-        AdapterCommand::ProPresenter(ProPresenterCommand::TimerAction { operation }),
+        AdapterCommand::SlideHttp(SlideHttpCommand::TimerAction { operation }),
     );
     state.inner.lock().unwrap().clone()
 }
@@ -646,10 +646,10 @@ fn set_stage_message(message: Option<String>, state: State<ManagedState>) -> App
         ));
     }
     let command = match message {
-        Some(text) if !text.trim().is_empty() => ProPresenterCommand::SetStageMessage(text),
-        _ => ProPresenterCommand::ClearStageMessage,
+        Some(text) if !text.trim().is_empty() => SlideHttpCommand::SetStageMessage(text),
+        _ => SlideHttpCommand::ClearStageMessage,
     };
-    dispatch(&state, AdapterCommand::ProPresenter(command));
+    dispatch(&state, AdapterCommand::SlideHttp(command));
     state.inner.lock().unwrap().clone()
 }
 
@@ -667,70 +667,70 @@ fn set_stage_message_flag(field: String, value: bool, state: State<ManagedState>
 }
 
 #[tauri::command]
-fn propresenter_playlist_control(
+fn slide_http_playlist_control(
     kind: String,
     direction: String,
     state: State<ManagedState>,
 ) -> AppStateSnapshot {
     let command = match (kind.as_str(), direction.as_str()) {
-        ("media", "next") => Some(ProPresenterCommand::MediaNext),
-        ("media", "previous") => Some(ProPresenterCommand::MediaPrevious),
-        ("audio", "next") => Some(ProPresenterCommand::AudioNext),
-        ("audio", "previous") => Some(ProPresenterCommand::AudioPrevious),
+        ("media", "next") => Some(SlideHttpCommand::MediaNext),
+        ("media", "previous") => Some(SlideHttpCommand::MediaPrevious),
+        ("audio", "next") => Some(SlideHttpCommand::AudioNext),
+        ("audio", "previous") => Some(SlideHttpCommand::AudioPrevious),
         _ => None,
     };
     if let Some(command) = command {
         state.inner.lock().unwrap().push_event_log(format!(
-            "[propresenter] {kind} playlist {direction} triggered"
+            "[slide_http] {kind} playlist {direction} triggered"
         ));
-        dispatch(&state, AdapterCommand::ProPresenter(command));
+        dispatch(&state, AdapterCommand::SlideHttp(command));
     }
     state.inner.lock().unwrap().clone()
 }
 
 #[tauri::command]
-fn propresenter_transport_control(
+fn slide_http_transport_control(
     layer: String,
     operation: String,
     state: State<ManagedState>,
 ) -> AppStateSnapshot {
-    if crate::protocols::propresenter::transport_path(&layer, &operation).is_none() {
+    if crate::protocols::slide_http::transport_path(&layer, &operation).is_none() {
         return state.inner.lock().unwrap().clone();
     }
     state.inner.lock().unwrap().push_event_log(format!(
-        "[propresenter] {layer} transport {operation} requested"
+        "[slide_http] {layer} transport {operation} requested"
     ));
     dispatch(
         &state,
-        AdapterCommand::ProPresenter(ProPresenterCommand::Transport { layer, operation }),
+        AdapterCommand::SlideHttp(SlideHttpCommand::Transport { layer, operation }),
     );
     state.inner.lock().unwrap().clone()
 }
 
 #[tauri::command]
-fn propresenter_transport_seek(
+fn slide_http_transport_seek(
     layer: String,
     seconds: f64,
     state: State<ManagedState>,
 ) -> AppStateSnapshot {
-    if crate::protocols::propresenter::transport_seek_path(&layer).is_none()
+    if crate::protocols::slide_http::transport_seek_path(&layer).is_none()
         || !seconds.is_finite()
         || seconds < 0.0
     {
         return state.inner.lock().unwrap().clone();
     }
     state.inner.lock().unwrap().push_event_log(format!(
-        "[propresenter] {layer} transport seek to {seconds:.1}s requested"
+        "[slide_http] {layer} transport seek to {seconds:.1}s requested"
     ));
     dispatch(
         &state,
-        AdapterCommand::ProPresenter(ProPresenterCommand::TransportSeek { layer, seconds }),
+        AdapterCommand::SlideHttp(SlideHttpCommand::TransportSeek { layer, seconds }),
     );
     state.inner.lock().unwrap().clone()
 }
 
 #[tauri::command]
-fn propresenter_clear_group(id: String, state: State<ManagedState>) -> AppStateSnapshot {
+fn slide_http_clear_group(id: String, state: State<ManagedState>) -> AppStateSnapshot {
     if id.trim().is_empty() {
         return state.inner.lock().unwrap().clone();
     }
@@ -738,48 +738,48 @@ fn propresenter_clear_group(id: String, state: State<ManagedState>) -> AppStateS
         .inner
         .lock()
         .unwrap()
-        .push_event_log(format!("[propresenter] clear group '{id}' triggered"));
+        .push_event_log(format!("[slide_http] clear group '{id}' triggered"));
     dispatch(
         &state,
-        AdapterCommand::ProPresenter(ProPresenterCommand::ClearGroup(id)),
+        AdapterCommand::SlideHttp(SlideHttpCommand::ClearGroup(id)),
     );
     state.inner.lock().unwrap().clone()
 }
 
 #[tauri::command]
-fn propresenter_catalog(kind: String, state: State<ManagedState>) -> AppStateSnapshot {
-    if crate::protocols::propresenter::catalog_path(&kind).is_none() {
+fn slide_http_catalog(kind: String, state: State<ManagedState>) -> AppStateSnapshot {
+    if crate::protocols::slide_http::catalog_path(&kind).is_none() {
         return state.inner.lock().unwrap().clone();
     }
     state
         .inner
         .lock()
         .unwrap()
-        .push_event_log(format!("[propresenter] refreshing {kind} catalog"));
+        .push_event_log(format!("[slide_http] refreshing {kind} catalog"));
     dispatch(
         &state,
-        AdapterCommand::ProPresenter(ProPresenterCommand::RefreshCatalog(kind)),
+        AdapterCommand::SlideHttp(SlideHttpCommand::RefreshCatalog(kind)),
     );
     state.inner.lock().unwrap().clone()
 }
 
 #[tauri::command]
-fn propresenter_resource(
+fn slide_http_resource(
     action: String,
     id: String,
     state: State<ManagedState>,
 ) -> AppStateSnapshot {
     let log_id = id.clone();
     let command = match action.as_str() {
-        "trigger_look" => Some(ProPresenterCommand::TriggerLook(id)),
-        "trigger_prop" => Some(ProPresenterCommand::TriggerProp(id)),
-        "clear_prop" => Some(ProPresenterCommand::ClearProp(id)),
-        "trigger_macro" => Some(ProPresenterCommand::TriggerMacro(id)),
-        "prop_auto_clear_pause" => Some(ProPresenterCommand::PropAutoClear {
+        "trigger_look" => Some(SlideHttpCommand::TriggerLook(id)),
+        "trigger_prop" => Some(SlideHttpCommand::TriggerProp(id)),
+        "clear_prop" => Some(SlideHttpCommand::ClearProp(id)),
+        "trigger_macro" => Some(SlideHttpCommand::TriggerMacro(id)),
+        "prop_auto_clear_pause" => Some(SlideHttpCommand::PropAutoClear {
             id,
             action: "pause".into(),
         }),
-        "prop_auto_clear_resume" => Some(ProPresenterCommand::PropAutoClear {
+        "prop_auto_clear_resume" => Some(SlideHttpCommand::PropAutoClear {
             id,
             action: "resume".into(),
         }),
@@ -790,30 +790,30 @@ fn propresenter_resource(
             .inner
             .lock()
             .unwrap()
-            .push_event_log(format!("[propresenter] {action} '{log_id}' requested"));
-        dispatch(&state, AdapterCommand::ProPresenter(command));
+            .push_event_log(format!("[slide_http] {action} '{log_id}' requested"));
+        dispatch(&state, AdapterCommand::SlideHttp(command));
     }
     state.inner.lock().unwrap().clone()
 }
 
 #[tauri::command]
-fn easyworship_control(action: String, state: State<ManagedState>) -> AppStateSnapshot {
+fn slide_tcp_control(action: String, state: State<ManagedState>) -> AppStateSnapshot {
     let command = match action.as_str() {
-        "nextSlide" => Some(EasyWorshipCommand::NextSlide),
-        "prevSlide" => Some(EasyWorshipCommand::PreviousSlide),
-        "nextBuild" => Some(EasyWorshipCommand::NextBuild),
-        "prevBuild" => Some(EasyWorshipCommand::PreviousBuild),
-        "nextSchedule" => Some(EasyWorshipCommand::NextSchedule),
-        "prevSchedule" => Some(EasyWorshipCommand::PreviousSchedule),
-        "gotoStartSlide" => Some(EasyWorshipCommand::GoToStartSlide),
-        "gotoStartPresentation" => Some(EasyWorshipCommand::GoToStartPresentation),
-        "Toggle" => Some(EasyWorshipCommand::Toggle),
-        "Play" => Some(EasyWorshipCommand::Play),
-        "Pause" => Some(EasyWorshipCommand::Pause),
-        "GetScheduleData" => Some(EasyWorshipCommand::GetScheduleData),
-        "GetLiveData" => Some(EasyWorshipCommand::GetLiveData),
-        "GetCurrentImage" => Some(EasyWorshipCommand::GetCurrentImage),
-        "Refresh" => Some(EasyWorshipCommand::Refresh),
+        "nextSlide" => Some(SlideTcpCommand::NextSlide),
+        "prevSlide" => Some(SlideTcpCommand::PreviousSlide),
+        "nextBuild" => Some(SlideTcpCommand::NextBuild),
+        "prevBuild" => Some(SlideTcpCommand::PreviousBuild),
+        "nextSchedule" => Some(SlideTcpCommand::NextSchedule),
+        "prevSchedule" => Some(SlideTcpCommand::PreviousSchedule),
+        "gotoStartSlide" => Some(SlideTcpCommand::GoToStartSlide),
+        "gotoStartPresentation" => Some(SlideTcpCommand::GoToStartPresentation),
+        "Toggle" => Some(SlideTcpCommand::Toggle),
+        "Play" => Some(SlideTcpCommand::Play),
+        "Pause" => Some(SlideTcpCommand::Pause),
+        "GetScheduleData" => Some(SlideTcpCommand::GetScheduleData),
+        "GetLiveData" => Some(SlideTcpCommand::GetLiveData),
+        "GetCurrentImage" => Some(SlideTcpCommand::GetCurrentImage),
+        "Refresh" => Some(SlideTcpCommand::Refresh),
         _ => None,
     };
     if let Some(command) = command {
@@ -821,14 +821,14 @@ fn easyworship_control(action: String, state: State<ManagedState>) -> AppStateSn
             .inner
             .lock()
             .unwrap()
-            .push_event_log(format!("[easyworship] action {action} requested"));
-        dispatch(&state, AdapterCommand::EasyWorship(command));
+            .push_event_log(format!("[slide_tcp] action {action} requested"));
+        dispatch(&state, AdapterCommand::SlideTcp(command));
     }
     state.inner.lock().unwrap().clone()
 }
 
 #[tauri::command]
-fn easyworship_get_slide_image(
+fn slide_tcp_get_slide_image(
     rectype: String,
     pres_rowid: String,
     slide_rowid: String,
@@ -836,11 +836,11 @@ fn easyworship_get_slide_image(
     state: State<ManagedState>,
 ) -> AppStateSnapshot {
     state.inner.lock().unwrap().push_event_log(format!(
-        "[easyworship] getSlideImage {rectype}/{pres_rowid}/{slide_rowid} requested"
+        "[slide_tcp] getSlideImage {rectype}/{pres_rowid}/{slide_rowid} requested"
     ));
     dispatch(
         &state,
-        AdapterCommand::EasyWorship(EasyWorshipCommand::GetSlideImage {
+        AdapterCommand::SlideTcp(SlideTcpCommand::GetSlideImage {
             rectype,
             pres_rowid,
             slide_rowid,
@@ -851,20 +851,20 @@ fn easyworship_get_slide_image(
 }
 
 #[tauri::command]
-fn easyworship_image(key: String, state: State<ManagedState>) -> Option<Vec<u8>> {
+fn slide_tcp_image(key: String, state: State<ManagedState>) -> Option<Vec<u8>> {
     state
         .runtime
         .lock()
         .unwrap()
         .as_ref()
-        .and_then(|runtime| runtime.easyworship_image(&key))
+        .and_then(|runtime| runtime.slide_tcp_image(&key))
 }
 
-/// Local-only display overrides. EasyWorship publishes black/clear/logo in `status`; the
+/// Local-only display overrides. SlideTcp publishes black/clear/logo in `status`; the
 /// documented TCP action catalog has no toggle frame, so these never go on the wire and are
 /// overwritten by the next status report.
 #[tauri::command]
-fn easyworship_screen_flag(
+fn slide_tcp_screen_flag(
     field: String,
     value: bool,
     state: State<ManagedState>,
@@ -880,7 +880,7 @@ fn easyworship_screen_flag(
         _ => return inner.clone(),
     }
     inner.push_event_log(format!(
-        "[easyworship] local-only {field} override set to {value}; next status report wins"
+        "[slide_tcp] local-only {field} override set to {value}; next status report wins"
     ));
     inner.clone()
 }
@@ -928,37 +928,37 @@ fn set_broadcast_state(
 
     let stream_command = || {
         if live {
-            ObsCommand::StartStream
+            BroadcastCommand::StartStream
         } else {
-            ObsCommand::StopStream
+            BroadcastCommand::StopStream
         }
     };
     let record_command = || {
         if live {
-            ObsCommand::StartRecord
+            BroadcastCommand::StartRecord
         } else {
-            ObsCommand::StopRecord
+            BroadcastCommand::StopRecord
         }
     };
-    let commands: Vec<ObsCommand> = match target_id.as_str() {
+    let commands: Vec<BroadcastCommand> = match target_id.as_str() {
         "all" => vec![stream_command(), record_command()],
         "record" => vec![record_command()],
-        // YouTube, Facebook, a generic "stream" target, and custom RTMP destination IDs all
-        // share the same OBS output. `StartOutput("youtube")` is not a valid OBS output name.
+        // Primary RTMP, Secondary RTMP, a generic "stream" target, and custom RTMP destination IDs all
+        // share the same BROADCAST output. `StartOutput("primary_rtmp")` is not a valid BROADCAST output name.
         _ => vec![stream_command()],
     };
     for command in commands {
-        dispatch(&state, AdapterCommand::Obs(command));
+        dispatch(&state, AdapterCommand::Broadcast(command));
     }
 
     if stream_target && stream_changed {
-        let streamlabs_active = live_registry(&state)
-            .map(|registry| registry.has(protocols::DeviceKind::Streamlabs))
+        let dual_stream_active = live_registry(&state)
+            .map(|registry| registry.has(protocols::DeviceKind::DualStream))
             .unwrap_or(false);
-        if streamlabs_active {
+        if dual_stream_active {
             dispatch(
                 &state,
-                AdapterCommand::Streamlabs(StreamlabsCommand::ToggleStreaming),
+                AdapterCommand::DualStream(DualStreamCommand::ToggleStreaming),
             );
         }
     }
@@ -966,20 +966,20 @@ fn set_broadcast_state(
 }
 
 #[tauri::command]
-fn switch_ndi_receiver(
+fn switch_ip_video_receiver(
     receiver_id: String,
     source_name: String,
     state: State<ManagedState>,
 ) -> AppStateSnapshot {
     dispatch(
         &state,
-        AdapterCommand::Ndi(NdiCommand::ControlReceiver {
+        AdapterCommand::IpVideo(IpVideoCommand::ControlReceiver {
             receiver_id: receiver_id.clone(),
             source_name: source_name.clone(),
         }),
     );
     let mut inner = state.inner.lock().unwrap();
-    if let Some(rx) = inner.ndi_receivers.iter_mut().find(|r| r.id == receiver_id) {
+    if let Some(rx) = inner.ip_video_receivers.iter_mut().find(|r| r.id == receiver_id) {
         rx.subscribed_source = source_name.clone();
         rx.status = if rx.subscribed_source == rx.expected_source {
             "CONNECTED".into()
@@ -988,17 +988,17 @@ fn switch_ndi_receiver(
         };
     }
     inner.push_event_log(format!(
-        "[ndi-discovery-5959] Sent <control_receiver><command>connect</command> to {} -> '{}'",
+        "[ip_video-discovery-5959] Sent <control_receiver><command>connect</command> to {} -> '{}'",
         receiver_id, source_name
     ));
     inner.clone()
 }
 
 #[tauri::command]
-fn auto_heal_ndi_receivers(state: State<ManagedState>) -> AppStateSnapshot {
+fn auto_heal_ip_video_receivers(state: State<ManagedState>) -> AppStateSnapshot {
     let mut inner = state.inner.lock().unwrap();
     let mut repairs: Vec<(String, String)> = Vec::new();
-    for rx in &mut inner.ndi_receivers {
+    for rx in &mut inner.ip_video_receivers {
         if !rx.expected_source.is_empty() && rx.subscribed_source != rx.expected_source {
             repairs.push((rx.id.clone(), rx.expected_source.clone()));
         }
@@ -1006,7 +1006,7 @@ fn auto_heal_ndi_receivers(state: State<ManagedState>) -> AppStateSnapshot {
         rx.status = "CONNECTED".into();
     }
     inner.push_event_log(format!(
-        "[ndi-discovery-5959] Auto-healed {} NDI 6 receiver(s) to expected show sources",
+        "[ip_video-discovery-5959] Auto-healed {} IP_VIDEO 6 receiver(s) to expected show sources",
         repairs.len()
     ));
     let snapshot = inner.clone();
@@ -1015,7 +1015,7 @@ fn auto_heal_ndi_receivers(state: State<ManagedState>) -> AppStateSnapshot {
     for (receiver_id, source_name) in repairs {
         dispatch(
             &state,
-            AdapterCommand::Ndi(NdiCommand::ControlReceiver {
+            AdapterCommand::IpVideo(IpVideoCommand::ControlReceiver {
                 receiver_id,
                 source_name,
             }),
@@ -1025,7 +1025,7 @@ fn auto_heal_ndi_receivers(state: State<ManagedState>) -> AppStateSnapshot {
 }
 
 #[tauri::command]
-fn flash_dante_identify(route_id: String, state: State<ManagedState>) -> AppStateSnapshot {
+fn flash_aoip_identify(route_id: String, state: State<ManagedState>) -> AppStateSnapshot {
     let mut inner = state.inner.lock().unwrap();
     let mut resolved_ip: Option<String> = None;
     let is_ip = route_id.parse::<std::net::IpAddr>().is_ok();
@@ -1033,7 +1033,7 @@ fn flash_dante_identify(route_id: String, state: State<ManagedState>) -> AppStat
         resolved_ip = Some(route_id.clone());
     }
     let matched_label = if let Some(route) = inner
-        .dante_routes
+        .aoip_routes
         .iter_mut()
         .find(|r| r.id == route_id || r.rx_device == route_id)
     {
@@ -1050,12 +1050,12 @@ fn flash_dante_identify(route_id: String, state: State<ManagedState>) -> AppStat
 
     if let Some(target_ip) = resolved_ip.as_ref() {
         inner.push_event_log(format!(
-            "[dante-conmon] Sent IDENTIFY_QUERY (opcode 0x0063) to {} on UDP :8700",
+            "[aoip-conmon] Sent IDENTIFY_QUERY (opcode 0x0063) to {} on UDP :8700",
             target_ip
         ));
     } else if let Some(dev) = matched_label.as_ref() {
         inner.push_event_log(format!(
-            "[dante-conmon] No IP configured for '{dev}'; IDENTIFY_QUERY not sent"
+            "[aoip-conmon] No IP configured for '{dev}'; IDENTIFY_QUERY not sent"
         ));
     }
     let snapshot = inner.clone();
@@ -1064,7 +1064,7 @@ fn flash_dante_identify(route_id: String, state: State<ManagedState>) -> AppStat
     if let Some(target_ip) = resolved_ip {
         dispatch(
             &state,
-            AdapterCommand::Dante(DanteCommand::IdentifyDevice { target_ip }),
+            AdapterCommand::Aoip(AoipCommand::IdentifyDevice { target_ip }),
         );
     }
     snapshot
@@ -1189,21 +1189,21 @@ fn open_in_browser(url: String) -> Result<(), String> {
 
 #[tauri::command]
 fn start_replay_buffer(
-    replay: State<runtime::obs_daemon::ReplayBufferProcess>,
+    replay: State<runtime::broadcast_daemon::ReplayBufferProcess>,
 ) -> Result<String, String> {
     replay.start()
 }
 
 #[tauri::command]
 fn save_replay_buffer(
-    replay: State<runtime::obs_daemon::ReplayBufferProcess>,
+    replay: State<runtime::broadcast_daemon::ReplayBufferProcess>,
 ) -> Result<String, String> {
     replay.save_clip()
 }
 
 #[tauri::command]
 fn stop_replay_buffer(
-    replay: State<runtime::obs_daemon::ReplayBufferProcess>,
+    replay: State<runtime::broadcast_daemon::ReplayBufferProcess>,
 ) -> String {
     replay.stop();
     "Stopped Replay Buffer".into()
@@ -1213,118 +1213,118 @@ fn stop_replay_buffer(
 fn start_direct_ffmpeg_stream(
     rtmp_url: String,
     record_path: Option<String>,
-    ffmpeg: State<runtime::obs_daemon::FfmpegStreamProcess>,
+    ffmpeg: State<runtime::broadcast_daemon::FfmpegStreamProcess>,
 ) -> Result<String, String> {
     ffmpeg.start_stream(&rtmp_url, record_path.as_deref())
 }
 
 #[tauri::command]
 fn stop_direct_ffmpeg_stream(
-    ffmpeg: State<runtime::obs_daemon::FfmpegStreamProcess>,
+    ffmpeg: State<runtime::broadcast_daemon::FfmpegStreamProcess>,
 ) -> String {
     ffmpeg.stop();
     "Stopped standalone FFmpeg encoder".into()
 }
 
 #[tauri::command]
-fn import_ewsx_schedule(
+fn import_slide_archive(
     file_path: String,
-) -> Result<Vec<runtime::obs_daemon::ImportedSongPayload>, String> {
-    runtime::obs_daemon::parse_easyworship_ewsx(&file_path)
+) -> Result<Vec<runtime::broadcast_daemon::ImportedSongPayload>, String> {
+    runtime::broadcast_daemon::parse_slide_archive(&file_path)
 }
 
 #[tauri::command]
-fn list_audio_devices() -> Vec<runtime::obs_daemon::HostMediaDevice> {
-    runtime::obs_daemon::list_host_audio_devices()
+fn list_audio_devices() -> Vec<runtime::broadcast_daemon::HostMediaDevice> {
+    runtime::broadcast_daemon::list_host_audio_devices()
 }
 
 #[tauri::command]
-fn list_video_devices() -> Vec<runtime::obs_daemon::HostMediaDevice> {
-    runtime::obs_daemon::list_host_video_devices()
+fn list_video_devices() -> Vec<runtime::broadcast_daemon::HostMediaDevice> {
+    runtime::broadcast_daemon::list_host_video_devices()
 }
 
 #[tauri::command]
-fn scan_installed_audio_plugins() -> Vec<runtime::obs_daemon::InstalledAudioPlugin> {
-    runtime::obs_daemon::scan_installed_audio_plugins()
+fn scan_installed_audio_plugins() -> Vec<runtime::broadcast_daemon::InstalledAudioPlugin> {
+    runtime::broadcast_daemon::scan_installed_audio_plugins()
 }
 
 
 
 #[tauri::command]
-fn dispatch_obs_worker_command(
-    cmd: runtime::obs_worker_ipc::ObsWorkerCommand,
+fn dispatch_broadcast_worker_command(
+    cmd: runtime::broadcast_worker_ipc::BroadcastWorkerCommand,
     state: State<ManagedState>,
 ) -> String {
     let serialized = serde_json::to_string(&cmd).unwrap_or_default();
     let mut inner = state.inner.lock().unwrap();
-    inner.push_event_log(format!("[obs-worker-ipc] {}", serialized));
+    inner.push_event_log(format!("[broadcast-worker-ipc] {}", serialized));
     serialized
 }
 
 
 #[tauri::command]
-fn send_obs_stream_caption(text: String, state: State<ManagedState>) -> String {
-    dispatch(&state, AdapterCommand::Obs(ObsCommand::SendStreamCaption(text.clone())));
+fn send_broadcast_stream_caption(text: String, state: State<ManagedState>) -> String {
+    dispatch(&state, AdapterCommand::Broadcast(BroadcastCommand::SendStreamCaption(text.clone())));
     let mut inner = state.inner.lock().unwrap();
-    inner.push_event_log(format!("[obs-caption] CEA-608/708 -> {}", text));
+    inner.push_event_log(format!("[broadcast-caption] CEA-608/708 -> {}", text));
     format!("Sent stream caption: {}", text)
 }
 
 #[tauri::command]
 fn remux_recording_to_mp4(file_path: String) -> Result<String, String> {
-    runtime::obs_daemon::remux_mkv_to_mp4(&file_path)
+    runtime::broadcast_daemon::remux_mkv_to_mp4(&file_path)
 }
 
 #[tauri::command]
-fn dispatch_obs_studio_command(action: String, arg: Option<String>, state: State<ManagedState>) -> String {
+fn dispatch_broadcast_studio_command(action: String, arg: Option<String>, state: State<ManagedState>) -> String {
     let cmd = match action.as_str() {
-        "pause_record" => Some(ObsCommand::PauseRecord),
-        "resume_record" => Some(ObsCommand::ResumeRecord),
-        "start_virtual_cam" => Some(ObsCommand::StartVirtualCam),
-        "stop_virtual_cam" => Some(ObsCommand::StopVirtualCam),
-        "trigger_transition" => Some(ObsCommand::TriggerStudioModeTransition),
-        "studio_mode_on" => Some(ObsCommand::SetStudioModeEnabled(true)),
-        "studio_mode_off" => Some(ObsCommand::SetStudioModeEnabled(false)),
-        "create_scene" => arg.clone().map(ObsCommand::CreateScene),
-        "remove_scene" => arg.clone().map(ObsCommand::RemoveScene),
-        "set_transition" => arg.clone().map(ObsCommand::SetCurrentSceneTransition),
+        "pause_record" => Some(BroadcastCommand::PauseRecord),
+        "resume_record" => Some(BroadcastCommand::ResumeRecord),
+        "start_virtual_cam" => Some(BroadcastCommand::StartVirtualCam),
+        "stop_virtual_cam" => Some(BroadcastCommand::StopVirtualCam),
+        "trigger_transition" => Some(BroadcastCommand::TriggerStudioModeTransition),
+        "studio_mode_on" => Some(BroadcastCommand::SetStudioModeEnabled(true)),
+        "studio_mode_off" => Some(BroadcastCommand::SetStudioModeEnabled(false)),
+        "create_scene" => arg.clone().map(BroadcastCommand::CreateScene),
+        "remove_scene" => arg.clone().map(BroadcastCommand::RemoveScene),
+        "set_transition" => arg.clone().map(BroadcastCommand::SetCurrentSceneTransition),
         _ => None,
     };
     if let Some(c) = cmd {
-        dispatch(&state, AdapterCommand::Obs(c));
+        dispatch(&state, AdapterCommand::Broadcast(c));
     }
-    format!("Dispatched OBS action: {}", action)
+    format!("Dispatched BROADCAST action: {}", action)
 }
 
 #[tauri::command]
 fn split_recording_file(state: State<ManagedState>) -> AppStateSnapshot {
-    dispatch(&state, AdapterCommand::Obs(ObsCommand::SplitRecordFile));
+    dispatch(&state, AdapterCommand::Broadcast(BroadcastCommand::SplitRecordFile));
     let mut inner = state.inner.lock().unwrap();
-    inner.push_event_log("[obs] SplitRecordFile triggered".into());
+    inner.push_event_log("[broadcast] SplitRecordFile triggered".into());
     inner.clone()
 }
 
 #[tauri::command]
-fn probe_libobs_sidecar() -> runtime::obs_worker_ipc::LibObsCapabilities {
-    runtime::obs_worker_ipc::probe_libobs_capabilities()
+fn probe_media_engine_sidecar() -> runtime::broadcast_worker_ipc::MediaEngineCapabilities {
+    runtime::broadcast_worker_ipc::probe_media_engine_capabilities()
 }
 
 #[tauri::command]
 fn get_media_engine_status(
-    daemon: State<runtime::obs_daemon::ObsDaemonSupervisor>,
-) -> runtime::obs_daemon::MediaEngineStatus {
-    runtime::obs_daemon::probe_media_engine_status(&daemon)
+    daemon: State<runtime::broadcast_daemon::BroadcastDaemonSupervisor>,
+) -> runtime::broadcast_daemon::MediaEngineStatus {
+    runtime::broadcast_daemon::probe_media_engine_status(&daemon)
 }
 
 #[tauri::command]
 fn start_headless_media_daemon(
-    daemon: State<runtime::obs_daemon::ObsDaemonSupervisor>,
+    daemon: State<runtime::broadcast_daemon::BroadcastDaemonSupervisor>,
 ) -> Result<String, String> {
-    daemon.start_headless_obs()
+    daemon.start_headless_broadcast()
 }
 
 #[tauri::command]
-fn route_dante_crosspoint(
+fn route_aoip_crosspoint(
     rx_ip: String,
     rx_chan_id: u16,
     tx_chan: String,
@@ -1333,7 +1333,7 @@ fn route_dante_crosspoint(
 ) -> AppStateSnapshot {
     dispatch(
         &state,
-        AdapterCommand::Dante(DanteCommand::RouteCrosspoint {
+        AdapterCommand::Aoip(AoipCommand::RouteCrosspoint {
             rx_ip: rx_ip.clone(),
             rx_port: 4440,
             rx_channel_id: rx_chan_id,
@@ -1344,32 +1344,32 @@ fn route_dante_crosspoint(
     let mut inner = state.inner.lock().unwrap();
     let rx_channel = rx_chan_id.to_string();
     let matched = inner
-        .dante_routes
+        .aoip_routes
         .iter()
         .position(|route| {
             (route.id == rx_ip || route.rx_device == rx_ip) && route.rx_channel == rx_channel
         })
         .or_else(|| {
             inner
-                .dante_routes
+                .aoip_routes
                 .iter()
                 .position(|route| route.id == rx_ip || route.rx_device == rx_ip)
         })
         .or_else(|| {
-            inner.dante_routes.iter().position(|route| {
+            inner.aoip_routes.iter().position(|route| {
                 route.rx_channel == rx_channel && route.tx_device == tx_dev
             })
         });
 
     if let Some(index) = matched {
-        let route = &mut inner.dante_routes[index];
+        let route = &mut inner.aoip_routes[index];
         route.rx_device = rx_ip.clone();
         route.rx_channel = rx_channel.clone();
         route.tx_device = tx_dev.clone();
         route.tx_channel = tx_chan.clone();
         route.rx_status = "PREPARING".into();
     } else {
-        inner.dante_routes.push(DanteRoute {
+        inner.aoip_routes.push(AoipRoute {
             id: format!("{rx_ip}:{rx_chan_id}"),
             rx_device: rx_ip.clone(),
             rx_channel: rx_channel.clone(),
@@ -1382,14 +1382,14 @@ fn route_dante_crosspoint(
     }
 
     inner.push_event_log(format!(
-        "[dante-arc] Crosspoint ch {} <- {}@{} (state snapshot updated)",
+        "[aoip-arc] Crosspoint ch {} <- {}@{} (state snapshot updated)",
         rx_chan_id, tx_chan, tx_dev
     ));
     inner.clone()
 }
 
 #[tauri::command]
-fn trigger_ndi_ptz(
+fn trigger_ip_video_ptz(
     source_id: String,
     preset_index: Option<u8>,
     pan: Option<f64>,
@@ -1399,7 +1399,7 @@ fn trigger_ndi_ptz(
     if let Some(idx) = preset_index {
         dispatch(
             &state,
-            AdapterCommand::Ndi(NdiCommand::RecallPtzPreset {
+            AdapterCommand::IpVideo(IpVideoCommand::RecallPtzPreset {
                 source_id: source_id.clone(),
                 preset_index: idx,
                 speed: 0.75,
@@ -1408,7 +1408,7 @@ fn trigger_ndi_ptz(
     } else if let (Some(p), Some(t)) = (pan, tilt) {
         dispatch(
             &state,
-            AdapterCommand::Ndi(NdiCommand::PanTiltSpeed {
+            AdapterCommand::IpVideo(IpVideoCommand::PanTiltSpeed {
                 source_id: source_id.clone(),
                 pan: p,
                 tilt: t,
@@ -1419,7 +1419,7 @@ fn trigger_ndi_ptz(
 }
 
 #[tauri::command]
-fn send_x32_osc(
+fn send_console_osc(
     address: String,
     value: f32,
     state: State<ManagedState>,
@@ -1429,11 +1429,11 @@ fn send_x32_osc(
         if let Some((num_s, leaf)) = rest.split_once('/') {
             if let Ok(num) = num_s.parse::<u8>() {
                 if leaf == "on" {
-                    dispatch(&state, AdapterCommand::X32(X32Command::SetDcaMute { number: num, muted: value < 0.5 }));
+                    dispatch(&state, AdapterCommand::Console(ConsoleCommand::SetDcaMute { number: num, muted: value < 0.5 }));
                     handled_typed = true;
                 } else if leaf == "fader" {
-                    let db = protocols::x32::fader_to_db(value).unwrap_or(protocols::x32::FADER_MIN_DB);
-                    dispatch(&state, AdapterCommand::X32(X32Command::SetDcaLevel { number: num, db }));
+                    let db = protocols::console_osc::fader_to_db(value).unwrap_or(protocols::console_osc::FADER_MIN_DB);
+                    dispatch(&state, AdapterCommand::Console(ConsoleCommand::SetDcaLevel { number: num, db }));
                     handled_typed = true;
                 }
             }
@@ -1442,20 +1442,20 @@ fn send_x32_osc(
         if let Some((ch_s, leaf)) = rest.split_once('/') {
             if let Ok(ch) = ch_s.parse::<u8>() {
                 if leaf == "mix/fader" {
-                    dispatch(&state, AdapterCommand::X32(X32Command::SetChannelFader { channel: ch, fader: value }));
+                    dispatch(&state, AdapterCommand::Console(ConsoleCommand::SetChannelFader { channel: ch, fader: value }));
                     handled_typed = true;
                 } else if leaf == "mix/on" {
-                    dispatch(&state, AdapterCommand::X32(X32Command::SetChannelMute { channel: ch, muted: value < 0.5 }));
+                    dispatch(&state, AdapterCommand::Console(ConsoleCommand::SetChannelMute { channel: ch, muted: value < 0.5 }));
                     handled_typed = true;
                 }
             }
         }
     }
     if !handled_typed {
-        dispatch(&state, AdapterCommand::X32(X32Command::RawOsc { address: address.clone(), value }));
+        dispatch(&state, AdapterCommand::Console(ConsoleCommand::RawOsc { address: address.clone(), value }));
     }
     let mut inner = state.inner.lock().unwrap();
-    inner.push_event_log(format!("[x32-osc] {} -> {:.2}", address, value));
+    inner.push_event_log(format!("[console-osc] {} -> {:.2}", address, value));
     inner.clone()
 }
 
@@ -1476,10 +1476,10 @@ async fn ptz_drive_camera(
         let full_stop = pan_speed == 0 && tilt_speed == 0 && zoom_speed == 0;
 
         if full_stop || pan_speed != 0 || tilt_speed != 0 {
-            let seq = VISCA_SEQ.fetch_add(1, Ordering::Relaxed);
+            let seq = PTZ_IP_SEQ.fetch_add(1, Ordering::Relaxed);
             let p_spd = pan_speed.unsigned_abs().max(1);
             let t_spd = tilt_speed.unsigned_abs().max(1);
-            let ptz_pkt = protocols::visca::ViscaPacket::pan_tilt_drive(
+            let ptz_pkt = protocols::ptz_ip::PtzIpPacket::pan_tilt_drive(
                 seq,
                 p_spd,
                 t_spd,
@@ -1491,9 +1491,9 @@ async fn ptz_drive_camera(
         }
 
         if full_stop || zoom_speed != 0 {
-            let seq = VISCA_SEQ.fetch_add(1, Ordering::Relaxed);
+            let seq = PTZ_IP_SEQ.fetch_add(1, Ordering::Relaxed);
             let z_spd = zoom_speed.unsigned_abs().min(7);
-            let zoom_pkt = protocols::visca::ViscaPacket::zoom_drive(
+            let zoom_pkt = protocols::ptz_ip::PtzIpPacket::zoom_drive(
                 seq,
                 zoom_speed.signum(),
                 z_spd,
@@ -1502,7 +1502,7 @@ async fn ptz_drive_camera(
             sock.send_to(&zoom_pkt, &addr).map_err(|e| e.to_string())?;
         }
 
-        Ok(format!("VISCA PTZ commands sent to {}", addr))
+        Ok(format!("PTZ_IP PTZ commands sent to {}", addr))
     })
     .await
     .map_err(|e| e.to_string())?
@@ -1519,10 +1519,10 @@ async fn ptz_recall_preset(
         sock.set_write_timeout(Some(std::time::Duration::from_millis(1500)))
             .map_err(|e| e.to_string())?;
         let addr = format!("{}:{}", ip, port);
-        let seq = VISCA_SEQ.fetch_add(1, Ordering::Relaxed);
-        let pkt = protocols::visca::ViscaPacket::recall_preset(seq, preset).to_bytes();
+        let seq = PTZ_IP_SEQ.fetch_add(1, Ordering::Relaxed);
+        let pkt = protocols::ptz_ip::PtzIpPacket::recall_preset(seq, preset).to_bytes();
         sock.send_to(&pkt, &addr).map_err(|e| e.to_string())?;
-        Ok(format!("VISCA Recall Preset {} sent to {}", preset, addr))
+        Ok(format!("PTZ_IP Recall Preset {} sent to {}", preset, addr))
     })
     .await
     .map_err(|e| e.to_string())?
@@ -1539,10 +1539,10 @@ async fn ptz_store_preset(
         sock.set_write_timeout(Some(std::time::Duration::from_millis(1500)))
             .map_err(|e| e.to_string())?;
         let addr = format!("{}:{}", ip, port);
-        let seq = VISCA_SEQ.fetch_add(1, Ordering::Relaxed);
-        let pkt = protocols::visca::ViscaPacket::set_preset(seq, preset).to_bytes();
+        let seq = PTZ_IP_SEQ.fetch_add(1, Ordering::Relaxed);
+        let pkt = protocols::ptz_ip::PtzIpPacket::set_preset(seq, preset).to_bytes();
         sock.send_to(&pkt, &addr).map_err(|e| e.to_string())?;
-        Ok(format!("VISCA Store Preset {} sent to {}", preset, addr))
+        Ok(format!("PTZ_IP Store Preset {} sent to {}", preset, addr))
     })
     .await
     .map_err(|e| e.to_string())?
@@ -1568,7 +1568,7 @@ tell application "System Events"
         end try
     end repeat
 end tell
-set AppleScript's text item delimiters to linefeed
+set system script's text item delimiters to linefeed
 return outLines as text
 "#;
         if let Ok(out) = std::process::Command::new("osascript")
@@ -1637,9 +1637,9 @@ fn run_preflight_probes(state: State<ManagedState>) -> AppStateSnapshot {
 pub fn run() {
     tauri::Builder::default()
         .manage(ManagedState::default())
-        .manage(runtime::obs_daemon::ObsDaemonSupervisor::default())
-        .manage(runtime::obs_daemon::FfmpegStreamProcess::default())
-        .manage(runtime::obs_daemon::ReplayBufferProcess::default())
+        .manage(runtime::broadcast_daemon::BroadcastDaemonSupervisor::default())
+        .manage(runtime::broadcast_daemon::FfmpegStreamProcess::default())
+        .manage(runtime::broadcast_daemon::ReplayBufferProcess::default())
         .setup(|app| {
             let managed = app.state::<ManagedState>();
 
@@ -1748,20 +1748,20 @@ pub fn run() {
             control_presentation_timer,
             set_stage_message,
             set_stage_message_flag,
-            propresenter_playlist_control,
-            propresenter_transport_control,
-            propresenter_transport_seek,
-            propresenter_clear_group,
-            propresenter_catalog,
-            propresenter_resource,
-            easyworship_control,
-            easyworship_get_slide_image,
-            easyworship_image,
-            easyworship_screen_flag,
+            slide_http_playlist_control,
+            slide_http_transport_control,
+            slide_http_transport_seek,
+            slide_http_clear_group,
+            slide_http_catalog,
+            slide_http_resource,
+            slide_tcp_control,
+            slide_tcp_get_slide_image,
+            slide_tcp_image,
+            slide_tcp_screen_flag,
             set_broadcast_state,
-            switch_ndi_receiver,
-            auto_heal_ndi_receivers,
-            flash_dante_identify,
+            switch_ip_video_receiver,
+            auto_heal_ip_video_receivers,
+            flash_aoip_identify,
             run_preflight_probes,
             update_settings,
             sync_workspace_state,
@@ -1777,31 +1777,31 @@ pub fn run() {
             save_replay_buffer,
             stop_replay_buffer,
             stop_direct_ffmpeg_stream,
-            import_ewsx_schedule,
+            import_slide_archive,
             list_video_devices,
             get_media_engine_status,
-            probe_libobs_sidecar,
-            dispatch_obs_worker_command,
+            probe_media_engine_sidecar,
+            dispatch_broadcast_worker_command,
             split_recording_file,
-            send_obs_stream_caption,
+            send_broadcast_stream_caption,
             remux_recording_to_mp4,
-            dispatch_obs_studio_command,
+            dispatch_broadcast_studio_command,
             start_headless_media_daemon,
-            route_dante_crosspoint,
-            trigger_ndi_ptz,
+            route_aoip_crosspoint,
+            trigger_ip_video_ptz,
             ptz_drive_camera,
             ptz_recall_preset,
             ptz_store_preset,
-            send_x32_osc,
+            send_console_osc,
             open_in_browser
         ])
         .build(tauri::generate_context!())
         .expect("error while building One Ring")
         .run(|app_handle, event| {
             if matches!(event, tauri::RunEvent::Exit | tauri::RunEvent::ExitRequested { .. }) {
-                app_handle.state::<runtime::obs_daemon::ObsDaemonSupervisor>().stop();
-                app_handle.state::<runtime::obs_daemon::FfmpegStreamProcess>().stop();
-                app_handle.state::<runtime::obs_daemon::ReplayBufferProcess>().stop();
+                app_handle.state::<runtime::broadcast_daemon::BroadcastDaemonSupervisor>().stop();
+                app_handle.state::<runtime::broadcast_daemon::FfmpegStreamProcess>().stop();
+                app_handle.state::<runtime::broadcast_daemon::ReplayBufferProcess>().stop();
             }
         });
 }

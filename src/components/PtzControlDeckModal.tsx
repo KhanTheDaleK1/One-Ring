@@ -179,7 +179,7 @@ export const PtzControlDeckModal: React.FC<PtzControlDeckModalProps> = ({
                 PTZ Control Deck & Preset Programmer
               </h2>
               <span className="mono" style={{ fontSize: 12, color: "#9CA3AF" }}>
-                Target: {cameraName} ({cameraId}) • VISCA-over-IP UDP
+                Target: {cameraName} ({cameraId}) • PTZ-IP-over-IP UDP
               </span>
             </div>
           </div>
@@ -205,7 +205,7 @@ export const PtzControlDeckModal: React.FC<PtzControlDeckModalProps> = ({
             />
             <input
               type="number"
-              aria-label="VISCA UDP Port"
+              aria-label="PTZ-IP UDP Port"
               value={cameraPort}
               min={1}
               max={65535}

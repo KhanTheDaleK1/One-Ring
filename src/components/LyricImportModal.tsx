@@ -149,7 +149,7 @@ export const LyricImportModal: React.FC<LyricImportModalProps> = ({
                 Import Lyrics & Reflow Slides
               </h3>
               <p style={{ margin: "2px 0 0", color: "#94A3B8", fontSize: 12 }}>
-                Paste lyrics directly from CCLI, Google Docs, or text files. Preview scrolls cleanly inside the box.
+                Paste lyrics directly from the song library, shared docs, or text files. Preview scrolls cleanly inside the box.
               </p>
             </div>
           </div>

@@ -32,9 +32,15 @@ jobs:
       - name: install frontend dependencies
         run: npm install
 
+      - name: Clean-room compliance check
+        run: python3 scripts/check_clean_room.py
+        env:
+          ONE_RING_UPDATE_REPO: ${{ github.repository }}
+
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ONE_RING_UPDATE_REPO: ${{ github.repository }}
         with:
           tagName: ${{ github.ref_name }}
           releaseName: "One Ring ${{ github.ref_name }}"

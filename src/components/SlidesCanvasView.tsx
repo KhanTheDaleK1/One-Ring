@@ -17,8 +17,8 @@ import {
 } from "lucide-react";
 import type { AppStateSnapshot, ServiceSong, SlideCue, SlideTheme } from "../types";
 import { LyricImportModal } from "./LyricImportModal";
-import { CcliSongSelectModal, type SongSelectResult } from "./CcliSongSelectModal";
-import { importEwsxSchedule, bridge } from "../bridge";
+import { SongCatalogModal, type SongLibraryResult } from "./SongCatalogModal";
+import { importSlideArchive, bridge } from "../bridge";
 import { BibleLookupModal } from "./BibleLookupModal";
 import { TimersAndAlertsModal } from "./TimersAndAlertsModal";
 
@@ -63,7 +63,7 @@ export const SlidesCanvasView: React.FC<SlidesCanvasViewProps> = ({
   onRemoveSong,
 }) => {
   const [showImportModal, setShowImportModal] = useState(false);
-  const [showCcliModal, setShowCcliModal] = useState(false);
+  const [showSongCatalogModal, setShowSongCatalogModal] = useState(false);
   const [importNotice, setImportNotice] = useState<string | null>(null);
   const [showThemeEditor, setShowThemeEditor] = useState(false);
   const [showBibleModal, setShowBibleModal] = useState(false);
@@ -84,7 +84,7 @@ export const SlidesCanvasView: React.FC<SlidesCanvasViewProps> = ({
       const nativePath = (file as File & { path?: string }).path;
       if (nativePath) {
         try {
-          const songs = await importEwsxSchedule(nativePath);
+          const songs = await importSlideArchive(nativePath);
           for (const song of songs) {
             const lines = song.rawLyrics
               .split(/\r?\n/)
@@ -109,14 +109,14 @@ export const SlidesCanvasView: React.FC<SlidesCanvasViewProps> = ({
           setImportNotice(`Failed to extract .ewsx archive: ${String(err)}`);
         }
       } else {
-        setImportNotice("EasyWorship .ewsx files are binary ZIP archives; export plain text or import via native desktop path.");
+        setImportNotice("SlideTcp .ewsx files are binary ZIP archives; export plain text or import via native desktop path.");
       }
       e.target.value = "";
       return;
     }
 
     if (lowerName.endsWith(".pro")) {
-      setImportNotice("ProPresenter .pro files are binary protobuf bundles; export as .txt / ChordPro (.cho) to import.");
+      setImportNotice("SlideHttp .pro files are binary protobuf bundles; export as .txt / ChordPro (.cho) to import.");
       e.target.value = "";
       return;
     }
@@ -548,7 +548,7 @@ export const SlidesCanvasView: React.FC<SlidesCanvasViewProps> = ({
               <button
                 type="button"
                 onClick={() => fileImportRef.current?.click()}
-                title="Import .txt, ChordPro, ProPresenter, or EasyWorship file"
+                title="Import .txt, ChordPro, SlideHttp, or SlideTcp file"
                 style={{
                   background: "#1E293B",
                   border: "1px solid #334155",
@@ -567,8 +567,8 @@ export const SlidesCanvasView: React.FC<SlidesCanvasViewProps> = ({
               </button>
               <button
                 type="button"
-                onClick={() => setShowCcliModal(true)}
-                title="Search Public Domain / CCLI SongSelect catalog"
+                onClick={() => setShowSongCatalogModal(true)}
+                title="Search Public Domain / Song Library catalog"
                 style={{
                   background: "#1E293B",
                   border: "1px solid #334155",
@@ -580,7 +580,7 @@ export const SlidesCanvasView: React.FC<SlidesCanvasViewProps> = ({
                   cursor: "pointer",
                 }}
               >
-                CCLI
+                SONG LIBRARY
               </button>
               <button
                 type="button"
@@ -820,7 +820,7 @@ export const SlidesCanvasView: React.FC<SlidesCanvasViewProps> = ({
           {/* 2. Broadcast Lower Thirds Overlay Preview */}
           <div style={previewCardStyle}>
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-              <span style={previewTitleStyle}>2. Livestream Lower Thirds (Alpha / NDI)</span>
+              <span style={previewTitleStyle}>2. Livestream Lower Thirds (Alpha / IP Video)</span>
               <span style={{ fontSize: 10, color: "#A855F7", fontWeight: 700 }}>Transparent Key</span>
             </div>
 
@@ -991,17 +991,17 @@ export const SlidesCanvasView: React.FC<SlidesCanvasViewProps> = ({
         onClose={() => setShowImportModal(false)}
         onImport={onImportSong}
       />
-      <CcliSongSelectModal
-        isOpen={showCcliModal}
-        onClose={() => setShowCcliModal(false)}
-        ccliLicenseNumber={state.settings?.slides?.songselectClientId || "Public Domain"}
-        onImportSong={(song: SongSelectResult) => {
+      <SongCatalogModal
+        isOpen={showSongCatalogModal}
+        onClose={() => setShowSongCatalogModal(false)}
+        licenseNumber={state.settings?.slides?.songLibraryClientId || "Public Domain"}
+        onImportSong={(song: SongLibraryResult) => {
           const lines = song.lyricsPreview.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
           const importedSlides: SlideCue[] = [];
           for (let i = 0; i < lines.length; i += 2) {
             const num = importedSlides.length + 1;
             importedSlides.push({
-              id: `ccli-${song.ccliNumber}-${num}`,
+              id: `songLibrary-${song.songNumber}-${num}`,
               number: num,
               section: "Verse",
               title: `${song.title} - ${num}`,

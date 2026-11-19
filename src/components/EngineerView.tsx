@@ -1,17 +1,17 @@
 import React, { useState } from "react";
 import type { AppStateSnapshot } from "../types";
-import { X32FullConsoleModal } from "./X32FullConsoleModal";
-import { DanteControllerMatrix } from "./DanteControllerMatrix";
-import { routeDanteCrosspoint, sendX32Osc } from "../bridge";
+import { ConsoleFullMixerModal } from "./ConsoleFullMixerModal";
+import { AoipMatrixView } from "./AoipMatrixView";
+import { routeAoipCrosspoint, sendConsoleOsc } from "../bridge";
 
 interface EngineerViewProps {
   state: AppStateSnapshot;
   onBroadcastToggle: (targetId: string, live: boolean) => void;
   onToggleDcaMute: (dcaId: string) => void;
   onToggleBeltpackFault: () => void;
-  onSwitchNdiReceiver: (receiverId: string, sourceName: string) => void;
-  onAutoHealNdi: () => void;
-  onFlashDanteIdentify: (routeId: string) => void;
+  onSwitchIpVideoReceiver: (receiverId: string, sourceName: string) => void;
+  onAutoHealIpVideo: () => void;
+  onFlashAoipIdentify: (routeId: string) => void;
 }
 
 export const EngineerView: React.FC<EngineerViewProps> = ({
@@ -19,21 +19,21 @@ export const EngineerView: React.FC<EngineerViewProps> = ({
   onBroadcastToggle,
   onToggleDcaMute,
   onToggleBeltpackFault,
-  onSwitchNdiReceiver,
-  onAutoHealNdi,
-  onFlashDanteIdentify,
+  onSwitchIpVideoReceiver,
+  onAutoHealIpVideo,
+  onFlashAoipIdentify,
 }) => {
-  const [tab, setTab] = useState<"audio" | "dante" | "ndi" | "broadcast" | "logs">("audio");
-  const [showFullX32, setShowFullX32] = useState(false);
+  const [tab, setTab] = useState<"audio" | "aoip" | "ipVideo" | "broadcast" | "logs">("audio");
+  const [showFullConsole, setShowFullConsole] = useState(false);
 
   return (
     <div style={{ padding: tab === "audio" ? "8px 12px" : 20, maxWidth: tab === "audio" ? "100%" : 1220, margin: "0 auto" }}>
       <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: tab === "audio" ? 8 : 14 }}>
         {(
           [
-            ["audio", "X32-Edit Console"],
-            ["dante", "Dante Audio Matrix"],
-            ["ndi", "NDI Video Matrix"],
+            ["audio", "Console Editor"],
+            ["aoip", "AOIP Matrix"],
+            ["ipVideo", "IP Video Matrix"],
             ["broadcast", "Stream & Recording Outputs"],
             ["logs", "Activity Log"],
           ] as const
@@ -59,7 +59,7 @@ export const EngineerView: React.FC<EngineerViewProps> = ({
       {tab === "broadcast" && (
         <div style={{ display: "grid", gap: 16 }}>
           <div className="card" style={{ padding: 20 }}>
-            <h3 style={{ marginTop: 0 }}>OBS 33 Multi-Canvas + Streamlabs DualOutputService</h3>
+            <h3 style={{ marginTop: 0 }}>Broadcast 33 Multi-Canvas + Broadcast DualOutputService</h3>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 18 }}>
               {state.canvases.map((c) => (
                 <div
@@ -123,7 +123,7 @@ export const EngineerView: React.FC<EngineerViewProps> = ({
               ))}
             </div>
 
-            <h4 style={{ marginBottom: 8 }}>OBS 33 Automatic Recording Chapters (`CreateRecordChapter`)</h4>
+            <h4 style={{ marginBottom: 8 }}>Broadcast 33 Automatic Recording Chapters (`CreateRecordChapter`)</h4>
             <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
               {state.recordChapters.map((ch) => (
                 <span
@@ -162,13 +162,13 @@ export const EngineerView: React.FC<EngineerViewProps> = ({
             }}
           >
             <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-              <strong style={{ fontSize: 12.5, color: "#E2E8F0" }}>Behringer X32-Edit (:10023)</strong>
+              <strong style={{ fontSize: 12.5, color: "#E2E8F0" }}>Console Editor (:10023)</strong>
               {state.dcas.map((d) => (
                 <button
                   key={d.id}
                   type="button"
                   onClick={() => onToggleDcaMute(d.id)}
-                  title={`${d.danteTxChannel}: ${d.signalDb} dBFS — Click to Mute/Unmute DCA ${d.number}`}
+                  title={`${d.aoipTxChannel}: ${d.signalDb} dBFS — Click to Mute/Unmute DCA ${d.number}`}
                   style={{
                     height: 24,
                     padding: "0 8px",
@@ -201,26 +201,26 @@ export const EngineerView: React.FC<EngineerViewProps> = ({
             </button>
           </div>
 
-          <X32FullConsoleModal
+          <ConsoleFullMixerModal
             embedded
             isOpen={true}
             onClose={() => {}}
-            onPopout={() => setShowFullX32(true)}
-            onSendX32Command={(addr, val) => {
-              if (typeof val === "number") sendX32Osc(addr, val);
+            onPopout={() => setShowFullConsole(true)}
+            onSendConsoleCommand={(addr, val) => {
+              if (typeof val === "number") sendConsoleOsc(addr, val);
             }}
           />
         </div>
       )}
 
-      {tab === "dante" && (
+      {tab === "aoip" && (
         <div className="card" style={{ padding: 20 }}>
-          <h3 style={{ marginTop: 0 }}>Dante ARC Crosspoints (`_netaudio-arc._udp`) & Conmon Metering (`UDP :8751`)</h3>
+          <h3 style={{ marginTop: 0 }}>Aoip ARC Crosspoints (`_netaudio-arc._udp`) & Conmon Metering (`UDP :8751`)</h3>
           <div className="mono" style={{ padding: 12, borderRadius: 8, background: "#121721", border: "1px solid #2A3241", color: "#34D399", marginBottom: 14, fontSize: 12 }}>
-            {state.danteClock}
+            {state.aoipClock}
           </div>
           <div style={{ display: "grid", gap: 10 }}>
-            {state.danteRoutes.map((r) => (
+            {state.aoipRoutes.map((r) => (
               <div
                 key={r.id}
                 style={{
@@ -244,7 +244,7 @@ export const EngineerView: React.FC<EngineerViewProps> = ({
                 <button
                   type="button"
                   className="btn"
-                  onClick={() => onFlashDanteIdentify(r.id)}
+                  onClick={() => onFlashAoipIdentify(r.id)}
                   style={{
                     height: 36,
                     padding: "0 12px",
@@ -261,26 +261,26 @@ export const EngineerView: React.FC<EngineerViewProps> = ({
         </div>
       )}
 
-      {tab === "ndi" && (
+      {tab === "ipVideo" && (
         <div className="card" style={{ padding: 20 }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
             <div>
-              <h3 style={{ margin: 0 }}>NDI 6 Discovery Service (`TCP :5959` `receiver_listener`)</h3>
+              <h3 style={{ margin: 0 }}>IP Video 6 Discovery Service (`TCP :5959` `receiver_listener`)</h3>
               <p style={{ margin: "4px 0 0", color: "#9CA3AF", fontSize: 13 }}>
-                Remotely retarget any NDI Studio Monitor or decoder in the building via <code>&lt;control_receiver&gt;</code>, or auto-heal drifted displays.
+                Remotely retarget any IP Video Studio Monitor or decoder in the building via <code>&lt;control_receiver&gt;</code>, or auto-heal drifted displays.
               </p>
             </div>
             <button
               type="button"
               className="btn"
-              onClick={onAutoHealNdi}
+              onClick={onAutoHealIpVideo}
               style={{ height: 38, padding: "0 14px", background: "#065F46", borderColor: "#10B981" }}
             >
               Auto-Heal All Receivers to Show Spec
             </button>
           </div>
           <div style={{ display: "grid", gap: 10 }}>
-            {state.ndiReceivers.map((rx) => (
+            {state.ipVideoReceivers.map((rx) => (
               <div
                 key={rx.id}
                 style={{
@@ -303,7 +303,7 @@ export const EngineerView: React.FC<EngineerViewProps> = ({
                 </div>
                 <select
                   value={rx.subscribedSource}
-                  onChange={(e) => onSwitchNdiReceiver(rx.id, e.target.value)}
+                  onChange={(e) => onSwitchIpVideoReceiver(rx.id, e.target.value)}
                   className="mono"
                   style={{
                     height: 36,
@@ -315,7 +315,7 @@ export const EngineerView: React.FC<EngineerViewProps> = ({
                     fontSize: 12,
                   }}
                 >
-                  {state.ndiSources.map((src) => (
+                  {state.ipVideoSources.map((src) => (
                     <option key={src} value={src}>
                       {src}
                     </option>
@@ -351,23 +351,23 @@ export const EngineerView: React.FC<EngineerViewProps> = ({
           </div>
         </div>
       )}
-      {tab === "dante" && (
+      {tab === "aoip" && (
         <div style={{ marginTop: 14 }}>
-          <DanteControllerMatrix
-            routes={state.danteRoutes}
+          <AoipMatrixView
+            routes={state.aoipRoutes}
             onRoutePatch={(rxIp, rxChanId, txChan, txDev) => {
-              routeDanteCrosspoint(rxIp, rxChanId, txChan, txDev).catch(() => {});
+              routeAoipCrosspoint(rxIp, rxChanId, txChan, txDev).catch(() => {});
             }}
-            onIdentifyDevice={(deviceIp) => onFlashDanteIdentify(deviceIp)}
+            onIdentifyDevice={(deviceIp) => onFlashAoipIdentify(deviceIp)}
           />
         </div>
       )}
 
-      <X32FullConsoleModal
-        isOpen={showFullX32}
-        onClose={() => setShowFullX32(false)}
-        onSendX32Command={(addr, val) => {
-          if (typeof val === "number") sendX32Osc(addr, val);
+      <ConsoleFullMixerModal
+        isOpen={showFullConsole}
+        onClose={() => setShowFullConsole(false)}
+        onSendConsoleCommand={(addr, val) => {
+          if (typeof val === "number") sendConsoleOsc(addr, val);
         }}
       />
     </div>

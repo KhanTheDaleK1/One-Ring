@@ -7,6 +7,7 @@ import {
   applyStatePatch,
   bridge,
   subscribeEvents,
+  UPDATE_REPO_URL,
 } from "./bridge";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { AppStateSnapshot, ViewMode } from "./types";
@@ -69,7 +70,7 @@ export const App: React.FC = () => {
             release_name: "One Ring — Church Production Suite",
             release_notes: "You are running One Ring v0.3.2-alpha. All systems up to date.",
             published_at: new Date().toISOString(),
-            html_url: "https://github.com/KhanTheDaleK1/One-Ring",
+            html_url: UPDATE_REPO_URL,
             download_url: null,
             update_available: false,
             assets: [],
@@ -497,7 +498,7 @@ export const App: React.FC = () => {
         </div>
       </header>
 
-      {/* SILENT PASTOR MIC BANNER (Dante Conmon UDP :8751 0xFE detector) */}
+      {/* SILENT PASTOR MIC BANNER (Aoip Conmon UDP :8751 0xFE detector) */}
       {state.silentMicAlert && (
         <div
           style={{
@@ -531,9 +532,9 @@ export const App: React.FC = () => {
           onBroadcastToggle={(id, live) => bridge.setBroadcastState(id, live).then(setState)}
           onToggleDcaMute={(id) => bridge.toggleDcaMute(id).then(setState)}
           onToggleBeltpackFault={() => bridge.toggleBeltpackFault().then(setState)}
-          onSwitchNdiReceiver={(rxId, src) => bridge.switchNdiReceiver(rxId, src).then(setState)}
-          onAutoHealNdi={() => bridge.autoHealNdiReceivers().then(setState)}
-          onFlashDanteIdentify={(routeId) => bridge.flashDanteIdentify(routeId).then(setState)}
+          onSwitchIpVideoReceiver={(rxId, src) => bridge.switchIpVideoReceiver(rxId, src).then(setState)}
+          onAutoHealIpVideo={() => bridge.autoHealIpVideoReceivers().then(setState)}
+          onFlashAoipIdentify={(routeId) => bridge.flashAoipIdentify(routeId).then(setState)}
         />
       )}
 
@@ -541,7 +542,7 @@ export const App: React.FC = () => {
         <VideoCanvasView
           state={state}
           onRecallCamera={(id) => bridge.recallCameraPreset(id).then(setState)}
-          onSwitchNdiReceiver={(rxId, src) => bridge.switchNdiReceiver(rxId, src).then(setState)}
+          onSwitchIpVideoReceiver={(rxId, src) => bridge.switchIpVideoReceiver(rxId, src).then(setState)}
         />
       )}
 
@@ -678,28 +679,28 @@ export const App: React.FC = () => {
           onStageMessageFlag={(field, value) => bridge.setStageMessageFlag(field, value).then(setState)}
           onBroadcastToggle={(id, live) => bridge.setBroadcastState(id, live).then(setState)}
           onPlaylistControl={(kind, direction) =>
-            bridge.controlProPresenterPlaylist(kind, direction).then(setState)
+            bridge.controlSlideHttpPlaylist(kind, direction).then(setState)
           }
           onTransportControl={(layer, operation) =>
-            bridge.controlProPresenterTransport(layer, operation).then(setState)
+            bridge.controlSlideHttpTransport(layer, operation).then(setState)
           }
           onTransportSeek={(layer, seconds) =>
-            bridge.seekProPresenterTransport(layer, seconds).then(setState)
+            bridge.seekSlideHttpTransport(layer, seconds).then(setState)
           }
-          onClearGroup={(id) => bridge.triggerProPresenterClearGroup(id).then(setState)}
-          onRefreshProPresenterCatalog={(kind) =>
-            bridge.refreshProPresenterCatalog(kind).then(setState)
+          onClearGroup={(id) => bridge.triggerSlideHttpClearGroup(id).then(setState)}
+          onRefreshSlideHttpCatalog={(kind) =>
+            bridge.refreshSlideHttpCatalog(kind).then(setState)
           }
-          onProPresenterResource={(action, id) =>
-            bridge.triggerProPresenterResource(action, id).then(setState)
+          onSlideHttpResource={(action, id) =>
+            bridge.triggerSlideHttpResource(action, id).then(setState)
           }
-          onEasyWorshipControl={(action) =>
-            bridge.controlEasyWorship(action).then(setState)
+          onSlideTcpControl={(action) =>
+            bridge.controlSlideTcp(action).then(setState)
           }
-          onEasyWorshipScreenFlag={(field, value) =>
-            bridge.setEasyWorshipScreenFlag(field, value).then(setState)
+          onSlideTcpScreenFlag={(field, value) =>
+            bridge.setSlideTcpScreenFlag(field, value).then(setState)
           }
-          onEasyWorshipImage={(key) => bridge.getEasyWorshipImage(key)}
+          onSlideTcpImage={(key) => bridge.getSlideTcpImage(key)}
         />
       )}
 
@@ -843,7 +844,7 @@ export const App: React.FC = () => {
                 release_name: "One Ring v0.3.2-alpha",
                 release_notes: "You are running the latest version. All systems are up to date.",
                 published_at: new Date().toISOString(),
-                html_url: "https://github.com/KhanTheDaleK1/One-Ring/releases",
+                html_url: `${UPDATE_REPO_URL}/releases`,
                 download_url: null,
                 update_available: false,
                 assets: [],

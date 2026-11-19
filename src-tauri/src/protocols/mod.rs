@@ -11,13 +11,13 @@
 //! `docs/re-findings/` and public protocol documentation. No vendor source, decompiled code, or
 //! proprietary assets are reproduced here.
 
-pub mod dante;
-pub mod easyworship;
-pub mod easyworship_discovery;
-pub mod ndi;
-pub mod obs_streamlabs;
-pub mod propresenter;
-pub mod x32;
+pub mod aoip;
+pub mod slide_tcp;
+pub mod slide_tcp_discovery;
+pub mod ip_video;
+pub mod broadcast_ws;
+pub mod slide_http;
+pub mod console_osc;
 
 use std::fmt;
 
@@ -90,49 +90,49 @@ impl From<serde_json::Error> for ProtocolError {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DeviceKind {
-    X32,
-    Dante,
-    Ndi,
-    Obs,
-    Streamlabs,
-    ProPresenter,
-    EasyWorship,
+    Console,
+    Aoip,
+    IpVideo,
+    Broadcast,
+    DualStream,
+    SlideHttp,
+    SlideTcp,
     Unknown,
 }
 
 impl DeviceKind {
     pub const ALL: [DeviceKind; 7] = [
-        DeviceKind::X32,
-        DeviceKind::Dante,
-        DeviceKind::Ndi,
-        DeviceKind::Obs,
-        DeviceKind::Streamlabs,
-        DeviceKind::ProPresenter,
-        DeviceKind::EasyWorship,
+        DeviceKind::Console,
+        DeviceKind::Aoip,
+        DeviceKind::IpVideo,
+        DeviceKind::Broadcast,
+        DeviceKind::DualStream,
+        DeviceKind::SlideHttp,
+        DeviceKind::SlideTcp,
     ];
 
     pub fn label(self) -> &'static str {
         match self {
-            DeviceKind::X32 => "Behringer X32",
-            DeviceKind::Dante => "Dante",
-            DeviceKind::Ndi => "NDI 6",
-            DeviceKind::Obs => "OBS Studio",
-            DeviceKind::Streamlabs => "Streamlabs Desktop",
-            DeviceKind::ProPresenter => "ProPresenter",
-            DeviceKind::EasyWorship => "EasyWorship",
+            DeviceKind::Console => "Console Console",
+            DeviceKind::Aoip => "Aoip",
+            DeviceKind::IpVideo => "IP_VIDEO 6",
+            DeviceKind::Broadcast => "Broadcast Studio",
+            DeviceKind::DualStream => "Dual-Stream Desktop",
+            DeviceKind::SlideHttp => "SlideHttp",
+            DeviceKind::SlideTcp => "SlideTcp",
             DeviceKind::Unknown => "Unknown",
         }
     }
 
     pub fn short_label(self) -> &'static str {
         match self {
-            DeviceKind::X32 => "X32",
-            DeviceKind::Dante => "Dante",
-            DeviceKind::Ndi => "NDI",
-            DeviceKind::Obs => "OBS",
-            DeviceKind::Streamlabs => "SLOBS",
-            DeviceKind::ProPresenter => "ProPresenter",
-            DeviceKind::EasyWorship => "EasyWorship",
+            DeviceKind::Console => "Console",
+            DeviceKind::Aoip => "Aoip",
+            DeviceKind::IpVideo => "IP_VIDEO",
+            DeviceKind::Broadcast => "BROADCAST",
+            DeviceKind::DualStream => "DUAL_STREAM",
+            DeviceKind::SlideHttp => "SlideHttp",
+            DeviceKind::SlideTcp => "SlideTcp",
             DeviceKind::Unknown => "?",
         }
     }
@@ -156,7 +156,7 @@ pub struct DeviceCapabilities {
     pub multi_output: bool,
     /// Frame-synchronized multi-machine preroll.
     pub preroll: bool,
-    /// Remote receiver/display switching (NDI receiver listener).
+    /// Remote receiver/display switching (IP_VIDEO receiver listener).
     pub receiver_control: bool,
     /// Scene/snapshot recall.
     pub scene_recall: bool,
@@ -174,21 +174,21 @@ impl DeviceCapabilities {
     pub fn for_kind(kind: DeviceKind) -> Self {
         let mut c = Self::default();
         match kind {
-            DeviceKind::X32 => {
+            DeviceKind::Console => {
                 c.meters = true;
                 c.scene_recall = true;
             }
-            DeviceKind::Dante => {
+            DeviceKind::Aoip => {
                 c.meters = true;
                 c.routing = true;
             }
-            DeviceKind::Ndi => {
+            DeviceKind::IpVideo => {
                 c.routing = true;
                 c.ptz = true;
                 c.tally = true;
                 c.receiver_control = true;
             }
-            DeviceKind::Obs => {
+            DeviceKind::Broadcast => {
                 c.meters = true;
                 c.multi_canvas = true;
                 c.multi_output = true;
@@ -196,19 +196,19 @@ impl DeviceCapabilities {
                 c.recording = true;
                 c.captions = true;
             }
-            DeviceKind::Streamlabs => {
+            DeviceKind::DualStream => {
                 c.meters = true;
                 c.multi_canvas = true;
                 c.multi_output = true;
                 c.streaming = true;
                 c.recording = true;
             }
-            DeviceKind::ProPresenter => {
+            DeviceKind::SlideHttp => {
                 c.slides = true;
                 c.preroll = true;
                 c.recording = true;
             }
-            DeviceKind::EasyWorship => {
+            DeviceKind::SlideTcp => {
                 // Remote control of live/schedule slides plus notes via the
                 // `_ezwremote._tcp` JSON-lines protocol.
                 c.slides = true;
@@ -293,7 +293,7 @@ impl ProbeTransport {
 #[derive(Debug, Clone)]
 pub struct ProbeDescriptor {
     pub kind: DeviceKind,
-    /// Human label, e.g. "Behringer X32 (FOH)".
+    /// Human label, e.g. "Console Console (FOH)".
     pub label: String,
     /// Default endpoint template. May contain `<host>` / `<port>` placeholders.
     pub default_endpoint: String,
@@ -337,12 +337,12 @@ pub trait ProtocolProbe {
 
 // Concrete probes ------------------------------------------------------------------------------
 
-pub struct X32Probe;
-impl ProtocolProbe for X32Probe {
+pub struct ConsoleProbe;
+impl ProtocolProbe for ConsoleProbe {
     fn descriptor(&self) -> ProbeDescriptor {
         ProbeDescriptor::new(
-            DeviceKind::X32,
-            "Behringer X32",
+            DeviceKind::Console,
+            "Console Console",
             "192.168.10.50:10023",
             ProbeTransport::UdpDatagram(x86_probe_bytes()),
             "OSC /xinfo identity probe, then /xremote keepalive",
@@ -351,19 +351,19 @@ impl ProtocolProbe for X32Probe {
 }
 
 fn x86_probe_bytes() -> Vec<u8> {
-    x32::OscMessage::xinfo().encode()
+    console_osc::OscMessage::xinfo().encode()
 }
 
-pub struct DanteProbe;
-impl ProtocolProbe for DanteProbe {
+pub struct AoipProbe;
+impl ProtocolProbe for AoipProbe {
     fn descriptor(&self) -> ProbeDescriptor {
-        let header = dante::ConmonHeader::request(
-            dante::op::VERSIONS_QUERY,
-            dante::ConmonFraming::Spec24,
+        let header = aoip::ConmonHeader::request(
+            aoip::op::VERSIONS_QUERY,
+            aoip::ConmonFraming::Spec24,
         );
         ProbeDescriptor::new(
-            DeviceKind::Dante,
-            "Dante network",
+            DeviceKind::Aoip,
+            "Aoip network",
             "224.0.0.231:8702",
             ProbeTransport::UdpDatagram(header.encode(&[]).unwrap_or_default()),
             "Conmon VERSIONS_QUERY + PTP clock/metering state",
@@ -371,12 +371,12 @@ impl ProtocolProbe for DanteProbe {
     }
 }
 
-pub struct NdiProbe;
-impl ProtocolProbe for NdiProbe {
+pub struct IpVideoProbe;
+impl ProtocolProbe for IpVideoProbe {
     fn descriptor(&self) -> ProbeDescriptor {
         ProbeDescriptor::new(
-            DeviceKind::Ndi,
-            "NDI 6 discovery",
+            DeviceKind::IpVideo,
+            "IP_VIDEO 6 discovery",
             "<discovery-host>:5959",
             ProbeTransport::TcpConnect { default_port: 5959 },
             "Discovery Service <compatible/> handshake, then <query_receivers/>",
@@ -384,25 +384,25 @@ impl ProtocolProbe for NdiProbe {
     }
 }
 
-pub struct ObsProbe;
-impl ProtocolProbe for ObsProbe {
+pub struct BroadcastProbe;
+impl ProtocolProbe for BroadcastProbe {
     fn descriptor(&self) -> ProbeDescriptor {
         ProbeDescriptor::new(
-            DeviceKind::Obs,
-            "OBS Studio",
+            DeviceKind::Broadcast,
+            "Broadcast Studio",
             "ws://127.0.0.1:4455",
             ProbeTransport::WebSocket { path: "/".into() },
-            "obs-websocket v5 Hello/Identify; verify rpcVersion and canvas list",
+            "broadcast-websocket v5 Hello/Identify; verify rpcVersion and canvas list",
         )
     }
 }
 
-pub struct StreamlabsProbe;
-impl ProtocolProbe for StreamlabsProbe {
+pub struct DualStreamProbe;
+impl ProtocolProbe for DualStreamProbe {
     fn descriptor(&self) -> ProbeDescriptor {
         ProbeDescriptor::new(
-            DeviceKind::Streamlabs,
-            "Streamlabs Desktop",
+            DeviceKind::DualStream,
+            "Dual-Stream Desktop",
             "127.0.0.1:28194",
             ProbeTransport::TcpConnect { default_port: 28194 },
             "Loopback/named-pipe JSON-RPC getModel probe (auto-authorized)",
@@ -410,27 +410,27 @@ impl ProtocolProbe for StreamlabsProbe {
     }
 }
 
-pub struct ProPresenterProbe;
-impl ProtocolProbe for ProPresenterProbe {
+pub struct SlideHttpProbe;
+impl ProtocolProbe for SlideHttpProbe {
     fn descriptor(&self) -> ProbeDescriptor {
         ProbeDescriptor::new(
-            DeviceKind::ProPresenter,
-            "ProPresenter",
+            DeviceKind::SlideHttp,
+            "SlideHttp",
             "http://<host>:<port>",
             ProbeTransport::HttpGet {
-                path: propresenter::paths::STATUS_LAYERS.into(),
+                path: slide_http::paths::STATUS_LAYERS.into(),
             },
             "REST /v1/status/layers, then multiplexed /v1/status/updates stream",
         )
     }
 }
 
-pub struct EasyWorshipProbe;
-impl ProtocolProbe for EasyWorshipProbe {
+pub struct SlideTcpProbe;
+impl ProtocolProbe for SlideTcpProbe {
     fn descriptor(&self) -> ProbeDescriptor {
         ProbeDescriptor::new(
-            DeviceKind::EasyWorship,
-            "EasyWorship",
+            DeviceKind::SlideTcp,
+            "SlideTcp",
             "<host>:<ephemeral-port>",
             ProbeTransport::TcpConnect { default_port: 0 },
             "mDNS _ezwremote._tcp then TCP JSON-lines connect/heartbeat pairing",
@@ -509,13 +509,13 @@ pub struct ProbeRow {
 /// Convenience constructor for the standard set of probes, used by the app wiring.
 pub fn default_probes() -> Vec<Box<dyn ProtocolProbe>> {
     vec![
-        Box::new(X32Probe),
-        Box::new(DanteProbe),
-        Box::new(NdiProbe),
-        Box::new(ObsProbe),
-        Box::new(StreamlabsProbe),
-        Box::new(ProPresenterProbe),
-        Box::new(EasyWorshipProbe),
+        Box::new(ConsoleProbe),
+        Box::new(AoipProbe),
+        Box::new(IpVideoProbe),
+        Box::new(BroadcastProbe),
+        Box::new(DualStreamProbe),
+        Box::new(SlideHttpProbe),
+        Box::new(SlideTcpProbe),
     ]
 }
 
@@ -562,8 +562,8 @@ mod tests {
     }
 }
 
-pub mod x32_scene;
+pub mod console_scene;
 
 pub mod midi;
 
-pub mod visca;
+pub mod ptz_ip;

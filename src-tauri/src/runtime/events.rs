@@ -79,7 +79,7 @@ pub struct MeterChannel {
 #[serde(rename_all = "camelCase")]
 pub struct MeterEvent {
     pub device_id: String,
-    /// `"x32"` or `"dante"`.
+    /// `"console"` or `"aoip"`.
     pub domain: String,
     pub sequence: u64,
     pub captured_at_ms: u64,
@@ -172,7 +172,7 @@ pub trait EventSink: Send + Sync + 'static {
     /// Append an operator-facing log line (adapters never write to stdout for this).
     fn log(&self, line: String);
 
-    /// Emit a domain-specific custom event channel (e.g. `x32://osc`, `x32://rta`).
+    /// Emit a domain-specific custom event channel (e.g. `console://osc`, `console://rta`).
     fn emit_raw(&self, _channel: &str, _payload: Value) {}
 }
 
@@ -282,10 +282,10 @@ mod tests {
 
     #[test]
     fn patch_serializes_camel_case() {
-        let patch = state_patch("x32", json!({ "obsScene": "Pulpit" }));
+        let patch = state_patch("console", json!({ "broadcastScene": "Pulpit" }));
         let text = serde_json::to_string(&patch).unwrap();
-        assert!(text.contains("\"domain\":\"x32\""));
-        assert!(text.contains("\"obsScene\":\"Pulpit\""));
+        assert!(text.contains("\"domain\":\"console\""));
+        assert!(text.contains("\"broadcastScene\":\"Pulpit\""));
         assert!(text.contains("\"revision\":"));
     }
 
@@ -299,8 +299,8 @@ mod tests {
     #[test]
     fn recording_sink_captures_all_channels() {
         let sink = RecordingSink::new();
-        sink.health(HealthEvent::new("x32", "X32", "X32", "ok", "live", "OSC", 2));
-        sink.cue_progress(CueProgressEvent::new(0, 0, 4, "x32", "applied", 3));
+        sink.health(HealthEvent::new("console", "Console", "Console", "ok", "live", "OSC", 2));
+        sink.cue_progress(CueProgressEvent::new(0, 0, 4, "console", "applied", 3));
         sink.log("hello".into());
         let events = sink.snapshot();
         assert_eq!(events.health.len(), 1);

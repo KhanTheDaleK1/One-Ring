@@ -680,7 +680,7 @@ export const SecondaryOutputWindow: React.FC = () => {
         style={{
           width: "100vw",
           height: "100vh",
-          background: "#00FF00", // Chroma-key green or keyed alpha surface for capture/Syphon
+          background: "#00FF00", // Chroma-key green or keyed alpha surface for capture or screen sharing
           display: "flex",
           flexDirection: "column",
           justifyContent: "flex-end",

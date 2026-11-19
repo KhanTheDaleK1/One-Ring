@@ -12,32 +12,32 @@ import {
   Plus,
 } from "lucide-react";
 import type { AppStateSnapshot } from "../types";
-import { NdiStudioTools } from "./NdiStudioTools";
-import { ptzDriveCamera, triggerNdiPtz } from "../bridge";
+import { IpVideoTools } from "./IpVideoTools";
+import { ptzDriveCamera, triggerIpVideoPtz } from "../bridge";
 
 interface VideoCanvasViewProps {
   state: AppStateSnapshot;
   onRecallCamera: (presetId: string) => void;
-  onSwitchNdiReceiver: (rxId: string, src: string) => void;
+  onSwitchIpVideoReceiver: (rxId: string, src: string) => void;
 }
 
 export const VideoCanvasView: React.FC<VideoCanvasViewProps> = ({
   state,
   onRecallCamera,
-  onSwitchNdiReceiver,
+  onSwitchIpVideoReceiver,
 }) => {
   const cameras = state.cameras || [];
   const activeCamera = cameras.find((c) => c.id === state.activeCameraPresetId) || cameras[0];
 
   const ptzIp =
-    state.ndiReceivers.find(
+    state.ipVideoReceivers.find(
       (receiver) =>
         receiver.subscribedSource === activeCamera?.cameraId ||
         receiver.subscribedSource === activeCamera?.name
     )?.ip ||
-    state.settings?.ndiPtz?.discoveryRangeStart ||
+    state.settings?.ipVideoPtz?.discoveryRangeStart ||
     "192.168.1.50";
-  const ptzPort = state.settings?.ndiPtz?.viscaPort || 52381;
+  const ptzPort = state.settings?.ipVideoPtz?.ptzIpPort || 52381;
 
   const drivePtz = useCallback(
     (pan: number, tilt: number, zoom: number) => {
@@ -114,7 +114,7 @@ export const VideoCanvasView: React.FC<VideoCanvasViewProps> = ({
               gap: 5,
             }}
           >
-            <Wifi size={12} /> VISCA over IP :52381
+            <Wifi size={12} /> PTZ-IP over IP :52381
           </span>
         </div>
       </div>
@@ -214,11 +214,11 @@ export const VideoCanvasView: React.FC<VideoCanvasViewProps> = ({
                     </div>
 
                     <div style={{ textAlign: "center", color: "#64748B", fontSize: 12, fontStyle: "italic" }}>
-                      [IP Video Stream: {cam.protocol || "1080p60 NDI"}]
+                      [IP Video Stream: {cam.protocol || "1080p60 IP Video"}]
                     </div>
 
                     <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: "#94A3B8" }}>
-                      <span>VISCA Preset #{cam.presetIndex}</span>
+                      <span>PTZ-IP Preset #{cam.presetIndex}</span>
                       <span>Recall Angle</span>
                     </div>
                   </div>
@@ -373,12 +373,12 @@ export const VideoCanvasView: React.FC<VideoCanvasViewProps> = ({
           </div>
         </div>
       </div>
-      <NdiStudioTools
-        sources={state.ndiSources}
-        receivers={state.ndiReceivers}
-        onSwitchReceiver={onSwitchNdiReceiver}
-        onPtzPreset={(sourceId, presetIdx) => triggerNdiPtz(sourceId, presetIdx)}
-        onPanTilt={(sourceId, pan, tilt) => triggerNdiPtz(sourceId, undefined, pan, tilt)}
+      <IpVideoTools
+        sources={state.ipVideoSources}
+        receivers={state.ipVideoReceivers}
+        onSwitchReceiver={onSwitchIpVideoReceiver}
+        onPtzPreset={(sourceId, presetIdx) => triggerIpVideoPtz(sourceId, presetIdx)}
+        onPanTilt={(sourceId, pan, tilt) => triggerIpVideoPtz(sourceId, undefined, pan, tilt)}
       />
     </div>
   );

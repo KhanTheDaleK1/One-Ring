@@ -124,9 +124,9 @@ mod tests {
         let state: SharedState = Arc::new(Mutex::new(default_simulator_state()));
         let sink = Arc::new(RecordingSink::new());
         let reporter = HealthReporter::new(
-            "x32-test",
-            "X32",
-            "X32",
+            "console-test",
+            "Console",
+            "Console",
             "OSC",
             state.clone(),
             sink.clone(),
@@ -149,6 +149,6 @@ mod tests {
         let (reporter, state, _) = fixture();
         reporter.ready("live", 7);
         let health = with_state(&state, |s| s.health.clone());
-        assert!(health.iter().any(|h| h.id == "x32-test" && h.status == "ok" && h.latency_ms == 7));
+        assert!(health.iter().any(|h| h.id == "console-test" && h.status == "ok" && h.latency_ms == 7));
     }
 }

@@ -21,7 +21,7 @@ const MIDI_STORAGE_KEY = "onering_midi_bindings_v1";
 const DEFAULT_BINDINGS: MidiBinding[] = [
   {
     id: "bind-1",
-    name: "Stream Deck / Pad 1 (Next Cue)",
+    name: "Control Pad 1 (Next Cue)",
     channel: 1,
     messageType: "NoteOn",
     controlOrNote: 60,
@@ -222,7 +222,7 @@ export const MidiTriggerModal: React.FC<MidiTriggerModalProps> = ({
                 MIDI Hardware & Control Surface Mapping
               </h2>
               <span className="mono" style={{ fontSize: 12, color: "#9CA3AF" }}>
-                USB MIDI Controllers, Stream Deck Companion, Behringer X-Touch, Foot Pedals
+                USB MIDI Controllers, Control Surfaces, Control Surface, Foot Pedals
               </span>
             </div>
           </div>

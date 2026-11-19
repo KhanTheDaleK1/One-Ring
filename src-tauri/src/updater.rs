@@ -1,7 +1,9 @@
 use serde::{Deserialize, Deserializer, Serialize};
 
 pub const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
-pub const GITHUB_REPO: &str = "KhanTheDaleK1/One-Ring";
+/// Optional release repository, supplied at build time via `ONE_RING_UPDATE_REPO`.
+/// When unset, update checks are disabled and return `Ok(None)`.
+pub const GITHUB_REPO: Option<&str> = option_env!("ONE_RING_UPDATE_REPO");
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReleaseAsset {
@@ -102,7 +104,10 @@ fn is_newer(remote_tag: &str, current: &str) -> bool {
 }
 
 pub fn check_for_updates() -> Result<Option<UpdateInfo>, String> {
-    let url = format!("https://api.github.com/repos/{}/releases", GITHUB_REPO);
+    let Some(repo) = GITHUB_REPO else {
+        return Ok(None);
+    };
+    let url = format!("https://api.github.com/repos/{repo}/releases");
 
     #[cfg(target_os = "windows")]
     let mut cmd = {

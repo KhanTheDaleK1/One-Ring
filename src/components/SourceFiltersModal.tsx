@@ -18,7 +18,7 @@ interface FilterTypeDefinition {
 }
 
 const FILTER_TYPES: FilterTypeDefinition[] = [
-  { type: "vst", label: "VST 2.x / VST3 Plug-in", category: "Audio", desc: "Run third-party VST compressor, EQ, reverb, or waves plugins via libobs host" },
+  { type: "vst", label: "VST 2.x / VST3 Plug-in", category: "Audio", desc: "Run third-party VST compressor, EQ, reverb, or waves plugins via mediaEngine host" },
   { type: "au", label: "Audio Unit (AU) Plug-in", category: "Audio", desc: "macOS native CoreAudio plugin host (Logic / FabFilter / Universal Audio)" },
   { type: "noise_suppress", label: "Noise Suppression (RNNoise)", category: "Audio", desc: "Remove HVAC hum, room hiss, or podium mic noise" },
   { type: "noise_gate", label: "Noise Gate", category: "Audio", desc: "Silence room bleed below open/close threshold with hold timing" },

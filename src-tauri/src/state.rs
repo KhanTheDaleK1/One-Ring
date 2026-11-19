@@ -94,7 +94,7 @@ pub struct DcaChannel {
     pub guard_mute: bool,
     pub signal_db: f32,
     pub signal_present: bool,
-    pub dante_tx_channel: String,
+    pub aoip_tx_channel: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -104,14 +104,14 @@ pub struct CameraPreset {
     pub camera_id: String,
     pub name: String,
     pub preset_index: u8,
-    pub protocol: String, // "NDI Metadata PTZ" | "VISCA-over-IP :52381"
+    pub protocol: String, // "IP_VIDEO Metadata PTZ" | "PTZ_IP-over-IP :52381"
     pub tally: String,    // "program" | "preview" | "idle"
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BroadcastTarget {
-    pub id: String, // "youtube" | "facebook" | "record"
+    pub id: String, // "primary_rtmp" | "secondary_rtmp" | "record"
     pub platform: String,
     pub live: bool,
     pub bitrate_kbps: u32,
@@ -129,12 +129,12 @@ pub struct BroadcastCanvas {
     pub aspect: String,
     pub resolution: String,
     pub active_scene: String,
-    pub engine: String, // "OBS 33 Multi-Canvas" | "Streamlabs DualOutputService"
+    pub engine: String, // "Broadcast 33 Multi-Canvas" | "DualStream DualOutputService"
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct DanteRoute {
+pub struct AoipRoute {
     pub id: String,
     pub rx_device: String,
     pub rx_channel: String,
@@ -147,7 +147,7 @@ pub struct DanteRoute {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct NdiReceiver {
+pub struct IpVideoReceiver {
     pub id: String,
     pub receiver_name: String,
     pub ip: String,
@@ -191,7 +191,7 @@ pub struct ScreenOutput {
     pub enabled: bool,
 }
 
-/// EasyWorship output flags reported by `status`. These are observed state, not remote actions:
+/// SlideTcp output flags reported by `status`. These are observed state, not remote actions:
 /// the documented TCP action catalog has no black/clear/logo toggle.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -297,7 +297,7 @@ pub struct ServiceCue {
     pub index: u32,
     pub title: String,
     pub actions: Vec<String>,
-    pub obs_scene: String,
+    pub broadcast_scene: String,
     pub vertical_scene: String,
     pub camera_preset_id: String,
     pub slide_label: String,
@@ -341,14 +341,14 @@ pub struct DcaMapping {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct X32Settings {
+pub struct ConsoleSettings {
     pub ip_address: String,
     pub osc_port: u16,
     pub keepalive_interval_sec: u32,
     pub dca_mappings: Vec<DcaMapping>,
 }
 
-impl Default for X32Settings {
+impl Default for ConsoleSettings {
     fn default() -> Self {
         Self {
             ip_address: String::new(),
@@ -361,7 +361,7 @@ impl Default for X32Settings {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct DanteSettings {
+pub struct AoipSettings {
     pub subnet_interface: String,
     pub conmon_meter_port: u16,
     pub conmon_control_port: u16,
@@ -369,7 +369,7 @@ pub struct DanteSettings {
     pub clock_sync_error_ms: u32,
 }
 
-impl Default for DanteSettings {
+impl Default for AoipSettings {
     fn default() -> Self {
         Self {
             subnet_interface: "Auto (default route)".into(),
@@ -397,7 +397,7 @@ pub struct BroadcastSettings {
     pub destinations: Vec<RtmpDestination>,
     pub recording_path: String,
     pub recording_format: String, // "MKV" | "MP4"
-    pub encoder: String,          // "NVENC" | "VideoToolbox" | "Software"
+    pub encoder: String,          // "Hardware" | "Hardware" | "Software"
 }
 
 impl Default for BroadcastSettings {
@@ -416,14 +416,14 @@ impl Default for BroadcastSettings {
 pub struct DisplayAssignments {
     pub foh_window: String,
     pub stage_display_window: String,
-    pub ndi_alpha_output: String,
+    pub ip_video_alpha_output: String,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SlidesSettings {
-    pub songselect_client_id: String,
-    pub songselect_client_secret: String,
+    pub song_library_client_id: String,
+    pub song_library_client_secret: String,
     pub display_assignments: DisplayAssignments,
 }
 
@@ -437,19 +437,19 @@ pub struct CameraPresetName {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct NdiPtzSettings {
+pub struct IpVideoPtzSettings {
     pub discovery_range_start: String,
     pub discovery_range_end: String,
-    pub visca_port: u16,
+    pub ptz_ip_port: u16,
     pub preset_names: Vec<CameraPresetName>,
 }
 
-impl Default for NdiPtzSettings {
+impl Default for IpVideoPtzSettings {
     fn default() -> Self {
         Self {
             discovery_range_start: String::new(),
             discovery_range_end: String::new(),
-            visca_port: 52381,
+            ptz_ip_port: 52381,
             preset_names: Vec::new(),
         }
     }
@@ -546,15 +546,15 @@ impl Default for SyncSettings {
 #[serde(rename_all = "camelCase")]
 pub struct AppSettings {
     #[serde(default)]
-    pub x32: X32Settings,
+    pub console: ConsoleSettings,
     #[serde(default)]
-    pub dante: DanteSettings,
+    pub aoip: AoipSettings,
     #[serde(default)]
     pub broadcast: BroadcastSettings,
     #[serde(default)]
     pub slides: SlidesSettings,
     #[serde(default)]
-    pub ndi_ptz: NdiPtzSettings,
+    pub ip_video_ptz: IpVideoPtzSettings,
     #[serde(default)]
     pub general: GeneralSettings,
     #[serde(default)]
@@ -590,9 +590,9 @@ pub struct ShowFile {
     pub record_chapters: Vec<String>,
     #[serde(default)]
     pub sources: Vec<SceneSourceItem>,
-    pub dante_routes: Vec<DanteRoute>,
-    pub ndi_receivers: Vec<NdiReceiver>,
-    pub ndi_sources: Vec<String>,
+    pub aoip_routes: Vec<AoipRoute>,
+    pub ip_video_receivers: Vec<IpVideoReceiver>,
+    pub ip_video_sources: Vec<String>,
     pub slides: SlideState,
 }
 
@@ -614,16 +614,16 @@ pub struct AppStateSnapshot {
     pub dcas: Vec<DcaChannel>,
     pub cameras: Vec<CameraPreset>,
     pub active_camera_preset_id: String,
-    pub obs_scene: String,
+    pub broadcast_scene: String,
     pub vertical_scene: String,
     pub canvases: Vec<BroadcastCanvas>,
     pub broadcasts: Vec<BroadcastTarget>,
     pub record_chapters: Vec<String>,
     pub sources: Vec<SceneSourceItem>,
-    pub dante_clock: String,
-    pub dante_routes: Vec<DanteRoute>,
-    pub ndi_receivers: Vec<NdiReceiver>,
-    pub ndi_sources: Vec<String>,
+    pub aoip_clock: String,
+    pub aoip_routes: Vec<AoipRoute>,
+    pub ip_video_receivers: Vec<IpVideoReceiver>,
+    pub ip_video_sources: Vec<String>,
     pub slides: SlideState,
     pub cues: Vec<ServiceCue>,
     pub last_verification: Option<CueVerificationReport>,
@@ -895,12 +895,12 @@ impl AppStateSnapshot {
         self.broadcasts.clone()
     }
 
-    /// Set the active OBS program scene (and matching horizontal canvas).
-    pub fn apply_obs_scene(&mut self, program: Option<String>, vertical: Option<String>) -> Vec<BroadcastCanvas> {
+    /// Set the active BROADCAST program scene (and matching horizontal canvas).
+    pub fn apply_broadcast_scene(&mut self, program: Option<String>, vertical: Option<String>) -> Vec<BroadcastCanvas> {
         if let Some(scene) = program {
-            self.obs_scene = scene;
+            self.broadcast_scene = scene;
             if let Some(c) = self.canvases.get_mut(0) {
-                c.active_scene = self.obs_scene.clone();
+                c.active_scene = self.broadcast_scene.clone();
             }
         }
         if let Some(scene) = vertical {
@@ -933,9 +933,9 @@ impl AppStateSnapshot {
             broadcasts: self.broadcasts.clone(),
             record_chapters: self.record_chapters.clone(),
             sources: self.sources.clone(),
-            dante_routes: self.dante_routes.clone(),
-            ndi_receivers: self.ndi_receivers.clone(),
-            ndi_sources: self.ndi_sources.clone(),
+            aoip_routes: self.aoip_routes.clone(),
+            ip_video_receivers: self.ip_video_receivers.clone(),
+            ip_video_sources: self.ip_video_sources.clone(),
             slides: self.slides.clone(),
         }
     }
@@ -954,9 +954,9 @@ impl AppStateSnapshot {
         self.broadcasts = show.broadcasts;
         self.record_chapters = show.record_chapters;
         self.sources = show.sources;
-        self.dante_routes = show.dante_routes;
-        self.ndi_receivers = show.ndi_receivers;
-        self.ndi_sources = show.ndi_sources;
+        self.aoip_routes = show.aoip_routes;
+        self.ip_video_receivers = show.ip_video_receivers;
+        self.ip_video_sources = show.ip_video_sources;
         self.slides = show.slides;
         self.active_cue_index = 0;
         self.last_verification = None;
@@ -967,7 +967,7 @@ impl AppStateSnapshot {
             .first()
             .map(|camera| camera.id.clone())
             .unwrap_or_default();
-        self.obs_scene = self
+        self.broadcast_scene = self
             .canvases
             .first()
             .map(|canvas| canvas.active_scene.clone())
@@ -1015,23 +1015,23 @@ impl AppStateSnapshot {
         );
         push(
             &mut checks,
-            !self.dcas.is_empty() && !self.settings.x32.ip_address.trim().is_empty(),
+            !self.dcas.is_empty() && !self.settings.console.ip_address.trim().is_empty(),
             "chk-audio",
             "Audio Mixing",
             "Mixer endpoint and DCA layout are configured".into(),
-            if self.settings.x32.ip_address.trim().is_empty() {
+            if self.settings.console.ip_address.trim().is_empty() {
                 "Set the mixer IP address in Settings → Audio Mixing".into()
             } else {
-                format!("{} DCA(s) mapped to {}", self.dcas.len(), self.settings.x32.ip_address)
+                format!("{} DCA(s) mapped to {}", self.dcas.len(), self.settings.console.ip_address)
             },
         );
         push(
             &mut checks,
-            !self.dante_routes.is_empty(),
+            !self.aoip_routes.is_empty(),
             "chk-routing",
             "Audio Network",
             "Audio network routes are defined".into(),
-            format!("{} route(s) configured", self.dante_routes.len()),
+            format!("{} route(s) configured", self.aoip_routes.len()),
         );
         push(
             &mut checks,
@@ -1096,7 +1096,7 @@ impl AppStateSnapshot {
             )
         } else if !self.slides.connected {
             let setup_hint = match self.slides.adapter.as_str() {
-                "easyworship" => "set RING_EZW_DISCOVER=1 or RING_EZW_HOST / RING_EZW_PORT",
+                "slide_tcp" => "set RING_EZW_DISCOVER=1 or RING_EZW_HOST / RING_EZW_PORT",
                 _ => "set RING_PP_HOST / RING_PP_PORT (or RING_EZW_DISCOVER=1)",
             };
             format!(
@@ -1199,7 +1199,7 @@ impl AppStateSnapshot {
     }
 }
 
-/// Partial slide update produced by the ProPresenter status stream.
+/// Partial slide update produced by the SlideHttp status stream.
 #[derive(Debug, Clone, Default)]
 pub struct SlidesPatch {
     pub playlist_name: Option<String>,
@@ -1295,16 +1295,16 @@ pub fn default_simulator_state() -> AppStateSnapshot {
         dcas: Vec::new(),
         cameras: Vec::new(),
         active_camera_preset_id: String::new(),
-        obs_scene: String::new(),
+        broadcast_scene: String::new(),
         vertical_scene: String::new(),
         canvases: Vec::new(),
         broadcasts: Vec::new(),
         record_chapters: Vec::new(),
         sources: Vec::new(),
-        dante_clock: String::new(),
-        dante_routes: Vec::new(),
-        ndi_receivers: Vec::new(),
-        ndi_sources: Vec::new(),
+        aoip_clock: String::new(),
+        aoip_routes: Vec::new(),
+        ip_video_receivers: Vec::new(),
+        ip_video_sources: Vec::new(),
         slides: SlideState {
             app: "Slides".into(),
             playlist_name: String::new(),
@@ -1386,7 +1386,7 @@ mod tests {
         state.apply_slides(SlidesPatch {
             connected: Some(true),
             last_update_ms: Some(now_ms()),
-            adapter: Some("propresenter".into()),
+            adapter: Some("slide_http".into()),
             ..SlidesPatch::default()
         });
         let check = state
@@ -1395,7 +1395,7 @@ mod tests {
             .find(|c| c.id == "chk-presentation-link")
             .expect("presentation check exists");
         assert_eq!(check.status, "pass");
-        assert!(check.detail.contains("propresenter"));
+        assert!(check.detail.contains("slide_http"));
 
         state.apply_slides(SlidesPatch {
             last_update_ms: Some(now_ms().saturating_sub(60_000)),
@@ -1411,7 +1411,7 @@ mod tests {
     }
 
     #[test]
-    fn apply_slides_maps_easyworship_screen_flags_and_image_metadata() {
+    fn apply_slides_maps_slide_tcp_screen_flags_and_image_metadata() {
         let mut state = default_simulator_state();
         let slides = state.apply_slides(SlidesPatch {
             screen: Some(ScreenFlags {

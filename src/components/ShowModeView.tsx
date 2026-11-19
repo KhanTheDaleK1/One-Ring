@@ -42,7 +42,7 @@ interface ShowModeViewProps {
   onTransportControl?: (layer: string, operation: "play" | "pause" | "go_to_end") => void;
   onTransportSeek?: (layer: string, seconds: number) => void;
   onClearGroup?: (id: string) => void;
-  onRefreshProPresenterCatalog?: (
+  onRefreshSlideHttpCatalog?: (
     kind:
       | "looks"
       | "look_current"
@@ -52,7 +52,7 @@ interface ShowModeViewProps {
       | "macro_collections"
       | "clear_groups"
   ) => void;
-  onProPresenterResource?: (
+  onSlideHttpResource?: (
     action:
       | "trigger_look"
       | "trigger_prop"
@@ -62,7 +62,7 @@ interface ShowModeViewProps {
       | "prop_auto_clear_resume",
     id: string
   ) => void;
-  onEasyWorshipControl?: (
+  onSlideTcpControl?: (
     action:
       | "gotoStartSlide"
       | "gotoStartPresentation"
@@ -74,8 +74,8 @@ interface ShowModeViewProps {
       | "GetCurrentImage"
       | "Refresh"
   ) => void;
-  onEasyWorshipScreenFlag?: (field: "black" | "clear" | "logo", value: boolean) => void;
-  onEasyWorshipImage?: (key: string) => Promise<Uint8Array | null>;
+  onSlideTcpScreenFlag?: (field: "black" | "clear" | "logo", value: boolean) => void;
+  onSlideTcpImage?: (key: string) => Promise<Uint8Array | null>;
 }
 
 const fmtDuration = (sec: number) => {
@@ -126,11 +126,11 @@ export const ShowModeView: React.FC<ShowModeViewProps> = ({
   onTransportControl,
   onTransportSeek,
   onClearGroup,
-  onRefreshProPresenterCatalog,
-  onProPresenterResource,
-  onEasyWorshipControl,
-  onEasyWorshipScreenFlag,
-  onEasyWorshipImage,
+  onRefreshSlideHttpCatalog,
+  onSlideHttpResource,
+  onSlideTcpControl,
+  onSlideTcpScreenFlag,
+  onSlideTcpImage,
 }) => {
   const nextCueIndex = Math.min(state.cues.length - 1, state.activeCueIndex + 1);
   const nextCue = state.cues[nextCueIndex];
@@ -147,8 +147,8 @@ export const ShowModeView: React.FC<ShowModeViewProps> = ({
   const [macroDraft, setMacroDraft] = useState("");
   const [imageUrl, setImageUrl] = useState<string | null>(null);
   const messageInputRef = useRef<HTMLInputElement>(null);
-  const fetchImageRef = useRef(onEasyWorshipImage);
-  fetchImageRef.current = onEasyWorshipImage;
+  const fetchImageRef = useRef(onSlideTcpImage);
+  fetchImageRef.current = onSlideTcpImage;
   const imageKey = state.slides.image?.key ?? null;
 
   useEffect(() => {
@@ -601,7 +601,7 @@ export const ShowModeView: React.FC<ShowModeViewProps> = ({
                   textAlign: "center",
                 }}
               >
-                No live presentation. Open a song in the Slides canvas or connect ProPresenter / EasyWorship to populate this grid.
+                No live presentation. Open a song in the Slides canvas or connect SlideHttp / SlideTcp to populate this grid.
               </div>
             )}
             {slideItems.map((slide, index) => {
@@ -727,7 +727,7 @@ export const ShowModeView: React.FC<ShowModeViewProps> = ({
             </button>
           </div>
 
-          {state.slides.adapter === "propresenter" && (
+          {state.slides.adapter === "slideHttp" && (
             <div
               style={{
                 marginTop: 10,
@@ -850,8 +850,8 @@ export const ShowModeView: React.FC<ShowModeViewProps> = ({
                 <button
                   type="button"
                   className="btn"
-                  disabled={!onRefreshProPresenterCatalog}
-                  onClick={() => onRefreshProPresenterCatalog?.("looks")}
+                  disabled={!onRefreshSlideHttpCatalog}
+                  onClick={() => onRefreshSlideHttpCatalog?.("looks")}
                   style={{ height: 30, fontSize: 10 }}
                   title="Refresh /v1/looks; raw JSON is logged (schema undocumented)"
                 >
@@ -860,8 +860,8 @@ export const ShowModeView: React.FC<ShowModeViewProps> = ({
                 <button
                   type="button"
                   className="btn"
-                  disabled={!onRefreshProPresenterCatalog}
-                  onClick={() => onRefreshProPresenterCatalog?.("look_current")}
+                  disabled={!onRefreshSlideHttpCatalog}
+                  onClick={() => onRefreshSlideHttpCatalog?.("look_current")}
                   style={{ height: 30, fontSize: 10 }}
                 >
                   Current look
@@ -869,8 +869,8 @@ export const ShowModeView: React.FC<ShowModeViewProps> = ({
                 <button
                   type="button"
                   className="btn"
-                  disabled={!onRefreshProPresenterCatalog}
-                  onClick={() => onRefreshProPresenterCatalog?.("props")}
+                  disabled={!onRefreshSlideHttpCatalog}
+                  onClick={() => onRefreshSlideHttpCatalog?.("props")}
                   style={{ height: 30, fontSize: 10 }}
                 >
                   Refresh props
@@ -878,8 +878,8 @@ export const ShowModeView: React.FC<ShowModeViewProps> = ({
                 <button
                   type="button"
                   className="btn"
-                  disabled={!onRefreshProPresenterCatalog}
-                  onClick={() => onRefreshProPresenterCatalog?.("macros")}
+                  disabled={!onRefreshSlideHttpCatalog}
+                  onClick={() => onRefreshSlideHttpCatalog?.("macros")}
                   style={{ height: 30, fontSize: 10 }}
                 >
                   Refresh macros
@@ -908,9 +908,9 @@ export const ShowModeView: React.FC<ShowModeViewProps> = ({
                   <button
                     type="button"
                     className="btn"
-                    disabled={!onProPresenterResource || !lookDraft.trim()}
+                    disabled={!onSlideHttpResource || !lookDraft.trim()}
                     onClick={() => {
-                      onProPresenterResource?.("trigger_look", lookDraft.trim());
+                      onSlideHttpResource?.("trigger_look", lookDraft.trim());
                       setLookDraft("");
                     }}
                     style={{ height: 30, fontSize: 10 }}
@@ -940,8 +940,8 @@ export const ShowModeView: React.FC<ShowModeViewProps> = ({
                   <button
                     type="button"
                     className="btn"
-                    disabled={!onProPresenterResource || !propDraft.trim()}
-                    onClick={() => onProPresenterResource?.("trigger_prop", propDraft.trim())}
+                    disabled={!onSlideHttpResource || !propDraft.trim()}
+                    onClick={() => onSlideHttpResource?.("trigger_prop", propDraft.trim())}
                     style={{ height: 30, fontSize: 10 }}
                   >
                     Trigger
@@ -949,8 +949,8 @@ export const ShowModeView: React.FC<ShowModeViewProps> = ({
                   <button
                     type="button"
                     className="btn"
-                    disabled={!onProPresenterResource || !propDraft.trim()}
-                    onClick={() => onProPresenterResource?.("clear_prop", propDraft.trim())}
+                    disabled={!onSlideHttpResource || !propDraft.trim()}
+                    onClick={() => onSlideHttpResource?.("clear_prop", propDraft.trim())}
                     style={{ height: 30, fontSize: 10 }}
                   >
                     Clear
@@ -978,9 +978,9 @@ export const ShowModeView: React.FC<ShowModeViewProps> = ({
                   <button
                     type="button"
                     className="btn"
-                    disabled={!onProPresenterResource || !macroDraft.trim()}
+                    disabled={!onSlideHttpResource || !macroDraft.trim()}
                     onClick={() => {
-                      onProPresenterResource?.("trigger_macro", macroDraft.trim());
+                      onSlideHttpResource?.("trigger_macro", macroDraft.trim());
                       setMacroDraft("");
                     }}
                     style={{ height: 30, fontSize: 10 }}
@@ -992,7 +992,7 @@ export const ShowModeView: React.FC<ShowModeViewProps> = ({
             </div>
           )}
 
-          {state.slides.adapter === "easyworship" && (
+          {state.slides.adapter === "slideTcp" && (
             <div
               style={{
                 marginTop: 10,
@@ -1002,13 +1002,13 @@ export const ShowModeView: React.FC<ShowModeViewProps> = ({
                 gap: 6,
               }}
             >
-              <div style={{ ...sectionLabelStyle, fontSize: 10 }}>EASYWORSHIP TRANSPORT</div>
+              <div style={{ ...sectionLabelStyle, fontSize: 10 }}>SLIDE TCP TRANSPORT</div>
               <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 6 }}>
                 <button
                   type="button"
                   className="btn"
-                  disabled={!onEasyWorshipControl}
-                  onClick={() => onEasyWorshipControl?.("gotoStartSlide")}
+                  disabled={!onSlideTcpControl}
+                  onClick={() => onSlideTcpControl?.("gotoStartSlide")}
                   style={{ height: 34, fontSize: 11 }}
                 >
                   Start slide
@@ -1016,8 +1016,8 @@ export const ShowModeView: React.FC<ShowModeViewProps> = ({
                 <button
                   type="button"
                   className="btn"
-                  disabled={!onEasyWorshipControl}
-                  onClick={() => onEasyWorshipControl?.("gotoStartPresentation")}
+                  disabled={!onSlideTcpControl}
+                  onClick={() => onSlideTcpControl?.("gotoStartPresentation")}
                   style={{ height: 34, fontSize: 11 }}
                 >
                   Start pres
@@ -1025,8 +1025,8 @@ export const ShowModeView: React.FC<ShowModeViewProps> = ({
                 <button
                   type="button"
                   className="btn"
-                  disabled={!onEasyWorshipControl}
-                  onClick={() => onEasyWorshipControl?.("Toggle")}
+                  disabled={!onSlideTcpControl}
+                  onClick={() => onSlideTcpControl?.("Toggle")}
                   style={{ height: 34, fontSize: 11 }}
                 >
                   Toggle media
@@ -1036,8 +1036,8 @@ export const ShowModeView: React.FC<ShowModeViewProps> = ({
                 <button
                   type="button"
                   className="btn"
-                  disabled={!onEasyWorshipControl}
-                  onClick={() => onEasyWorshipControl?.("Play")}
+                  disabled={!onSlideTcpControl}
+                  onClick={() => onSlideTcpControl?.("Play")}
                   style={{ height: 34, fontSize: 11, display: "flex", alignItems: "center", justifyContent: "center", gap: 4 }}
                 >
                   <Play size={12} /> Play
@@ -1045,8 +1045,8 @@ export const ShowModeView: React.FC<ShowModeViewProps> = ({
                 <button
                   type="button"
                   className="btn"
-                  disabled={!onEasyWorshipControl}
-                  onClick={() => onEasyWorshipControl?.("Pause")}
+                  disabled={!onSlideTcpControl}
+                  onClick={() => onSlideTcpControl?.("Pause")}
                   style={{ height: 34, fontSize: 11, display: "flex", alignItems: "center", justifyContent: "center", gap: 4 }}
                 >
                   <Pause size={12} /> Pause
@@ -1064,8 +1064,8 @@ export const ShowModeView: React.FC<ShowModeViewProps> = ({
                     key={flag}
                     type="button"
                     className="btn"
-                    disabled={!onEasyWorshipScreenFlag}
-                    onClick={() => onEasyWorshipScreenFlag?.(flag, !state.slides.screen[flag])}
+                    disabled={!onSlideTcpScreenFlag}
+                    onClick={() => onSlideTcpScreenFlag?.(flag, !state.slides.screen[flag])}
                     style={{
                       height: 30,
                       fontSize: 10,
@@ -1084,7 +1084,7 @@ export const ShowModeView: React.FC<ShowModeViewProps> = ({
                   {imageUrl ? (
                     <img
                       src={imageUrl}
-                      alt="EasyWorship live preview"
+                      alt="SlideTcp live preview"
                       style={{
                         width: "100%",
                         maxHeight: 180,
@@ -1113,8 +1113,8 @@ export const ShowModeView: React.FC<ShowModeViewProps> = ({
                 <button
                   type="button"
                   className="btn"
-                  disabled={!onEasyWorshipControl}
-                  onClick={() => onEasyWorshipControl?.("GetCurrentImage")}
+                  disabled={!onSlideTcpControl}
+                  onClick={() => onSlideTcpControl?.("GetCurrentImage")}
                   style={{ height: 30, fontSize: 10 }}
                 >
                   Request live image
@@ -1122,8 +1122,8 @@ export const ShowModeView: React.FC<ShowModeViewProps> = ({
                 <button
                   type="button"
                   className="btn"
-                  disabled={!onEasyWorshipControl}
-                  onClick={() => onEasyWorshipControl?.("Refresh")}
+                  disabled={!onSlideTcpControl}
+                  onClick={() => onSlideTcpControl?.("Refresh")}
                   style={{ height: 30, fontSize: 10 }}
                   title="Request a fresh status report; slide/image follow-ups fire on revision changes"
                 >
@@ -1186,9 +1186,9 @@ export const ShowModeView: React.FC<ShowModeViewProps> = ({
               </span>
               <span className="mono" style={{ fontSize: 9, color: "#6B7280" }}>
                 {state.slides.connected
-                  ? state.slides.adapter === "easyworship"
-                    ? "EASYWORSHIP"
-                    : "PROPRESENTER"
+                  ? state.slides.adapter === "slideTcp"
+                    ? "Slide TCP"
+                    : "Slide HTTP"
                   : "LOCAL DISPLAY"}
               </span>
             </div>
@@ -1406,7 +1406,7 @@ export const ShowModeView: React.FC<ShowModeViewProps> = ({
                     }}
                   >
                     <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                      {dca.danteTxChannel}
+                      {dca.aoipTxChannel}
                     </span>
                     <span
                       style={{
@@ -1458,7 +1458,7 @@ export const ShowModeView: React.FC<ShowModeViewProps> = ({
                 🎮 PTZ DECK
               </button>
               <span className="mono" style={{ fontSize: 10, color: "#60A5FA" }}>
-                16:9 {state.obsScene} • 9:16 {state.verticalScene}
+                16:9 {state.broadcastScene} • 9:16 {state.verticalScene}
               </span>
             </div>
           </div>
@@ -1605,7 +1605,7 @@ export const ShowModeView: React.FC<ShowModeViewProps> = ({
                   gap: 3,
                 }}
               >
-                <Wifi size={9} /> NDI 120ms
+                <Wifi size={9} /> IP Video 120ms
               </span>
             </div>
             <div style={{ textAlign: "center", padding: 18, zIndex: 1 }}>
@@ -1621,12 +1621,12 @@ export const ShowModeView: React.FC<ShowModeViewProps> = ({
                   whiteSpace: "nowrap",
                 }}
               >
-                {state.obsScene}
+                {state.broadcastScene}
               </div>
               <div className="mono" style={{ fontSize: 10, color: "#9AA5B4", marginTop: 3 }}>
                 {activeProgram
                   ? `${activeProgram.platform.split(" (")[0]} • ${(activeProgram.bitrateKbps / 1000).toFixed(1)} Mbps`
-                  : "OBS 33 • 1920×1080 @ 60fps"}
+                  : "Broadcast 33 • 1920×1080 @ 60fps"}
               </div>
             </div>
             <div
@@ -1644,7 +1644,7 @@ export const ShowModeView: React.FC<ShowModeViewProps> = ({
               }}
             >
               <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                16:9 {state.obsScene}
+                16:9 {state.broadcastScene}
               </span>
               <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", textAlign: "right" }}>
                 9:16 {state.verticalScene}
@@ -1778,7 +1778,7 @@ export const ShowModeView: React.FC<ShowModeViewProps> = ({
                 marginBottom: 16,
               }}
             >
-              TARGET: DCA {pendingMute.number} · {pendingMute.name} · {pendingMute.danteTxChannel}
+              TARGET: DCA {pendingMute.number} · {pendingMute.name} · {pendingMute.aoipTxChannel}
             </div>
             <div style={{ display: "flex", justifyContent: "flex-end", gap: 9 }}>
               <button
@@ -1816,8 +1816,8 @@ export const ShowModeView: React.FC<ShowModeViewProps> = ({
         <PtzControlDeckModal
           isOpen={showPtzDeck}
           onClose={() => setShowPtzDeck(false)}
-          defaultIp={state.settings?.ndiPtz?.discoveryRangeStart || "192.168.1.50"}
-          defaultPort={state.settings?.ndiPtz?.viscaPort || 52381}
+          defaultIp={state.settings?.ipVideoPtz?.discoveryRangeStart || "192.168.1.50"}
+          defaultPort={state.settings?.ipVideoPtz?.ptzIpPort || 52381}
           onDrive={(pan, tilt, zoom, ip, port) => {
             ptzDriveCamera(ip, port, pan, tilt, zoom).catch(() => {});
           }}

@@ -43,7 +43,7 @@ const TOUR_STEPS: TourStep[] = [
     highlights: [
       "Built for volunteers with simple, mistake-proof controls",
       "Sub-millisecond local LAN sync across multiple computers",
-      "Replaces ProPresenter, OBS, Dante Controller, and X32-Edit",
+      "Replaces SlideHttp, Broadcast, Aoip Controller, and Console-Edit",
     ],
   },
   {
@@ -57,16 +57,16 @@ const TOUR_STEPS: TourStep[] = [
     tabKey: "slides",
     highlights: [
       "7-layer graphics compositor (Background, Lyrics, Props, Alerts)",
-      "Instant Bible search & CCLI SongSelect lyric import",
-      "Alpha-channel NDI output for clean broadcast overlays",
+      "Instant Bible search & Song Library lyric import",
+      "Alpha-channel IP Video output for clean broadcast overlays",
     ],
   },
   {
-    title: "Audio Mixing & Dante",
-    badge: "Behringer X32 · IP Audio · Guard Mute",
+    title: "Audio Mixing & Aoip",
+    badge: "Console · IP Audio · Guard Mute",
     tagline: "Tactile console control with automated safety nets.",
     description:
-      "Direct OSC control over your X32/M32 mixing desk and Dante network matrix. One Ring features automated Silent Pastor Mic detection, alerting your team before the preacher speaks if their beltpack is muted.",
+      "Direct OSC control over your Console mixing desk and Aoip network matrix. One Ring features automated Silent Pastor Mic detection, alerting your team before the preacher speaks if their beltpack is muted.",
     icon: <Mic2 size={40} color="#10B981" />,
     accentColor: "#10B981",
     tabKey: "audio",
@@ -81,14 +81,14 @@ const TOUR_STEPS: TourStep[] = [
     badge: "Multi-RTMP · Dual-Canvas · PTZ",
     tagline: "Simultaneous 16:9 + 9:16 vertical streaming and camera switching.",
     description:
-      "Stream simultaneously to YouTube, Facebook, and mobile portrait feeds without third-party restreaming fees. Switch PTZ cameras and recall stage presets directly from service cues with full tally borders.",
+      "Stream simultaneously to Video Platform, Social Platform, and mobile portrait feeds without third-party restreaming fees. Switch PTZ cameras and recall stage presets directly from service cues with full tally borders.",
     icon: <Radio size={40} color="#EF4444" />,
     accentColor: "#EF4444",
     tabKey: "broadcast",
     highlights: [
-      "Hardware-accelerated NVENC & Apple Silicon VideoToolbox encoding",
+      "Hardware-accelerated video encoding",
       "Automatic recording with dynamic sermon chapter markers",
-      "VISCA over IP joystick control and preset recall",
+      "PTZ-IP over IP joystick control and preset recall",
     ],
   },
   {

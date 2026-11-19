@@ -5,51 +5,51 @@
 //!
 //! | Adapter | Variables | Default |
 //! | :--- | :--- | :--- |
-//! | X32 | `RING_X32_HOST`, `RING_X32_PORT` | disabled unless host set |
-//! | OBS | `RING_OBS_URL`, `RING_OBS_PASSWORD` | `ws://127.0.0.1:4455` |
-//! | Streamlabs | `RING_SLOBS_ADDR` | `127.0.0.1:28194` |
-//! | ProPresenter | `RING_PP_HOST`, `RING_PP_PORT` | `127.0.0.1:50000` |
-//! | EasyWorship | `RING_EZW_HOST`, `RING_EZW_PORT`, `RING_EZW_DISCOVER=1` | mDNS `_ezwremote._tcp` |
+//! | Console | `RING_CONSOLE_HOST`, `RING_CONSOLE_PORT` | disabled unless host set |
+//! | BROADCAST | `RING_BROADCAST_URL`, `RING_BROADCAST_PASSWORD` | `ws://127.0.0.1:4455` |
+//! | DualStream | `RING_DUAL_STREAM_ADDR` | `127.0.0.1:28194` |
+//! | SlideHttp | `RING_PP_HOST`, `RING_PP_PORT` | `127.0.0.1:50000` |
+//! | SlideTcp | `RING_EZW_HOST`, `RING_EZW_PORT`, `RING_EZW_DISCOVER=1` | mDNS `_ezwremote._tcp` |
 //!
 //! Adapters are transport-only: they own sockets/backoff and emit the typed events in
 //! [`events`]. The cue engine and Tauri commands dispatch through [`AdapterRegistry`].
 
-pub mod dante_adapter;
-pub mod easyworship_adapter;
+pub mod aoip_adapter;
+pub mod slide_tcp_adapter;
 pub mod events;
 pub mod health;
-pub mod ndi_adapter;
-pub mod obs_adapter;
-pub mod obs_daemon;
-pub mod obs_worker_ipc;
-pub mod propresenter_adapter;
-pub mod streamlabs_adapter;
-pub mod x32_adapter;
+pub mod ip_video_adapter;
+pub mod broadcast_adapter;
+pub mod broadcast_daemon;
+pub mod broadcast_worker_ipc;
+pub mod slide_http_adapter;
+pub mod dual_stream_adapter;
+pub mod console_adapter;
 
 use crate::protocols::{DeviceCapabilities, DeviceKind};
 use crate::state::SharedState;
-use dante_adapter::{DanteCommand, DanteConfig};
-use easyworship_adapter::{EasyWorshipCommand, EasyWorshipConfig, EasyWorshipImageCache};
+use aoip_adapter::{AoipCommand, AoipConfig};
+use slide_tcp_adapter::{SlideTcpCommand, SlideTcpConfig, SlideTcpImageCache};
 use events::EventSink;
-use ndi_adapter::{NdiCommand, NdiConfig};
-use obs_adapter::{ObsCommand, ObsConfig};
-use propresenter_adapter::{ProPresenterCommand, ProPresenterConfig};
+use ip_video_adapter::{IpVideoCommand, IpVideoConfig};
+use broadcast_adapter::{BroadcastCommand, BroadcastConfig};
+use slide_http_adapter::{SlideHttpCommand, SlideHttpConfig};
 use std::sync::{Arc, Mutex};
-use streamlabs_adapter::{StreamlabsCommand, StreamlabsConfig};
+use dual_stream_adapter::{DualStreamCommand, DualStreamConfig};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
-use x32_adapter::{X32Command, X32Config};
+use console_adapter::{ConsoleCommand, ConsoleConfig};
 
 #[derive(Debug, Clone, Default)]
 pub struct RuntimeConfig {
     pub live: bool,
-    pub x32: Option<X32Config>,
-    pub obs: Option<ObsConfig>,
-    pub streamlabs: Option<StreamlabsConfig>,
-    pub propresenter: Option<ProPresenterConfig>,
-    pub easyworship: Option<EasyWorshipConfig>,
-    pub dante: Option<DanteConfig>,
-    pub ndi: Option<NdiConfig>,
+    pub console: Option<ConsoleConfig>,
+    pub broadcast: Option<BroadcastConfig>,
+    pub dual_stream: Option<DualStreamConfig>,
+    pub slide_http: Option<SlideHttpConfig>,
+    pub slide_tcp: Option<SlideTcpConfig>,
+    pub aoip: Option<AoipConfig>,
+    pub ip_video: Option<IpVideoConfig>,
 }
 
 impl RuntimeConfig {
@@ -59,9 +59,9 @@ impl RuntimeConfig {
             return Self::default();
         }
 
-        let x32 = std::env::var("RING_X32_HOST").ok().map(|host| {
-            let mut config = X32Config::new(host);
-            if let Some(port) = std::env::var("RING_X32_PORT")
+        let console = std::env::var("RING_CONSOLE_HOST").ok().map(|host| {
+            let mut config = ConsoleConfig::new(host);
+            if let Some(port) = std::env::var("RING_CONSOLE_PORT")
                 .ok()
                 .and_then(|p| p.parse().ok())
             {
@@ -70,13 +70,13 @@ impl RuntimeConfig {
             config
         });
 
-        let obs = Some(obs_config_from_env());
+        let broadcast = Some(broadcast_config_from_env());
 
-        let streamlabs = Some(StreamlabsConfig::new(
-            std::env::var("RING_SLOBS_ADDR").unwrap_or_else(|_| "127.0.0.1:28194".into()),
+        let dual_stream = Some(DualStreamConfig::new(
+            std::env::var("RING_DUAL_STREAM_ADDR").unwrap_or_else(|_| "127.0.0.1:28194".into()),
         ));
 
-        let propresenter = Some(ProPresenterConfig::new(
+        let slide_http = Some(SlideHttpConfig::new(
             std::env::var("RING_PP_HOST").unwrap_or_else(|_| "127.0.0.1".into()),
             std::env::var("RING_PP_PORT")
                 .ok()
@@ -84,87 +84,87 @@ impl RuntimeConfig {
                 .unwrap_or(50_000),
         ));
 
-        // EasyWorship's listener uses an ephemeral port, so mDNS is the default when live mode is
+        // SlideTcp's listener uses an ephemeral port, so mDNS is the default when live mode is
         // on. A static `RING_EZW_HOST`/`RING_EZW_PORT` (or full `RING_EZW_ENDPOINT`) overrides it.
-        let easyworship = if let Ok(endpoint) = std::env::var("RING_EZW_ENDPOINT") {
-            Some(EasyWorshipConfig::new(endpoint))
+        let slide_tcp = if let Ok(endpoint) = std::env::var("RING_EZW_ENDPOINT") {
+            Some(SlideTcpConfig::new(endpoint))
         } else if let Ok(host) = std::env::var("RING_EZW_HOST") {
             let port = std::env::var("RING_EZW_PORT")
                 .ok()
                 .and_then(|p| p.parse().ok())
                 .unwrap_or(55_000);
-            Some(EasyWorshipConfig::new(format!("{host}:{port}")))
+            Some(SlideTcpConfig::new(format!("{host}:{port}")))
         } else if env_flag("RING_EZW_DISCOVER") {
-            Some(EasyWorshipConfig::discovered())
+            Some(SlideTcpConfig::discovered())
         } else {
             None
         };
 
-        let dante = Some(DanteConfig::default());
-        let ndi = Some(NdiConfig {
-            discovery_host: std::env::var("RING_NDI_HOST").unwrap_or_else(|_| "127.0.0.1".into()),
-            ..NdiConfig::default()
+        let aoip = Some(AoipConfig::default());
+        let ip_video = Some(IpVideoConfig {
+            discovery_host: std::env::var("RING_IP_VIDEO_HOST").unwrap_or_else(|_| "127.0.0.1".into()),
+            ..IpVideoConfig::default()
         });
 
         Self {
             live,
-            x32,
-            obs,
-            streamlabs,
-            propresenter,
-            easyworship,
-            dante,
-            ndi,
+            console,
+            broadcast,
+            dual_stream,
+            slide_http,
+            slide_tcp,
+            aoip,
+            ip_video,
         }
     }
 
     /// Build a runtime configuration merging environment overrides with persisted Settings UI values.
     /// If `RING_LIVE` is unset, live adapters still activate automatically when the user configures
-    /// hardware endpoints (e.g. X32 IP or NDI discovery host) in Settings.
+    /// hardware endpoints (e.g. Console IP or IP_VIDEO discovery host) in Settings.
     pub fn from_env_and_settings(settings: &crate::state::AppSettings) -> Self {
         let mut cfg = Self::from_env();
-        let x32_ip = settings.x32.ip_address.trim();
-        if cfg.x32.is_none() && !x32_ip.is_empty() {
-            let mut x = X32Config::new(x32_ip);
-            if settings.x32.osc_port > 0 {
-                x.port = settings.x32.osc_port;
+        let console_ip = settings.console.ip_address.trim();
+        if cfg.console.is_none() && !console_ip.is_empty() {
+            let mut x = ConsoleConfig::new(console_ip);
+            if settings.console.osc_port > 0 {
+                x.port = settings.console.osc_port;
             }
-            cfg.x32 = Some(x);
+            cfg.console = Some(x);
             cfg.live = true;
         }
-        let ndi_host = settings.ndi_ptz.discovery_range_start.trim();
-        if cfg.ndi.is_none() && !ndi_host.is_empty() {
-            cfg.ndi = Some(NdiConfig {
-                discovery_host: ndi_host.to_string(),
-                ..NdiConfig::default()
+        let ip_video_host = settings.ip_video_ptz.discovery_range_start.trim();
+        if cfg.ip_video.is_none() && !ip_video_host.is_empty() {
+            cfg.ip_video = Some(IpVideoConfig {
+                discovery_host: ip_video_host.to_string(),
+                ..IpVideoConfig::default()
             });
             cfg.live = true;
         }
-        if cfg.live && cfg.dante.is_none() {
-            cfg.dante = Some(DanteConfig {
-                meter_port: if settings.dante.conmon_meter_port > 0 {
-                    settings.dante.conmon_meter_port
+        if cfg.live && cfg.aoip.is_none() {
+            cfg.aoip = Some(AoipConfig {
+                meter_port: if settings.aoip.conmon_meter_port > 0 {
+                    settings.aoip.conmon_meter_port
                 } else {
-                    dante_adapter::DANTE_CONMON_METER_PORT
+                    aoip_adapter::AOIP_CONMON_METER_PORT
                 },
-                ..DanteConfig::default()
+                ..AoipConfig::default()
             });
         }
-        // Broadcast destinations still need an OBS adapter even when RING_LIVE is not set, so
-        // the Settings UI can drive real streams. Do this after the Dante decision so a
-        // broadcast-only setup does not also bind the Dante Conmon port.
-        if cfg.obs.is_none() && (!settings.broadcast.destinations.is_empty() || cfg.live) {
-            cfg.obs = Some(obs_config_from_env());
+        // Broadcast destinations still need an BROADCAST adapter even when RING_LIVE is not set, so
+        // the Settings UI can drive real streams. Do this after the Aoip decision so a
+        // broadcast-only setup does not also bind the Aoip Conmon port.
+        if cfg.broadcast.is_none() && (!settings.broadcast.destinations.is_empty() || cfg.live) {
+            cfg.broadcast = Some(broadcast_config_from_env());
             cfg.live = true;
         }
         cfg
     }
 }
 
-fn obs_config_from_env() -> ObsConfig {
-    ObsConfig::new(
-        std::env::var("RING_OBS_URL").unwrap_or_else(|_| "ws://127.0.0.1:4455".into()),
-        std::env::var("RING_OBS_PASSWORD").ok(),
+fn broadcast_config_from_env() -> BroadcastConfig {
+    BroadcastConfig::new(
+        std::env::var("RING_BROADCAST_URL").unwrap_or_else(|_| "ws://127.0.0.1:4455".into()),
+        std::env::var("RING_BROADCAST_PASSWORD").ok(),
     )
 }
 
@@ -177,13 +177,13 @@ fn env_flag(name: &str) -> bool {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum AdapterCommand {
-    X32(X32Command),
-    Obs(ObsCommand),
-    Streamlabs(StreamlabsCommand),
-    ProPresenter(ProPresenterCommand),
-    EasyWorship(EasyWorshipCommand),
-    Dante(DanteCommand),
-    Ndi(NdiCommand),
+    Console(ConsoleCommand),
+    Broadcast(BroadcastCommand),
+    DualStream(DualStreamCommand),
+    SlideHttp(SlideHttpCommand),
+    SlideTcp(SlideTcpCommand),
+    Aoip(AoipCommand),
+    IpVideo(IpVideoCommand),
 }
 
 #[derive(Debug, Clone)]
@@ -195,14 +195,14 @@ pub struct DeviceStatus {
 
 /// Owns the command senders for every started adapter and exposes a capability summary.
 pub struct AdapterRegistry {
-    x32: Option<mpsc::UnboundedSender<X32Command>>,
-    obs: Option<mpsc::UnboundedSender<ObsCommand>>,
-    streamlabs: Option<mpsc::UnboundedSender<StreamlabsCommand>>,
-    propresenter: Option<mpsc::UnboundedSender<ProPresenterCommand>>,
-    easyworship: Option<mpsc::UnboundedSender<EasyWorshipCommand>>,
-    image_cache: Arc<Mutex<EasyWorshipImageCache>>,
-    dante: Option<mpsc::UnboundedSender<DanteCommand>>,
-    ndi: Option<mpsc::UnboundedSender<NdiCommand>>,
+    console: Option<mpsc::UnboundedSender<ConsoleCommand>>,
+    broadcast: Option<mpsc::UnboundedSender<BroadcastCommand>>,
+    dual_stream: Option<mpsc::UnboundedSender<DualStreamCommand>>,
+    slide_http: Option<mpsc::UnboundedSender<SlideHttpCommand>>,
+    slide_tcp: Option<mpsc::UnboundedSender<SlideTcpCommand>>,
+    image_cache: Arc<Mutex<SlideTcpImageCache>>,
+    aoip: Option<mpsc::UnboundedSender<AoipCommand>>,
+    ip_video: Option<mpsc::UnboundedSender<IpVideoCommand>>,
     tasks: Vec<JoinHandle<()>>,
     devices: Vec<DeviceStatus>,
 }
@@ -215,127 +215,127 @@ impl AdapterRegistry {
         sink: Arc<dyn EventSink>,
     ) -> Self {
         let mut registry = Self {
-            x32: None,
-            obs: None,
-            streamlabs: None,
-            propresenter: None,
-            easyworship: None,
-            image_cache: Arc::new(Mutex::new(EasyWorshipImageCache::default())),
-            dante: None,
-            ndi: None,
+            console: None,
+            broadcast: None,
+            dual_stream: None,
+            slide_http: None,
+            slide_tcp: None,
+            image_cache: Arc::new(Mutex::new(SlideTcpImageCache::default())),
+            aoip: None,
+            ip_video: None,
             tasks: Vec::new(),
             devices: Vec::new(),
         };
 
-        if let Some(x32) = &config.x32 {
+        if let Some(console) = &config.console {
             let (tx, rx) = mpsc::unbounded_channel();
-            let handle = x32_adapter::spawn(x32.clone(), state.clone(), sink.clone(), rx);
+            let handle = console_adapter::spawn(console.clone(), state.clone(), sink.clone(), rx);
             registry.tasks.push(handle);
-            registry.x32 = Some(tx);
+            registry.console = Some(tx);
             registry.devices.push(DeviceStatus {
-                id: "x32",
-                kind: DeviceKind::X32,
-                capabilities: DeviceCapabilities::for_kind(DeviceKind::X32),
+                id: "console",
+                kind: DeviceKind::Console,
+                capabilities: DeviceCapabilities::for_kind(DeviceKind::Console),
             });
             sink.log(format!(
-                "[runtime] X32 adapter started for {}",
-                x32.endpoint()
+                "[runtime] Console adapter started for {}",
+                console.endpoint()
             ));
         }
 
-        if let Some(obs) = &config.obs {
+        if let Some(broadcast) = &config.broadcast {
             let (tx, rx) = mpsc::unbounded_channel();
-            let handle = obs_adapter::spawn(obs.clone(), state.clone(), sink.clone(), rx);
+            let handle = broadcast_adapter::spawn(broadcast.clone(), state.clone(), sink.clone(), rx);
             registry.tasks.push(handle);
-            registry.obs = Some(tx);
+            registry.broadcast = Some(tx);
             registry.devices.push(DeviceStatus {
                 id: "yt",
-                kind: DeviceKind::Obs,
-                capabilities: DeviceCapabilities::for_kind(DeviceKind::Obs),
+                kind: DeviceKind::Broadcast,
+                capabilities: DeviceCapabilities::for_kind(DeviceKind::Broadcast),
             });
-            sink.log(format!("[runtime] OBS adapter started for {}", obs.url));
+            sink.log(format!("[runtime] BROADCAST adapter started for {}", broadcast.url));
         }
 
-        if let Some(streamlabs) = &config.streamlabs {
+        if let Some(dual_stream) = &config.dual_stream {
             let (tx, rx) = mpsc::unbounded_channel();
             let handle =
-                streamlabs_adapter::spawn(streamlabs.clone(), state.clone(), sink.clone(), rx);
+                dual_stream_adapter::spawn(dual_stream.clone(), state.clone(), sink.clone(), rx);
             registry.tasks.push(handle);
-            registry.streamlabs = Some(tx);
+            registry.dual_stream = Some(tx);
             registry.devices.push(DeviceStatus {
-                id: "slobs",
-                kind: DeviceKind::Streamlabs,
-                capabilities: DeviceCapabilities::for_kind(DeviceKind::Streamlabs),
+                id: "dual_stream",
+                kind: DeviceKind::DualStream,
+                capabilities: DeviceCapabilities::for_kind(DeviceKind::DualStream),
             });
             sink.log(format!(
-                "[runtime] Streamlabs adapter started for {}",
-                streamlabs.endpoint
+                "[runtime] DualStream adapter started for {}",
+                dual_stream.endpoint
             ));
         }
 
-        if let Some(propresenter) = &config.propresenter {
+        if let Some(slide_http) = &config.slide_http {
             let (tx, rx) = mpsc::unbounded_channel();
             let handle =
-                propresenter_adapter::spawn(propresenter.clone(), state.clone(), sink.clone(), rx);
+                slide_http_adapter::spawn(slide_http.clone(), state.clone(), sink.clone(), rx);
             registry.tasks.push(handle);
-            registry.propresenter = Some(tx);
+            registry.slide_http = Some(tx);
             registry.devices.push(DeviceStatus {
                 id: "slides",
-                kind: DeviceKind::ProPresenter,
-                capabilities: DeviceCapabilities::for_kind(DeviceKind::ProPresenter),
+                kind: DeviceKind::SlideHttp,
+                capabilities: DeviceCapabilities::for_kind(DeviceKind::SlideHttp),
             });
             sink.log(format!(
-                "[runtime] ProPresenter adapter started for {}",
-                propresenter.endpoint()
+                "[runtime] SlideHttp adapter started for {}",
+                slide_http.endpoint()
             ));
         }
 
-        if let Some(easyworship) = &config.easyworship {
+        if let Some(slide_tcp) = &config.slide_tcp {
             let (tx, rx) = mpsc::unbounded_channel();
-            let handle = easyworship_adapter::spawn(
-                easyworship.clone(),
+            let handle = slide_tcp_adapter::spawn(
+                slide_tcp.clone(),
                 state.clone(),
                 sink.clone(),
                 registry.image_cache.clone(),
                 rx,
             );
             registry.tasks.push(handle);
-            registry.easyworship = Some(tx);
+            registry.slide_tcp = Some(tx);
             registry.devices.push(DeviceStatus {
                 id: "slides-ew",
-                kind: DeviceKind::EasyWorship,
-                capabilities: DeviceCapabilities::for_kind(DeviceKind::EasyWorship),
+                kind: DeviceKind::SlideTcp,
+                capabilities: DeviceCapabilities::for_kind(DeviceKind::SlideTcp),
             });
             sink.log(format!(
-                "[runtime] EasyWorship adapter started for {}",
-                easyworship.endpoint_label()
+                "[runtime] SlideTcp adapter started for {}",
+                slide_tcp.endpoint_label()
             ));
         }
 
-        if let Some(dante) = &config.dante {
+        if let Some(aoip) = &config.aoip {
             let (tx, rx) = mpsc::unbounded_channel();
-            let handle = dante_adapter::spawn(dante.clone(), state.clone(), sink.clone(), rx);
+            let handle = aoip_adapter::spawn(aoip.clone(), state.clone(), sink.clone(), rx);
             registry.tasks.push(handle);
-            registry.dante = Some(tx);
+            registry.aoip = Some(tx);
             registry.devices.push(DeviceStatus {
-                id: "dante",
-                kind: DeviceKind::Dante,
-                capabilities: DeviceCapabilities::for_kind(DeviceKind::Dante),
+                id: "aoip",
+                kind: DeviceKind::Aoip,
+                capabilities: DeviceCapabilities::for_kind(DeviceKind::Aoip),
             });
-            sink.log("[runtime] Dante Conmon/ARC UDP adapter started".into());
+            sink.log("[runtime] Aoip Conmon/ARC UDP adapter started".into());
         }
 
-        if let Some(ndi) = &config.ndi {
+        if let Some(ip_video) = &config.ip_video {
             let (tx, rx) = mpsc::unbounded_channel();
-            let handle = ndi_adapter::spawn(ndi.clone(), state.clone(), sink.clone(), rx);
+            let handle = ip_video_adapter::spawn(ip_video.clone(), state.clone(), sink.clone(), rx);
             registry.tasks.push(handle);
-            registry.ndi = Some(tx);
+            registry.ip_video = Some(tx);
             registry.devices.push(DeviceStatus {
-                id: "ndi",
-                kind: DeviceKind::Ndi,
-                capabilities: DeviceCapabilities::for_kind(DeviceKind::Ndi),
+                id: "ip_video",
+                kind: DeviceKind::IpVideo,
+                capabilities: DeviceCapabilities::for_kind(DeviceKind::IpVideo),
             });
-            sink.log(format!("[runtime] NDI 6 Discovery adapter started for {}", ndi.endpoint()));
+            sink.log(format!("[runtime] IP_VIDEO 6 Discovery adapter started for {}", ip_video.endpoint()));
         }
 
         registry
@@ -349,8 +349,8 @@ impl AdapterRegistry {
         self.devices.iter().any(|d| d.kind == kind)
     }
 
-    /// Fetch cached EasyWorship JPEG bytes by the key published in `SlideState.image`.
-    pub fn easyworship_image(&self, key: &str) -> Option<Vec<u8>> {
+    /// Fetch cached SlideTcp JPEG bytes by the key published in `SlideState.image`.
+    pub fn slide_tcp_image(&self, key: &str) -> Option<Vec<u8>> {
         self.image_cache.lock().unwrap().get(key)
     }
 
@@ -358,38 +358,38 @@ impl AdapterRegistry {
     /// lets the cue engine fall back to simulator state or report a degraded capability.
     pub fn dispatch(&self, command: AdapterCommand) -> bool {
         match command {
-            AdapterCommand::X32(command) => self
-                .x32
+            AdapterCommand::Console(command) => self
+                .console
                 .as_ref()
                 .map(|tx| tx.send(command).is_ok())
                 .unwrap_or(false),
-            AdapterCommand::Obs(command) => self
-                .obs
+            AdapterCommand::Broadcast(command) => self
+                .broadcast
                 .as_ref()
                 .map(|tx| tx.send(command).is_ok())
                 .unwrap_or(false),
-            AdapterCommand::Streamlabs(command) => self
-                .streamlabs
+            AdapterCommand::DualStream(command) => self
+                .dual_stream
                 .as_ref()
                 .map(|tx| tx.send(command).is_ok())
                 .unwrap_or(false),
-            AdapterCommand::Dante(command) => self
-                .dante
+            AdapterCommand::Aoip(command) => self
+                .aoip
                 .as_ref()
                 .map(|tx| tx.send(command).is_ok())
                 .unwrap_or(false),
-            AdapterCommand::Ndi(command) => self
-                .ndi
+            AdapterCommand::IpVideo(command) => self
+                .ip_video
                 .as_ref()
                 .map(|tx| tx.send(command).is_ok())
                 .unwrap_or(false),
-            AdapterCommand::ProPresenter(command) => self
-                .propresenter
+            AdapterCommand::SlideHttp(command) => self
+                .slide_http
                 .as_ref()
                 .map(|tx| tx.send(command).is_ok())
                 .unwrap_or(false),
-            AdapterCommand::EasyWorship(command) => self
-                .easyworship
+            AdapterCommand::SlideTcp(command) => self
+                .slide_tcp
                 .as_ref()
                 .map(|tx| tx.send(command).is_ok())
                 .unwrap_or(false),
@@ -421,11 +421,11 @@ mod tests {
         let sink = Arc::new(RecordingSink::new());
         let registry = AdapterRegistry::start(&RuntimeConfig::default(), state(), sink);
         assert!(registry.devices().is_empty());
-        assert!(!registry.dispatch(AdapterCommand::X32(X32Command::Identify)));
+        assert!(!registry.dispatch(AdapterCommand::Console(ConsoleCommand::Identify)));
     }
 
     #[test]
-    fn registry_exposes_cached_easyworship_image_bytes() {
+    fn registry_exposes_cached_slide_tcp_image_bytes() {
         let sink = Arc::new(RecordingSink::new());
         let registry = AdapterRegistry::start(&RuntimeConfig::default(), state(), sink);
         let jpeg = vec![0xff, 0xd8, 0xff, 0xd9];
@@ -435,8 +435,8 @@ mod tests {
             .unwrap()
             .insert("current:hash".into(), jpeg.clone())
             .unwrap();
-        assert_eq!(registry.easyworship_image("current:hash"), Some(jpeg));
-        assert!(registry.easyworship_image("missing").is_none());
+        assert_eq!(registry.slide_tcp_image("current:hash"), Some(jpeg));
+        assert!(registry.slide_tcp_image("missing").is_none());
     }
 
     #[tokio::test]
@@ -444,11 +444,11 @@ mod tests {
         let sink = Arc::new(RecordingSink::new());
         let config = RuntimeConfig {
             live: true,
-            x32: Some(X32Config::new("127.0.0.1")),
+            console: Some(ConsoleConfig::new("127.0.0.1")),
             ..RuntimeConfig::default()
         };
         let registry = AdapterRegistry::start(&config, state(), sink);
-        assert!(registry.has(DeviceKind::X32));
+        assert!(registry.has(DeviceKind::Console));
         let device = &registry.devices()[0];
         assert!(device.capabilities.meters);
         assert!(device.capabilities.scene_recall);
@@ -458,25 +458,25 @@ mod tests {
     fn dispatch_to_missing_adapter_is_false() {
         let sink = Arc::new(RecordingSink::new());
         let registry = AdapterRegistry::start(&RuntimeConfig::default(), state(), sink);
-        assert!(!registry.dispatch(AdapterCommand::Obs(ObsCommand::Refresh)));
-        assert!(!registry.dispatch(AdapterCommand::ProPresenter(
-            ProPresenterCommand::Next
+        assert!(!registry.dispatch(AdapterCommand::Broadcast(BroadcastCommand::Refresh)));
+        assert!(!registry.dispatch(AdapterCommand::SlideHttp(
+            SlideHttpCommand::Next
         )));
-        assert!(!registry.dispatch(AdapterCommand::EasyWorship(
-            EasyWorshipCommand::NextSlide
+        assert!(!registry.dispatch(AdapterCommand::SlideTcp(
+            SlideTcpCommand::NextSlide
         )));
     }
 
     #[tokio::test]
-    async fn easyworship_registry_advertises_slide_capability() {
+    async fn slide_tcp_registry_advertises_slide_capability() {
         let sink = Arc::new(RecordingSink::new());
         let config = RuntimeConfig {
             live: true,
-            easyworship: Some(EasyWorshipConfig::new("127.0.0.1:55123")),
+            slide_tcp: Some(SlideTcpConfig::new("127.0.0.1:55123")),
             ..RuntimeConfig::default()
         };
         let registry = AdapterRegistry::start(&config, state(), sink);
-        assert!(registry.has(DeviceKind::EasyWorship));
+        assert!(registry.has(DeviceKind::SlideTcp));
         let device = &registry.devices()[0];
         assert!(device.capabilities.slides);
         assert!(!device.capabilities.meters);

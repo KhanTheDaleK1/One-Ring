@@ -29,7 +29,7 @@ export const PreflightView: React.FC<PreflightViewProps> = ({
               <h2 style={{ margin: 0, fontSize: 22 }}>Pre-Service Executable Readiness & Topology Proof</h2>
             </div>
             <p style={{ margin: "6px 0 0", color: "#9CA3AF", fontSize: 14 }}>
-              Cross-validates Show File cues against live OBS 33 / Streamlabs Dual-Canvas, Dante Conmon/ARC, NDI 6 Discovery (:5959), ProPresenter v1, and X32 OSC.
+              Cross-validates Show File cues against live Broadcast 33 / Broadcast Dual-Canvas, Aoip Conmon/ARC, IP Video 6 Discovery (:5959), SlideHttp v1, and Console OSC.
             </p>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>

@@ -1,6 +1,6 @@
 
 // ---------------------------------------------------------------------------------------------
-// Source Pipeline — Mirrors OBS Source Registry & Scene Graph
+// Source Pipeline — Mirrors Broadcast Source Registry & Scene Graph
 // ---------------------------------------------------------------------------------------------
 
 export type SourceType =
@@ -55,12 +55,12 @@ export interface SourceTransform {
   opacity?: number;
 }
 
-export interface ObsProfileSettings {
+export interface BroadcastProfileSettings {
   name: string;
   baseResolution: string;
   outputResolution: string;
   fps: number;
-  videoEncoder: "h264_nvenc" | "h264_videotoolbox" | "libx264" | "av1_nvenc";
+  videoEncoder: "h264_hardware_gpu" | "h264_hardware_media" | "libx264" | "av1_hardware_gpu";
   rateControl: "CBR" | "VBR" | "CQP";
   bitrateKbps: number;
   keyframeIntervalSec: number;
@@ -135,7 +135,7 @@ export interface DcaChannel {
   guardMute: boolean;
   signalDb: number;
   signalPresent: boolean;
-  danteTxChannel: string;
+  aoipTxChannel: string;
 }
 
 export interface CameraPreset {
@@ -167,7 +167,7 @@ export interface BroadcastCanvas {
   engine: string;
 }
 
-export interface DanteRoute {
+export interface AoipRoute {
   id: string;
   rxDevice: string;
   rxChannel: string;
@@ -178,7 +178,7 @@ export interface DanteRoute {
   identifyFlashing: boolean;
 }
 
-export interface NdiReceiver {
+export interface IpVideoReceiver {
   id: string;
   receiverName: string;
   ip: string;
@@ -238,7 +238,7 @@ export interface ScreenOutput {
   enabled: boolean;
 }
 
-/** EasyWorship `status` output flags. These are reported state, not remote actions. */
+/** SlideTcp `status` output flags. These are reported state, not remote actions. */
 export interface ScreenFlags {
   black: boolean;
   clear: boolean;
@@ -310,7 +310,7 @@ export interface ServiceCue {
   index: number;
   title: string;
   actions: string[];
-  obsScene: string;
+  broadcastScene: string;
   verticalScene: string;
   cameraPresetId: string;
   slideLabel: string;
@@ -347,14 +347,14 @@ export interface DcaMapping {
   sourceChannel: string;
 }
 
-export interface X32Settings {
+export interface ConsoleSettings {
   ipAddress: string;
   oscPort: number;
   keepaliveIntervalSec: number;
   dcaMappings: DcaMapping[];
 }
 
-export interface DanteSettings {
+export interface AoipSettings {
   subnetInterface: string;
   conmonMeterPort: number;
   conmonControlPort: number;
@@ -371,7 +371,7 @@ export interface RtmpDestination {
 }
 
 export type RecordingFormat = "MKV" | "MP4";
-export type VideoEncoder = "NVENC" | "VideoToolbox" | "Software";
+export type VideoEncoder = "HardwareGpu" | "HardwareMedia" | "Software";
 
 export interface BroadcastSettings {
   destinations: RtmpDestination[];
@@ -383,12 +383,12 @@ export interface BroadcastSettings {
 export interface DisplayAssignments {
   fohWindow: string;
   stageDisplayWindow: string;
-  ndiAlphaOutput: string;
+  ipVideoAlphaOutput: string;
 }
 
 export interface SlidesSettings {
-  songselectClientId: string;
-  songselectClientSecret: string;
+  songLibraryClientId: string;
+  songLibraryClientSecret: string;
   displayAssignments: DisplayAssignments;
 }
 
@@ -398,10 +398,10 @@ export interface CameraPresetName {
   label: string;
 }
 
-export interface NdiPtzSettings {
+export interface IpVideoPtzSettings {
   discoveryRangeStart: string;
   discoveryRangeEnd: string;
-  viscaPort: number;
+  ptzIpPort: number;
   presetNames: CameraPresetName[];
 }
 
@@ -446,11 +446,11 @@ export interface ConnectedStation {
 }
 
 export interface AppSettings {
-  x32: X32Settings;
-  dante: DanteSettings;
+  console: ConsoleSettings;
+  aoip: AoipSettings;
   broadcast: BroadcastSettings;
   slides: SlidesSettings;
-  ndiPtz: NdiPtzSettings;
+  ipVideoPtz: IpVideoPtzSettings;
   general: GeneralSettings;
   station: StationSettings;
   sync: SyncSettings;
@@ -469,9 +469,9 @@ export interface RingShowFile {
   broadcasts: BroadcastTarget[];
   recordChapters: string[];
   sources: SceneSourceItem[];
-  danteRoutes: DanteRoute[];
-  ndiReceivers: NdiReceiver[];
-  ndiSources: string[];
+  aoipRoutes: AoipRoute[];
+  ipVideoReceivers: IpVideoReceiver[];
+  ipVideoSources: string[];
   slides: SlideState;
 }
 
@@ -491,16 +491,16 @@ export interface AppStateSnapshot {
   dcas: DcaChannel[];
   cameras: CameraPreset[];
   activeCameraPresetId: string;
-  obsScene: string;
+  broadcastScene: string;
   verticalScene: string;
   canvases: BroadcastCanvas[];
   broadcasts: BroadcastTarget[];
   recordChapters: string[];
   sources: SceneSourceItem[];
-  danteClock: string;
-  danteRoutes: DanteRoute[];
-  ndiReceivers: NdiReceiver[];
-  ndiSources: string[];
+  aoipClock: string;
+  aoipRoutes: AoipRoute[];
+  ipVideoReceivers: IpVideoReceiver[];
+  ipVideoSources: string[];
   slides: SlideState;
   cues: ServiceCue[];
   lastVerification?: CueVerificationReport | null;

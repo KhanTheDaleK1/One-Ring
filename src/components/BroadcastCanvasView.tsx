@@ -25,13 +25,13 @@ import {
 } from "lucide-react";
 import type {
   AppStateSnapshot,
-  ObsProfileSettings,
+  BroadcastProfileSettings,
   SceneSourceItem,
   SourceFilter,
   SourceTransform,
 } from "../types";
 import { AddSourceModal } from "./AddSourceModal";
-import { ObsAudioMixerPanel } from "./ObsAudioMixerPanel";
+import { BroadcastAudioMixerPanel } from "./BroadcastAudioMixerPanel";
 import {
   getMediaEngineStatus,
   startHeadlessMediaDaemon,
@@ -49,10 +49,10 @@ import { SourceFiltersModal } from "./SourceFiltersModal";
 import { SourceTransformModal, DEFAULT_TRANSFORM } from "./SourceTransformModal";
 import { SourceContextMenu } from "./SourceContextMenu";
 import {
-  ObsSettingsModal,
-  DEFAULT_OBS_HOTKEYS,
+  BroadcastSettingsModal,
+  DEFAULT_BROADCAST_HOTKEYS,
   formatHotkeyFromEvent,
-} from "./ObsSettingsModal";
+} from "./BroadcastSettingsModal";
 
 interface BroadcastCanvasViewProps {
   state: AppStateSnapshot;
@@ -72,9 +72,9 @@ interface BroadcastScene {
 }
 
 const SCENES_STORAGE_KEY = "onering_broadcast_scenes";
-const PROFILE_STORAGE_KEY = "onering_obs_profile";
-const STREAM_CONFIG_STORAGE_KEY = "onering_obs_stream_config";
-const HOTKEYS_STORAGE_KEY = "onering_obs_hotkeys";
+const PROFILE_STORAGE_KEY = "onering_broadcast_profile";
+const STREAM_CONFIG_STORAGE_KEY = "onering_broadcast_stream_config";
+const HOTKEYS_STORAGE_KEY = "onering_broadcast_hotkeys";
 
 function createDefaultScenes(initialSources: SceneSourceItem[]): BroadcastScene[] {
   return [
@@ -135,17 +135,17 @@ function loadSavedScenes(initialSources: SceneSourceItem[]): {
   };
 }
 
-function loadSavedProfile(state: AppStateSnapshot): ObsProfileSettings {
-  const mappedEncoder: ObsProfileSettings["videoEncoder"] =
-    state.settings?.broadcast?.encoder === "NVENC"
-      ? "h264_nvenc"
+function loadSavedProfile(state: AppStateSnapshot): BroadcastProfileSettings {
+  const mappedEncoder: BroadcastProfileSettings["videoEncoder"] =
+    state.settings?.broadcast?.encoder === "HardwareGpu"
+      ? "h264_hardware_gpu"
       : state.settings?.broadcast?.encoder === "Software"
       ? "libx264"
-      : "h264_videotoolbox";
-  const mappedFormat: ObsProfileSettings["recordingFormat"] =
+      : "h264_hardware_media";
+  const mappedFormat: BroadcastProfileSettings["recordingFormat"] =
     state.settings?.broadcast?.recordingFormat === "MP4" ? "mp4" : "mkv";
 
-  const defaults: ObsProfileSettings = {
+  const defaults: BroadcastProfileSettings = {
     name: "Church Broadcast (1080p60)",
     baseResolution: "1920x1080",
     outputResolution: "1920x1080",
@@ -190,7 +190,7 @@ function loadSavedStreamConfig(state: AppStateSnapshot): { rtmpUrl: string; stre
     state.settings?.broadcast?.destinations?.find((d) => d.enabled) ||
     state.settings?.broadcast?.destinations?.[0];
   return {
-    rtmpUrl: dest?.rtmpUrl || "rtmps://a.rtmp.youtube.com/live2",
+    rtmpUrl: dest?.rtmpUrl || "rtmps://ingest.example.com/live2",
     streamKey: dest?.streamKey || "",
   };
 }
@@ -201,13 +201,13 @@ function loadSavedHotkeys(): Record<string, string> {
     if (raw) {
       const parsed = JSON.parse(raw);
       if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-        return { ...DEFAULT_OBS_HOTKEYS, ...parsed };
+        return { ...DEFAULT_BROADCAST_HOTKEYS, ...parsed };
       }
     }
   } catch {
     // fallback
   }
-  return { ...DEFAULT_OBS_HOTKEYS };
+  return { ...DEFAULT_BROADCAST_HOTKEYS };
 }
 
 export const BroadcastCanvasView: React.FC<BroadcastCanvasViewProps> = ({
@@ -240,7 +240,7 @@ export const BroadcastCanvasView: React.FC<BroadcastCanvasViewProps> = ({
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameText, setRenameText] = useState("");
   const [showAddSource, setShowAddSource] = useState(false);
-  const [showObsSettings, setShowObsSettings] = useState(false);
+  const [showBroadcastSettings, setShowBroadcastSettings] = useState(false);
   const [studioMode, setStudioMode] = useState(false);
   const [tBarValue, setTBarValue] = useState(0);
   const [transitionType, setTransitionType] = useState<"Cut" | "Fade" | "Slide" | "Stinger">("Fade");
@@ -259,8 +259,8 @@ export const BroadcastCanvasView: React.FC<BroadcastCanvasViewProps> = ({
   const [recordPaused, setRecordPaused] = useState(false);
   const lastRecordingPathRef = useRef<string | null>(null);
 
-  // OBS Settings state (Profile, Stream Config, Hotkeys)
-  const [obsProfile, setObsProfile] = useState<ObsProfileSettings>(() => loadSavedProfile(state));
+  // Broadcast Settings state (Profile, Stream Config, Hotkeys)
+  const [broadcastProfile, setBroadcastProfile] = useState<BroadcastProfileSettings>(() => loadSavedProfile(state));
   const [streamConfig, setStreamConfig] = useState<{ rtmpUrl: string; streamKey: string }>(() =>
     loadSavedStreamConfig(state)
   );
@@ -290,7 +290,7 @@ export const BroadcastCanvasView: React.FC<BroadcastCanvasViewProps> = ({
   const projectorBodyRef = useRef<HTMLDivElement | null>(null);
   const didHydrateFromStorageRef = useRef(false);
 
-  // OBS-style clipboards
+  // Broadcast-style clipboards
   const [clipboardSource, setClipboardSource] = useState<SceneSourceItem | null>(null);
   const [clipboardFilters, setClipboardFilters] = useState<SourceFilter[] | null>(null);
   const [clipboardTransform, setClipboardTransform] = useState<SourceTransform | null>(null);
@@ -322,19 +322,19 @@ export const BroadcastCanvasView: React.FC<BroadcastCanvasViewProps> = ({
   useEffect(() => {
     let active = true;
     invoke<{
-      libobsFound?: boolean;
-      libobsPath?: string | null;
+      mediaEngineFound?: boolean;
+      mediaEnginePath?: string | null;
       virtualCamSupported?: boolean;
       vstNativeSupported?: boolean;
-    }>("probe_libobs_sidecar")
+    }>("probe_media_engine_sidecar")
       .then((res) => {
         if (!active) return;
-        const found = Boolean(res?.libobsFound);
+        const found = Boolean(res?.mediaEngineFound);
         setSidecarProbe({
           ready: found,
           label: found
-            ? "libobs Ready · VST3/AU · Virtual Cam"
-            : "Standalone FFmpeg Mode (libobs not installed)",
+            ? "mediaEngine Ready · VST3/AU · Virtual Cam"
+            : "Standalone FFmpeg Mode (mediaEngine not installed)",
         });
       })
       .catch(() => {
@@ -440,7 +440,7 @@ export const BroadcastCanvasView: React.FC<BroadcastCanvasViewProps> = ({
     setPreviewSceneId(sceneId);
     onSetAllSources(target.sources);
     persistScenesToStorage(updated, sceneId, sceneId);
-    invoke("dispatch_obs_studio_command", {
+    invoke("dispatch_broadcast_studio_command", {
       action: "set_current_program_scene",
       arg: target.name,
     }).catch(() => {});
@@ -501,7 +501,7 @@ export const BroadcastCanvasView: React.FC<BroadcastCanvasViewProps> = ({
       persistScenesToStorage(nextList, newScene.id, newScene.id);
       notify(`Created ${newScene.name}`);
     }
-    invoke("dispatch_obs_studio_command", { action: "create_scene", arg: newScene.name }).catch(
+    invoke("dispatch_broadcast_studio_command", { action: "create_scene", arg: newScene.name }).catch(
       () => {}
     );
   };
@@ -523,7 +523,7 @@ export const BroadcastCanvasView: React.FC<BroadcastCanvasViewProps> = ({
     persistScenesToStorage(filtered, nextActive, nextPreview);
     if (removed) {
       notify(`Removed scene: ${removed.name}`);
-      invoke("dispatch_obs_studio_command", {
+      invoke("dispatch_broadcast_studio_command", {
         action: "remove_scene",
         arg: removed.name,
       }).catch(() => {});
@@ -540,7 +540,7 @@ export const BroadcastCanvasView: React.FC<BroadcastCanvasViewProps> = ({
   const handleExportSceneCollection = () => {
     const merged = sceneList.map((sc) => (sc.id === activeSceneId ? { ...sc, sources } : sc));
     const payload = {
-      format: "one-ring-obs-scene-collection",
+      format: "one-ring-broadcast-scene-collection",
       version: 1,
       exportedAt: new Date().toISOString(),
       activeSceneId,
@@ -626,7 +626,7 @@ export const BroadcastCanvasView: React.FC<BroadcastCanvasViewProps> = ({
     }
 
     setTBarValue(0);
-    invoke("dispatch_obs_studio_command", { action: "trigger_transition" }).catch(() => {});
+    invoke("dispatch_broadcast_studio_command", { action: "trigger_transition" }).catch(() => {});
   }, [
     sceneList,
     activeSceneId,
@@ -639,12 +639,12 @@ export const BroadcastCanvasView: React.FC<BroadcastCanvasViewProps> = ({
   ]);
 
   const handleToggleStream = useCallback(() => {
-    const obsConnected =
+    const broadcastConnected =
       !state.mockMode && state.health.some((h) => h.id === "yt" && h.status === "ok");
     onBroadcastToggle("all", !anyLive);
     if (!anyLive) {
-      if (obsConnected) {
-        notify("Live stream & recording started via connected OBS engine");
+      if (broadcastConnected) {
+        notify("Live stream & recording started via connected Broadcast engine");
         return;
       }
       const dest = state.settings?.broadcast?.destinations?.find((d) => d.enabled);
@@ -655,7 +655,7 @@ export const BroadcastCanvasView: React.FC<BroadcastCanvasViewProps> = ({
           ? `${effectiveUrl.replace(/\/$/, "")}/${effectiveKey}`
           : effectiveUrl
         : "";
-      const recExt = obsProfile.recordingFormat || "mp4";
+      const recExt = broadcastProfile.recordingFormat || "mp4";
       const recPath = state.settings?.broadcast?.recordingPath
         ? `${state.settings.broadcast.recordingPath.replace(/[\/]+$/, "")}/recording_${Date.now()}.${recExt}`
         : undefined;
@@ -671,8 +671,8 @@ export const BroadcastCanvasView: React.FC<BroadcastCanvasViewProps> = ({
         .then((m) => {
           notify(m);
           if (
-            obsProfile.autoRemuxToMp4 &&
-            obsProfile.recordingFormat !== "mp4" &&
+            broadcastProfile.autoRemuxToMp4 &&
+            broadcastProfile.recordingFormat !== "mp4" &&
             recordedFile
           ) {
             remuxRecordingToMp4(recordedFile)
@@ -687,8 +687,8 @@ export const BroadcastCanvasView: React.FC<BroadcastCanvasViewProps> = ({
     onBroadcastToggle,
     state.settings?.broadcast,
     streamConfig,
-    obsProfile.recordingFormat,
-    obsProfile.autoRemuxToMp4,
+    broadcastProfile.recordingFormat,
+    broadcastProfile.autoRemuxToMp4,
     notify,
   ]);
 
@@ -720,7 +720,7 @@ export const BroadcastCanvasView: React.FC<BroadcastCanvasViewProps> = ({
   const handleToggleRecordPause = useCallback(() => {
     const nextPaused = !recordPaused;
     setRecordPaused(nextPaused);
-    invoke("dispatch_obs_studio_command", {
+    invoke("dispatch_broadcast_studio_command", {
       action: nextPaused ? "pause_record" : "resume_record",
     }).catch(() => {});
     notify(nextPaused ? "Recording Paused" : "Recording Resumed");
@@ -759,7 +759,7 @@ export const BroadcastCanvasView: React.FC<BroadcastCanvasViewProps> = ({
       return;
     }
     if (
-      showObsSettings ||
+      showBroadcastSettings ||
       showAddSource ||
       settingsModalSource ||
       filtersModalSource ||
@@ -816,7 +816,7 @@ export const BroadcastCanvasView: React.FC<BroadcastCanvasViewProps> = ({
     const text = (overrideText !== undefined ? overrideText : ccInput).trim();
     if (!text && overrideText === undefined) return;
     try {
-      const res = await invoke<string>("send_obs_stream_caption", { text });
+      const res = await invoke<string>("send_broadcast_stream_caption", { text });
       setLastCaption(text || null);
       if (overrideText === undefined) setCcInput("");
       notify(res || (text ? `CC sent: ${text}` : "Cleared stream captions"));
@@ -849,17 +849,17 @@ export const BroadcastCanvasView: React.FC<BroadcastCanvasViewProps> = ({
     notify("Duplicated " + source.name);
   };
 
-  const handleSaveObsProfile = (nextProfile: ObsProfileSettings) => {
-    setObsProfile(nextProfile);
+  const handleSaveBroadcastProfile = (nextProfile: BroadcastProfileSettings) => {
+    setBroadcastProfile(nextProfile);
     try {
       localStorage.setItem(PROFILE_STORAGE_KEY, JSON.stringify(nextProfile));
     } catch {
       // ignore
     }
-    notify(`Saved OBS profile: ${nextProfile.name}`);
+    notify(`Saved Broadcast profile: ${nextProfile.name}`);
   };
 
-  const handleSaveObsStreamConfig = (url: string, key: string) => {
+  const handleSaveBroadcastStreamConfig = (url: string, key: string) => {
     const nextCfg = { rtmpUrl: url, streamKey: key };
     setStreamConfig(nextCfg);
     try {
@@ -870,14 +870,14 @@ export const BroadcastCanvasView: React.FC<BroadcastCanvasViewProps> = ({
     notify("Saved stream ingest configuration");
   };
 
-  const handleSaveObsHotkeys = (nextHotkeys: Record<string, string>) => {
+  const handleSaveBroadcastHotkeys = (nextHotkeys: Record<string, string>) => {
     setHotkeys(nextHotkeys);
     try {
       localStorage.setItem(HOTKEYS_STORAGE_KEY, JSON.stringify(nextHotkeys));
     } catch {
       // ignore
     }
-    notify("Updated OBS global hotkeys");
+    notify("Updated Broadcast global hotkeys");
   };
 
   const mergedScenesForMultiview = sceneList.map((sc) =>
@@ -941,7 +941,7 @@ export const BroadcastCanvasView: React.FC<BroadcastCanvasViewProps> = ({
         <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 12 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <Radio size={18} color="#EF4444" />
-            <strong style={{ fontSize: 16 }}>Broadcast Studio & OBS Sources</strong>
+            <strong style={{ fontSize: 16 }}>Broadcast Studio & Broadcast Sources</strong>
           </div>
           <span style={{ fontSize: 12, color: "#64748B" }}>•</span>
           <span style={{ fontSize: 13, color: anyLive ? "#F87171" : "#9CA3AF", fontWeight: 700 }}>
@@ -959,7 +959,7 @@ export const BroadcastCanvasView: React.FC<BroadcastCanvasViewProps> = ({
             {sources.length} active sources (right-click any source for Filters, Transform, Order & Color)
           </span>
           <span
-            title="Native libobs Sidecar Readiness"
+            title="Native mediaEngine Sidecar Readiness"
             style={{
               fontSize: 10.5,
               fontWeight: 700,
@@ -972,7 +972,7 @@ export const BroadcastCanvasView: React.FC<BroadcastCanvasViewProps> = ({
               color: sidecarProbe.ready ? "#6EE7B7" : "#94A3B8",
             }}
           >
-            Native libobs Sidecar: {sidecarProbe.label}
+            Native mediaEngine Sidecar: {sidecarProbe.label}
           </span>
         </div>
 
@@ -992,7 +992,7 @@ export const BroadcastCanvasView: React.FC<BroadcastCanvasViewProps> = ({
             <button
               type="button"
               onClick={() => setProjectorModal({ mode: "multiview" })}
-              title="Open OBS Multiview Projector"
+              title="Open Broadcast Multiview Projector"
               style={{
                 height: 30,
                 padding: "0 10px",
@@ -1063,8 +1063,8 @@ export const BroadcastCanvasView: React.FC<BroadcastCanvasViewProps> = ({
           <button
             type="button"
             onClick={() => {
-              const recommended: ObsProfileSettings = {
-                ...obsProfile,
+              const recommended: BroadcastProfileSettings = {
+                ...broadcastProfile,
                 baseResolution: "1920x1080",
                 outputResolution: "1920x1080",
                 fps: 60,
@@ -1072,7 +1072,7 @@ export const BroadcastCanvasView: React.FC<BroadcastCanvasViewProps> = ({
                 keyframeIntervalSec: 2,
                 rateControl: "CBR",
               };
-              handleSaveObsProfile(recommended);
+              handleSaveBroadcastProfile(recommended);
               notify("Auto-Config Wizard: Applied 1080p60 CBR 6000 kbps");
             }}
             style={{
@@ -1099,13 +1099,13 @@ export const BroadcastCanvasView: React.FC<BroadcastCanvasViewProps> = ({
                 | "1080p30 Church Stream"
                 | "720p30 Low Bandwidth";
               setEncoderProfile(next);
-              const mapped: Partial<ObsProfileSettings> =
+              const mapped: Partial<BroadcastProfileSettings> =
                 next === "1080p60 Hardware"
                   ? { baseResolution: "1920x1080", outputResolution: "1920x1080", fps: 60, bitrateKbps: 6000 }
                   : next === "1080p30 Church Stream"
                   ? { baseResolution: "1920x1080", outputResolution: "1920x1080", fps: 30, bitrateKbps: 4500 }
                   : { baseResolution: "1920x1080", outputResolution: "1280x720", fps: 30, bitrateKbps: 2500 };
-              setObsProfile((prev) => {
+              setBroadcastProfile((prev) => {
                 const updated = { ...prev, ...mapped };
                 try {
                   localStorage.setItem(PROFILE_STORAGE_KEY, JSON.stringify(updated));
@@ -1165,7 +1165,7 @@ export const BroadcastCanvasView: React.FC<BroadcastCanvasViewProps> = ({
                 const other = sceneList.find((sc) => sc.id !== activeSceneId);
                 if (other) setPreviewSceneId(other.id);
               }
-              invoke("dispatch_obs_studio_command", {
+              invoke("dispatch_broadcast_studio_command", {
                 action: next ? "studio_mode_on" : "studio_mode_off",
               }).catch(() => {});
             }}
@@ -1186,8 +1186,8 @@ export const BroadcastCanvasView: React.FC<BroadcastCanvasViewProps> = ({
 
           <button
             type="button"
-            onClick={() => setShowObsSettings(true)}
-            title="Open OBS Settings (Stream, Output, Video, Hotkeys)"
+            onClick={() => setShowBroadcastSettings(true)}
+            title="Open Broadcast Settings (Stream, Output, Video, Hotkeys)"
             style={{
               height: 36,
               padding: "0 12px",
@@ -1203,7 +1203,7 @@ export const BroadcastCanvasView: React.FC<BroadcastCanvasViewProps> = ({
               fontWeight: 700,
             }}
           >
-            <Settings size={14} /> OBS Settings ⚙️
+            <Settings size={14} /> Broadcast Settings ⚙️
           </button>
 
           <button
@@ -1224,7 +1224,7 @@ export const BroadcastCanvasView: React.FC<BroadcastCanvasViewProps> = ({
               fontWeight: 700,
             }}
           >
-            <Plus size={15} /> + Add Source (All 15 OBS Types)
+            <Plus size={15} /> + Add Source (All 15 Broadcast Types)
           </button>
         </div>
       </div>
@@ -1256,11 +1256,11 @@ export const BroadcastCanvasView: React.FC<BroadcastCanvasViewProps> = ({
               }}
             >
               {studioMode
-                ? `Studio Mode — Preview | Program (${obsProfile.baseResolution} @ ${obsProfile.fps}fps)`
-                : `Program Canvas (${obsProfile.baseResolution} @ ${obsProfile.fps}fps)`}
+                ? `Studio Mode — Preview | Program (${broadcastProfile.baseResolution} @ ${broadcastProfile.fps}fps)`
+                : `Program Canvas (${broadcastProfile.baseResolution} @ ${broadcastProfile.fps}fps)`}
             </span>
             <span style={{ fontSize: 11, color: "#10B981", fontWeight: 700 }}>
-              Hardware Accelerated • {obsProfile.videoEncoder}
+              Hardware Accelerated • {broadcastProfile.videoEncoder}
             </span>
           </div>
 
@@ -1286,7 +1286,7 @@ export const BroadcastCanvasView: React.FC<BroadcastCanvasViewProps> = ({
                 onChange={(e) => {
                   const next = e.target.value as "Cut" | "Fade" | "Slide" | "Stinger";
                   setTransitionType(next);
-                  invoke("dispatch_obs_studio_command", {
+                  invoke("dispatch_broadcast_studio_command", {
                     action: "set_transition",
                     arg: next,
                   }).catch(() => {});
@@ -1423,7 +1423,7 @@ export const BroadcastCanvasView: React.FC<BroadcastCanvasViewProps> = ({
                   style={{
                     position: "relative",
                     width: "100%",
-                    aspectRatio: obsProfile.baseResolution === "1080x1920" ? "9 / 16" : "16 / 9",
+                    aspectRatio: broadcastProfile.baseResolution === "1080x1920" ? "9 / 16" : "16 / 9",
                     minHeight: 220,
                     background: "#000000",
                     overflow: "hidden",
@@ -1488,7 +1488,7 @@ export const BroadcastCanvasView: React.FC<BroadcastCanvasViewProps> = ({
                   style={{
                     position: "relative",
                     width: "100%",
-                    aspectRatio: obsProfile.baseResolution === "1080x1920" ? "9 / 16" : "16 / 9",
+                    aspectRatio: broadcastProfile.baseResolution === "1080x1920" ? "9 / 16" : "16 / 9",
                     minHeight: 220,
                     background: "#000000",
                     overflow: "hidden",
@@ -1658,9 +1658,9 @@ export const BroadcastCanvasView: React.FC<BroadcastCanvasViewProps> = ({
           </form>
         </div>
 
-        {/* Right: OBS Scenes, Sources Stack & Stream Controls */}
+        {/* Right: Broadcast Scenes, Sources Stack & Stream Controls */}
         <div style={{ display: "flex", flexDirection: "column", gap: 12, minHeight: 0 }}>
-          {/* OBS Scenes Switcher & Collections Dock */}
+          {/* Broadcast Scenes Switcher & Collections Dock */}
           <div style={{ background: "#0D1117", border: "1px solid #1E2533", borderRadius: 10, padding: 12 }}>
             <div
               style={{
@@ -1673,7 +1673,7 @@ export const BroadcastCanvasView: React.FC<BroadcastCanvasViewProps> = ({
               }}
             >
               <span style={{ fontSize: 11, fontWeight: 700, color: "#94A3B8", textTransform: "uppercase" }}>
-                OBS Scenes
+                Broadcast Scenes
               </span>
               <div style={{ display: "flex", alignItems: "center", gap: 4, flexWrap: "wrap" }}>
                 <button
@@ -2158,7 +2158,7 @@ export const BroadcastCanvasView: React.FC<BroadcastCanvasViewProps> = ({
                 onClick={() => {
                   const next = !virtualCamActive;
                   setVirtualCamActive(next);
-                  invoke("dispatch_obs_studio_command", {
+                  invoke("dispatch_broadcast_studio_command", {
                     action: next ? "start_virtual_cam" : "stop_virtual_cam",
                   }).catch(() => {});
                   notify(next ? "Virtual Camera Output Started" : "Virtual Camera Stopped");
@@ -2244,7 +2244,7 @@ export const BroadcastCanvasView: React.FC<BroadcastCanvasViewProps> = ({
               }}
             >
               <span>
-                {obsProfile.fps}.0 fps • {obsProfile.bitrateKbps} kbps • {obsProfile.recordingFormat.toUpperCase()}
+                {broadcastProfile.fps}.0 fps • {broadcastProfile.bitrateKbps} kbps • {broadcastProfile.recordingFormat.toUpperCase()}
               </span>
               <span>Dropped: 0 (0.0%)</span>
             </div>
@@ -2252,8 +2252,8 @@ export const BroadcastCanvasView: React.FC<BroadcastCanvasViewProps> = ({
         </div>
       </div>
 
-      {/* OBS 6-Track Audio Mixer Panel */}
-      <ObsAudioMixerPanel
+      {/* Broadcast 6-Track Audio Mixer Panel */}
+      <BroadcastAudioMixerPanel
         sources={sources}
         onToggleMute={(id) => patchSource(id, (s) => ({ ...s, muted: !s.muted }))}
         onVolumeChange={(id, db) => patchSource(id, (s) => ({ ...s, volumeDb: db }))}
@@ -2419,7 +2419,7 @@ export const BroadcastCanvasView: React.FC<BroadcastCanvasViewProps> = ({
                 )}
                 <strong style={{ fontSize: 15, color: "#FFFFFF" }}>
                   {projectorModal.mode === "multiview"
-                    ? "OBS Multiview Projector"
+                    ? "Broadcast Multiview Projector"
                     : `Source Projector${projectedSource ? ` — ${projectedSource.name}` : ""}`}
                 </strong>
               </div>
@@ -2628,17 +2628,17 @@ export const BroadcastCanvasView: React.FC<BroadcastCanvasViewProps> = ({
         </div>
       )}
 
-      {/* OBS Settings Modal */}
-      <ObsSettingsModal
-        isOpen={showObsSettings}
-        onClose={() => setShowObsSettings(false)}
-        profile={obsProfile}
-        onSaveProfile={handleSaveObsProfile}
+      {/* Broadcast Settings Modal */}
+      <BroadcastSettingsModal
+        isOpen={showBroadcastSettings}
+        onClose={() => setShowBroadcastSettings(false)}
+        profile={broadcastProfile}
+        onSaveProfile={handleSaveBroadcastProfile}
         streamKey={streamConfig.streamKey}
         rtmpUrl={streamConfig.rtmpUrl}
-        onSaveStreamConfig={handleSaveObsStreamConfig}
+        onSaveStreamConfig={handleSaveBroadcastStreamConfig}
         hotkeys={hotkeys}
-        onSaveHotkeys={handleSaveObsHotkeys}
+        onSaveHotkeys={handleSaveBroadcastHotkeys}
       />
 
       {/* Source Settings & Properties Modal */}

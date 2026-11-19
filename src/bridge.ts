@@ -15,6 +15,11 @@ import type { RingShowFile } from "./types";
 const isTauri = () =>
   typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
+/** Update repository configured at build time; neutral fallback keeps the UI private. */
+export const UPDATE_REPO_URL =
+  (import.meta.env.VITE_UPDATE_REPO as string | undefined)?.trim() ||
+  "https://example.com/one-ring";
+
 async function invokeTauri<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
   const { invoke } = await import("@tauri-apps/api/core");
   return invoke<T>(cmd, args);
@@ -67,17 +72,15 @@ export interface CueProgressEvent {
 }
 
 const STATE_DOMAINS = [
-  "x32",
-  "obs",
+  "console",
+  "broadcast",
   "slides",
-  "streamlabs",
+  "ip_video",
+  "aoip",
   "log",
-  "cue",
-  "dante",
-  "ndi",
 ] as const;
 
-const METER_DOMAINS = ["x32", "dante"] as const;
+const METER_DOMAINS = ["console", "aoip"] as const;
 
 /** Apply a `device://health` transition, adding a row for a device we have not seen yet. */
 export function applyHealthEvent(state: AppStateSnapshot, event: HealthEvent): AppStateSnapshot {
@@ -159,7 +162,7 @@ export function applyMeterEvent(state: AppStateSnapshot, event: MeterEvent): App
     const pastor = dcas.find((d) => d.id === "dca-1");
     silentMicAlert =
       pastor && !pastor.muted && !pastor.signalPresent
-        ? "SILENT PASTOR MIC: DCA 1 (Pastor) is LIVE/UNMUTED, but the live X32/Dante meter reports no signal. Check beltpack power/mute switch!"
+        ? "SILENT PASTOR MIC: DCA 1 (Pastor) is LIVE/UNMUTED, but the live Console/Aoip meter reports no signal. Check beltpack power/mute switch!"
         : null;
   }
 
@@ -323,13 +326,13 @@ const blankSlides = (): SlideState => ({
 
 /** Defaults mirror `AppSettings::default()` in src-tauri/src/state.rs. */
 const initialSettings = (): AppSettings => ({
-  x32: {
+  console: {
     ipAddress: "",
     oscPort: 10023,
     keepaliveIntervalSec: 8,
     dcaMappings: [],
   },
-  dante: {
+  aoip: {
     subnetInterface: "Auto (default route)",
     conmonMeterPort: 8751,
     conmonControlPort: 8700,
@@ -343,18 +346,18 @@ const initialSettings = (): AppSettings => ({
     encoder: "Software",
   },
   slides: {
-    songselectClientId: "",
-    songselectClientSecret: "",
+    songLibraryClientId: "",
+    songLibraryClientSecret: "",
     displayAssignments: {
       fohWindow: "",
       stageDisplayWindow: "",
-      ndiAlphaOutput: "",
+      ipVideoAlphaOutput: "",
     },
   },
-  ndiPtz: {
+  ipVideoPtz: {
     discoveryRangeStart: "",
     discoveryRangeEnd: "",
-    viscaPort: 52381,
+    ptzIpPort: 52381,
     presetNames: [],
   },
   general: {
@@ -442,12 +445,12 @@ function rebuildPreflight(s: AppStateSnapshot) {
       "chk-audio",
       "Audio Mixing",
       "Mixer endpoint and DCA layout are configured",
-      s.dcas.length > 0 && s.settings.x32.ipAddress.trim().length > 0,
-      s.settings.x32.ipAddress.trim().length === 0
+      s.dcas.length > 0 && s.settings.console.ipAddress.trim().length > 0,
+      s.settings.console.ipAddress.trim().length === 0
         ? "Set the mixer IP address in Settings → Audio Mixing"
-        : `${s.dcas.length} DCA(s) mapped to ${s.settings.x32.ipAddress}`
+        : `${s.dcas.length} DCA(s) mapped to ${s.settings.console.ipAddress}`
     ),
-    check("chk-routing", "Audio Network", "Audio network routes are defined", s.danteRoutes.length > 0, `${s.danteRoutes.length} route(s) configured`),
+    check("chk-routing", "Audio Network", "Audio network routes are defined", s.aoipRoutes.length > 0, `${s.aoipRoutes.length} route(s) configured`),
     check("chk-broadcast", "Broadcasting", "Broadcast and recording outputs are configured", s.broadcasts.length > 0, `${s.broadcasts.length} output(s) configured`),
     check("chk-slides", "Slides", "Slide deck is loaded", slideCount > 0, `${slideCount} slide(s) in '${s.slides.presentationName}'`),
     check("chk-cameras", "Cameras", "Camera presets are defined", s.cameras.length > 0, `${s.cameras.length} preset(s) configured`),
@@ -471,16 +474,16 @@ const initialSimState = (): AppStateSnapshot => ({
   dcas: [],
   cameras: [],
   activeCameraPresetId: "",
-  obsScene: "",
+  broadcastScene: "",
   verticalScene: "",
   canvases: [],
   broadcasts: [],
   recordChapters: [],
   sources: [],
-  danteClock: "",
-  danteRoutes: [],
-  ndiReceivers: [],
-  ndiSources: [],
+  aoipClock: "",
+  aoipRoutes: [],
+  ipVideoReceivers: [],
+  ipVideoSources: [],
   slides: blankSlides(),
   cues: [],
   lastVerification: null,
@@ -515,9 +518,9 @@ export const bridge = {
       undoStack.push({ label: `Cue ${cue.index}: ${cue.title}`, snapshot: structuredClone(simState) });
       if (undoStack.length > 16) undoStack.shift();
       simState.activeCueIndex = cueIndex;
-      simState.obsScene = cue.obsScene;
+      simState.broadcastScene = cue.broadcastScene;
       simState.verticalScene = cue.verticalScene;
-      if (simState.canvases[0]) simState.canvases[0].activeScene = cue.obsScene;
+      if (simState.canvases[0]) simState.canvases[0].activeScene = cue.broadcastScene;
       if (simState.canvases[1]) simState.canvases[1].activeScene = cue.verticalScene;
       simState.activeCameraPresetId = cue.cameraPresetId;
       if (cue.slideLabel.trim()) {
@@ -548,7 +551,7 @@ export const bridge = {
       steps: [
         { domain: "Slides", expected: `Presentation == '${cue.slideLabel}'`, observed: `Slide transport confirmed '${cue.slideLabel}'`, status: modeTag, latencyMs: 4 },
         { domain: "Audio Mixing", expected: `Unmute [${cue.unmuteDcas.join(", ")}]`, observed: "DCA mute states verified", status: modeTag, latencyMs: 2 },
-        { domain: "Broadcasting", expected: `16:9='${cue.obsScene}', 9:16='${cue.verticalScene}'`, observed: `Program + record chapter '${cue.recordChapter}' acknowledged`, status: modeTag, latencyMs: 5 },
+        { domain: "Broadcasting", expected: `16:9='${cue.broadcastScene}', 9:16='${cue.verticalScene}'`, observed: `Program + record chapter '${cue.recordChapter}' acknowledged`, status: modeTag, latencyMs: 5 },
         { domain: "Cameras", expected: `Preset == '${cue.cameraPresetId}'`, observed: "Tally + preset settled", status: modeTag, latencyMs: 3 },
       ],
     };
@@ -585,7 +588,7 @@ export const bridge = {
     if (isTauri()) return invokeTauri("toggle_beltpack_fault");
     simState.beltpackFaultSimulated = !simState.beltpackFaultSimulated;
     simState.eventLog.unshift(
-      `[dante-conmon] Pastor Beltpack Fault ${simState.beltpackFaultSimulated ? "SIMULATED (0xFE mute on ULXD4-Pastor-Tx1)" : "CLEARED (-11.5 dBFS signal)"}`
+      `[aoip-conmon] Pastor Beltpack Fault ${simState.beltpackFaultSimulated ? "SIMULATED (0xFE mute on Wireless-Pastor-Tx1)" : "CLEARED (-11.5 dBFS signal)"}`
     );
     recomputeDerived(simState);
     return structuredClone(simState);
@@ -624,7 +627,7 @@ export const bridge = {
     } else {
       simState.slides.cleared = !simState.slides.cleared;
       simState.eventLog.unshift(
-        `[propresenter] ${simState.slides.cleared ? "CLEAR" : "RESTORE"} layer requested for '${simState.slides.presentationName}'`
+        `[slideHttp] ${simState.slides.cleared ? "CLEAR" : "RESTORE"} layer requested for '${simState.slides.presentationName}'`
       );
     }
     return structuredClone(simState);
@@ -636,7 +639,7 @@ export const bridge = {
     }
     applySlidePosition(simState, slideNumber);
     simState.eventLog.unshift(
-      `[propresenter] Direct slide select -> ${simState.slides.currentSlide}/${simState.slides.totalSlides} '${simState.slides.presentationName}'`
+      `[slideHttp] Direct slide select -> ${simState.slides.currentSlide}/${simState.slides.totalSlides} '${simState.slides.presentationName}'`
     );
     return structuredClone(simState);
   },
@@ -679,51 +682,51 @@ export const bridge = {
     return structuredClone(simState);
   },
 
-  async controlProPresenterPlaylist(
+  async controlSlideHttpPlaylist(
     kind: "media" | "audio",
     direction: "next" | "previous"
   ): Promise<AppStateSnapshot> {
     if (isTauri()) {
-      return invokeTauri<AppStateSnapshot>("propresenter_playlist_control", { kind, direction });
+      return invokeTauri<AppStateSnapshot>("slide_http_playlist_control", { kind, direction });
     }
-    simState.eventLog.unshift(`[propresenter] ${kind} playlist ${direction} (simulated)`);
+    simState.eventLog.unshift(`[slideHttp] ${kind} playlist ${direction} (simulated)`);
     return structuredClone(simState);
   },
 
-  async controlProPresenterTransport(
+  async controlSlideHttpTransport(
     layer: string,
     operation: "play" | "pause" | "go_to_end"
   ): Promise<AppStateSnapshot> {
     if (isTauri()) {
-      return invokeTauri<AppStateSnapshot>("propresenter_transport_control", { layer, operation });
+      return invokeTauri<AppStateSnapshot>("slide_http_transport_control", { layer, operation });
     }
     if (layer === "presentation" && simState.slides.playback) {
       simState.slides.playback.isPlaying = operation === "play";
     }
-    simState.eventLog.unshift(`[propresenter] ${layer} transport ${operation} (simulated)`);
+    simState.eventLog.unshift(`[slideHttp] ${layer} transport ${operation} (simulated)`);
     return structuredClone(simState);
   },
 
-  async seekProPresenterTransport(layer: string, seconds: number): Promise<AppStateSnapshot> {
+  async seekSlideHttpTransport(layer: string, seconds: number): Promise<AppStateSnapshot> {
     if (isTauri()) {
-      return invokeTauri<AppStateSnapshot>("propresenter_transport_seek", { layer, seconds });
+      return invokeTauri<AppStateSnapshot>("slide_http_transport_seek", { layer, seconds });
     }
     if (layer === "presentation" && simState.slides.playback) {
       simState.slides.playback.positionMs = Math.max(0, seconds * 1000);
     }
-    simState.eventLog.unshift(`[propresenter] ${layer} seek -> ${seconds.toFixed(1)}s (simulated)`);
+    simState.eventLog.unshift(`[slideHttp] ${layer} seek -> ${seconds.toFixed(1)}s (simulated)`);
     return structuredClone(simState);
   },
 
-  async triggerProPresenterClearGroup(id: string): Promise<AppStateSnapshot> {
+  async triggerSlideHttpClearGroup(id: string): Promise<AppStateSnapshot> {
     if (isTauri()) {
-      return invokeTauri<AppStateSnapshot>("propresenter_clear_group", { id });
+      return invokeTauri<AppStateSnapshot>("slide_http_clear_group", { id });
     }
-    simState.eventLog.unshift(`[propresenter] clear group '${id}' (simulated)`);
+    simState.eventLog.unshift(`[slideHttp] clear group '${id}' (simulated)`);
     return structuredClone(simState);
   },
 
-  async refreshProPresenterCatalog(
+  async refreshSlideHttpCatalog(
     kind:
       | "looks"
       | "look_current"
@@ -734,13 +737,13 @@ export const bridge = {
       | "clear_groups"
   ): Promise<AppStateSnapshot> {
     if (isTauri()) {
-      return invokeTauri<AppStateSnapshot>("propresenter_catalog", { kind });
+      return invokeTauri<AppStateSnapshot>("slide_http_catalog", { kind });
     }
-    simState.eventLog.unshift(`[propresenter] refresh ${kind} catalog (simulated)`);
+    simState.eventLog.unshift(`[slideHttp] refresh ${kind} catalog (simulated)`);
     return structuredClone(simState);
   },
 
-  async triggerProPresenterResource(
+  async triggerSlideHttpResource(
     action:
       | "trigger_look"
       | "trigger_prop"
@@ -751,13 +754,13 @@ export const bridge = {
     id: string
   ): Promise<AppStateSnapshot> {
     if (isTauri()) {
-      return invokeTauri<AppStateSnapshot>("propresenter_resource", { action, id });
+      return invokeTauri<AppStateSnapshot>("slide_http_resource", { action, id });
     }
-    simState.eventLog.unshift(`[propresenter] ${action} '${id}' (simulated)`);
+    simState.eventLog.unshift(`[slideHttp] ${action} '${id}' (simulated)`);
     return structuredClone(simState);
   },
 
-  async controlEasyWorship(
+  async controlSlideTcp(
     action:
       | "nextSlide"
       | "prevSlide"
@@ -776,23 +779,23 @@ export const bridge = {
       | "Refresh"
   ): Promise<AppStateSnapshot> {
     if (isTauri()) {
-      return invokeTauri<AppStateSnapshot>("easyworship_control", { action });
+      return invokeTauri<AppStateSnapshot>("slide_tcp_control", { action });
     }
-    simState.eventLog.unshift(`[easyworship] action ${action} (simulated)`);
+    simState.eventLog.unshift(`[slideTcp] action ${action} (simulated)`);
     if (action === "gotoStartSlide" || action === "gotoStartPresentation") {
       applySlidePosition(simState, 1);
     }
     return structuredClone(simState);
   },
 
-  async getEasyWorshipSlideImage(
+  async getSlideTcpSlideImage(
     rectype: string,
     presRowid: string,
     slideRowid: string,
     revision: string
   ): Promise<AppStateSnapshot> {
     if (isTauri()) {
-      return invokeTauri<AppStateSnapshot>("easyworship_get_slide_image", {
+      return invokeTauri<AppStateSnapshot>("slide_tcp_get_slide_image", {
         rectype,
         presRowid,
         slideRowid,
@@ -800,30 +803,30 @@ export const bridge = {
       });
     }
     simState.eventLog.unshift(
-      `[easyworship] getSlideImage ${rectype}/${presRowid}/${slideRowid} (simulated)`
+      `[slideTcp] getSlideImage ${rectype}/${presRowid}/${slideRowid} (simulated)`
     );
     return structuredClone(simState);
   },
 
   /** Raw JPEG bytes for the key in `state.slides.image`; null when no image is cached. */
-  async getEasyWorshipImage(key: string): Promise<Uint8Array | null> {
+  async getSlideTcpImage(key: string): Promise<Uint8Array | null> {
     if (!isTauri() || !key) return null;
-    const bytes = await invokeTauri<number[] | null>("easyworship_image", { key });
+    const bytes = await invokeTauri<number[] | null>("slide_tcp_image", { key });
     return bytes ? new Uint8Array(bytes) : null;
   },
 
   /** Local display override only: the documented TCP catalog has no black/clear/logo toggle. */
-  async setEasyWorshipScreenFlag(
+  async setSlideTcpScreenFlag(
     field: "black" | "clear" | "logo",
     value: boolean
   ): Promise<AppStateSnapshot> {
     if (isTauri()) {
-      return invokeTauri<AppStateSnapshot>("easyworship_screen_flag", { field, value });
+      return invokeTauri<AppStateSnapshot>("slide_tcp_screen_flag", { field, value });
     }
     simState.slides.screen[field] = value;
     if (field === "clear") simState.slides.cleared = value;
     simState.eventLog.unshift(
-      `[easyworship] local-only ${field} override set to ${value} (simulated)`
+      `[slideTcp] local-only ${field} override set to ${value} (simulated)`
     );
     return structuredClone(simState);
   },
@@ -838,36 +841,36 @@ export const bridge = {
     return structuredClone(simState);
   },
 
-  async switchNdiReceiver(receiverId: string, sourceName: string): Promise<AppStateSnapshot> {
-    if (isTauri()) return invokeTauri("switch_ndi_receiver", { receiverId, sourceName });
-    simState.ndiReceivers = simState.ndiReceivers.map((r) =>
+  async switchIpVideoReceiver(receiverId: string, sourceName: string): Promise<AppStateSnapshot> {
+    if (isTauri()) return invokeTauri("switch_ip_video_receiver", { receiverId, sourceName });
+    simState.ipVideoReceivers = simState.ipVideoReceivers.map((r) =>
       r.id === receiverId
         ? { ...r, subscribedSource: sourceName, status: sourceName === r.expectedSource ? "CONNECTED" : "DRIFT" }
         : r
     );
     simState.eventLog.unshift(
-      `[ndi-discovery-5959] Sent <control_receiver><command>connect</command> to ${receiverId} -> '${sourceName}'`
+      `[ip-video-discovery-5959] Sent <control_receiver><command>connect</command> to ${receiverId} -> '${sourceName}'`
     );
     return structuredClone(simState);
   },
 
-  async autoHealNdiReceivers(): Promise<AppStateSnapshot> {
-    if (isTauri()) return invokeTauri("auto_heal_ndi_receivers");
-    simState.ndiReceivers = simState.ndiReceivers.map((r) => ({
+  async autoHealIpVideoReceivers(): Promise<AppStateSnapshot> {
+    if (isTauri()) return invokeTauri("auto_heal_ip_video_receivers");
+    simState.ipVideoReceivers = simState.ipVideoReceivers.map((r) => ({
       ...r,
       subscribedSource: r.expectedSource,
       status: "CONNECTED",
     }));
-    simState.eventLog.unshift("[ndi-discovery-5959] Auto-healed all NDI 6 receivers to expected show sources");
+    simState.eventLog.unshift("[ip-video-discovery-5959] Auto-healed all IP Video 6 receivers to expected show sources");
     return structuredClone(simState);
   },
 
-  async flashDanteIdentify(routeId: string): Promise<AppStateSnapshot> {
-    if (isTauri()) return invokeTauri("flash_dante_identify", { routeId });
-    simState.danteRoutes = simState.danteRoutes.map((r) =>
+  async flashAoipIdentify(routeId: string): Promise<AppStateSnapshot> {
+    if (isTauri()) return invokeTauri("flash_aoip_identify", { routeId });
+    simState.aoipRoutes = simState.aoipRoutes.map((r) =>
       r.id === routeId ? { ...r, identifyFlashing: !r.identifyFlashing } : r
     );
-    simState.eventLog.unshift(`[dante-conmon] Sent IDENTIFY_QUERY (0x0063) for route ${routeId} on UDP :8700`);
+    simState.eventLog.unshift(`[aoip-conmon] Sent IDENTIFY_QUERY (0x0063) for route ${routeId} on UDP :8700`);
     return structuredClone(simState);
   },
 
@@ -952,7 +955,9 @@ export const bridge = {
 export async function checkForUpdate(): Promise<UpdateInfo | null> {
   if (!isTauri()) {
     try {
-      const resp = await fetch("https://api.github.com/repos/KhanTheDaleK1/One-Ring/releases");
+      const repoSlug = (import.meta.env.VITE_UPDATE_REPO as string | undefined)?.trim();
+      if (!repoSlug) return null;
+      const resp = await fetch(`https://api.github.com/repos/${repoSlug}/releases`);
       if (!resp.ok) return null;
       const releases = await resp.json();
       if (!releases || releases.length === 0) return null;
@@ -1020,7 +1025,7 @@ export async function listOpenWindows(): Promise<string[]> {
       return [];
     }
   }
-  return ["ProPresenter — Main Presentation", "Google Chrome — YouTube Studio", "PowerPoint — Sunday Announcements"];
+  return ["SlideHttp — Main Presentation", "Web Browser — Video Studio", "Presentation — Sunday Announcements"];
 }
 
 export interface InstalledAudioPlugin {
@@ -1030,7 +1035,7 @@ export interface InstalledAudioPlugin {
 }
 
 export interface MediaEngineStatus {
-  obsBinaryPath?: string | null;
+  broadcastBinaryPath?: string | null;
   ffmpegBinaryPath?: string | null;
   vstPluginCount: number;
   auPluginCount: number;
@@ -1046,7 +1051,7 @@ export async function scanInstalledAudioPlugins(): Promise<InstalledAudioPlugin[
     }
   }
   return [
-    { name: "ValhallaSupermassive", format: "VST3", path: "/Library/Audio/Plug-Ins/VST3/ValhallaSupermassive.vst3" },
+    { name: "StudioReverb", format: "VST3", path: "/Library/Audio/Plug-Ins/VST3/StudioReverb.vst3" },
     { name: "AUDelay", format: "AU", path: "/Library/Audio/Plug-Ins/Components/AUDelay.component" },
   ];
 }
@@ -1059,7 +1064,7 @@ export async function getMediaEngineStatus(): Promise<MediaEngineStatus | null> 
       return null;
     }
   }
-  return { obsBinaryPath: null, ffmpegBinaryPath: "/opt/homebrew/bin/ffmpeg", vstPluginCount: 1, auPluginCount: 1, daemonRunning: false };
+  return { broadcastBinaryPath: null, ffmpegBinaryPath: "/opt/homebrew/bin/ffmpeg", vstPluginCount: 1, auPluginCount: 1, daemonRunning: false };
 }
 
 export async function startHeadlessMediaDaemon(): Promise<string> {
@@ -1069,23 +1074,23 @@ export async function startHeadlessMediaDaemon(): Promise<string> {
   return "Daemon simulated in browser";
 }
 
-export async function routeDanteCrosspoint(rxIp: string, rxChanId: number, txChan: string, txDev: string): Promise<AppStateSnapshot> {
+export async function routeAoipCrosspoint(rxIp: string, rxChanId: number, txChan: string, txDev: string): Promise<AppStateSnapshot> {
   if (isTauri()) {
-    return invokeTauri<AppStateSnapshot>("route_dante_crosspoint", { rxIp, rxChanId, txChan, txDev });
+    return invokeTauri<AppStateSnapshot>("route_aoip_crosspoint", { rxIp, rxChanId, txChan, txDev });
   }
   return structuredClone(simState);
 }
 
-export async function triggerNdiPtz(sourceId: string, presetIndex?: number, pan?: number, tilt?: number): Promise<AppStateSnapshot> {
+export async function triggerIpVideoPtz(sourceId: string, presetIndex?: number, pan?: number, tilt?: number): Promise<AppStateSnapshot> {
   if (isTauri()) {
-    return invokeTauri<AppStateSnapshot>("trigger_ndi_ptz", { sourceId, presetIndex: presetIndex ?? null, pan: pan ?? null, tilt: tilt ?? null });
+    return invokeTauri<AppStateSnapshot>("trigger_ip_video_ptz", { sourceId, presetIndex: presetIndex ?? null, pan: pan ?? null, tilt: tilt ?? null });
   }
   return structuredClone(simState);
 }
 
-export async function sendX32Osc(address: string, value: number): Promise<AppStateSnapshot> {
+export async function sendConsoleOsc(address: string, value: number): Promise<AppStateSnapshot> {
   if (isTauri()) {
-    return invokeTauri<AppStateSnapshot>("send_x32_osc", { address, value });
+    return invokeTauri<AppStateSnapshot>("send_console_osc", { address, value });
   }
   return structuredClone(simState);
 }
@@ -1147,14 +1152,14 @@ export async function stopReplayBuffer(): Promise<string> {
   return "Stopped Replay Buffer";
 }
 
-export interface ImportedEwsxSong {
+export interface ImportedSlideSong {
   title: string;
   rawLyrics: string;
 }
 
-export async function importEwsxSchedule(filePath: string): Promise<ImportedEwsxSong[]> {
+export async function importSlideArchive(filePath: string): Promise<ImportedSlideSong[]> {
   if (isTauri()) {
-    return invokeTauri<ImportedEwsxSong[]>("import_ewsx_schedule", { filePath });
+    return invokeTauri<ImportedSlideSong[]>("import_slide_archive", { filePath });
   }
   return [];
 }
@@ -1166,16 +1171,16 @@ export async function remuxRecordingToMp4(filePath: string): Promise<string> {
   return `Remuxed cleanly to ${filePath.replace(/\.[^/.]+$/, "")}.mp4 (browser mode simulated)`;
 }
 
-export async function sendObsStreamCaption(text: string): Promise<string> {
+export async function sendBroadcastStreamCaption(text: string): Promise<string> {
   if (isTauri()) {
-    return invokeTauri<string>("send_obs_stream_caption", { text });
+    return invokeTauri<string>("send_broadcast_stream_caption", { text });
   }
   return text ? `CC sent (local fallback): "${text}"` : "Cleared stream captions";
 }
 
-export async function dispatchObsStudioCommand(action: string, arg?: string): Promise<string> {
+export async function dispatchBroadcastStudioCommand(action: string, arg?: string): Promise<string> {
   if (isTauri()) {
-    return invokeTauri<string>("dispatch_obs_studio_command", { action, arg: arg ?? null });
+    return invokeTauri<string>("dispatch_broadcast_studio_command", { action, arg: arg ?? null });
   }
   return `Dispatched ${action}`;
 }
@@ -1196,7 +1201,7 @@ export async function ptzDriveCamera(
       zoomSpeed,
     });
   }
-  return `VISCA Pan(${panSpeed})/Tilt(${tiltSpeed})/Zoom(${zoomSpeed}) dispatched to ${ip}:${port}`;
+  return `PTZ-IP Pan(${panSpeed})/Tilt(${tiltSpeed})/Zoom(${zoomSpeed}) dispatched to ${ip}:${port}`;
 }
 
 export async function ptzRecallPreset(
@@ -1207,7 +1212,7 @@ export async function ptzRecallPreset(
   if (isTauri()) {
     return invokeTauri<string>("ptz_recall_preset", { ip, port, preset });
   }
-  return `VISCA Preset ${preset} recalled on ${ip}:${port}`;
+  return `PTZ-IP Preset ${preset} recalled on ${ip}:${port}`;
 }
 
 export async function ptzStorePreset(
@@ -1218,5 +1223,5 @@ export async function ptzStorePreset(
   if (isTauri()) {
     return invokeTauri<string>("ptz_store_preset", { ip, port, preset });
   }
-  return `VISCA Preset ${preset} saved on ${ip}:${port}`;
+  return `PTZ-IP Preset ${preset} saved on ${ip}:${port}`;
 }

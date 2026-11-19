@@ -299,7 +299,7 @@ export const TimersAndAlertsModal: React.FC<TimersAndAlertsModalProps> = ({
                 Timers, Clock & Stage / Nursery Alerts
               </h3>
               <p style={{ margin: "2px 0 0", fontSize: 12, color: "#94A3B8" }}>
-                ProPresenter / EasyWorship stage confidence timers and real-time FOH & nursery alert ticker.
+                SlideHttp / SlideTcp stage confidence timers and real-time FOH & nursery alert ticker.
               </p>
             </div>
           </div>

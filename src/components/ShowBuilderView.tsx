@@ -24,10 +24,10 @@ import type {
 } from "../types";
 import { buildShowFile, downloadShowFile, readShowFile } from "../showFile";
 
-export type BuilderIntent = "cue" | "dca" | "camera" | "slides" | null;
+export type BuilderIntent = "broadcast" | "dca" | "camera" | "slides" | null;
 
 type ModalState =
-  | { kind: "cue"; cue?: ServiceCue }
+  | { kind: "broadcast"; cue?: ServiceCue }
   | { kind: "dca"; dca?: DcaChannel }
   | { kind: "camera"; camera?: CameraPreset }
   | { kind: "slides" }
@@ -174,7 +174,7 @@ export const ShowBuilderView: React.FC<ShowBuilderViewProps> = ({
 
   useEffect(() => {
     if (!intent) return;
-    if (intent === "cue") setModal({ kind: "cue" });
+    if (intent === "broadcast") setModal({ kind: "broadcast" });
     if (intent === "dca") setModal({ kind: "dca" });
     if (intent === "camera") setModal({ kind: "camera" });
     if (intent === "slides") setModal({ kind: "slides" });
@@ -283,7 +283,7 @@ export const ShowBuilderView: React.FC<ShowBuilderViewProps> = ({
   };
 
   const promptButtons = [
-    { label: "Add First Cue", icon: <ListPlus size={18} />, action: () => setModal({ kind: "cue" }) },
+    { label: "Add First Cue", icon: <ListPlus size={18} />, action: () => setModal({ kind: "broadcast" }) },
     { label: "Add Channel / DCA", icon: <SlidersHorizontal size={18} />, action: () => setModal({ kind: "dca" }) },
     { label: "Add Camera Preset", icon: <Camera size={18} />, action: () => setModal({ kind: "camera" }) },
     { label: "Import Worship Songs / Slides", icon: <Music4 size={18} />, action: () => setModal({ kind: "slides" }) },
@@ -373,7 +373,7 @@ export const ShowBuilderView: React.FC<ShowBuilderViewProps> = ({
           title="Cues"
           count={state.cues.length}
           addLabel="Add Cue"
-          onAdd={() => setModal({ kind: "cue" })}
+          onAdd={() => setModal({ kind: "broadcast" })}
         >
           {state.cues.length === 0 ? (
             <div style={{ fontSize: 12, color: "#6B7280" }}>No cues yet. Add your first cue above.</div>
@@ -390,7 +390,7 @@ export const ShowBuilderView: React.FC<ShowBuilderViewProps> = ({
                     </div>
                   </div>
                   <div style={{ display: "flex", gap: 4 }}>
-                    <button type="button" className="btn" title="Edit cue" onClick={() => setModal({ kind: "cue", cue })} style={{ width: 30, height: 30, display: "grid", placeItems: "center", padding: 0 }}>
+                    <button type="button" className="btn" title="Edit cue" onClick={() => setModal({ kind: "broadcast", cue })} style={{ width: 30, height: 30, display: "grid", placeItems: "center", padding: 0 }}>
                       <Pencil size={13} />
                     </button>
                     <button type="button" className="btn" title="Delete cue" onClick={() => deleteCue(cue.id)} style={{ width: 30, height: 30, display: "grid", placeItems: "center", padding: 0, borderColor: "#7F1D1D" }}>
@@ -417,7 +417,7 @@ export const ShowBuilderView: React.FC<ShowBuilderViewProps> = ({
                 <div key={dca.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, padding: "8px 10px", borderRadius: 8, background: "#1C222D", border: "1px solid #2A3241" }}>
                   <div style={{ minWidth: 0 }}>
                     <div style={{ fontWeight: 700, fontSize: 13 }}>DCA {dca.number}: {dca.name}</div>
-                    <div className="mono" style={{ fontSize: 10, color: "#6B7280" }}>{dca.danteTxChannel || "No source channel"}</div>
+                    <div className="mono" style={{ fontSize: 10, color: "#6B7280" }}>{dca.aoipTxChannel || "No source channel"}</div>
                   </div>
                   <div style={{ display: "flex", gap: 4 }}>
                     <button type="button" className="btn" title="Edit channel" onClick={() => setModal({ kind: "dca", dca })} style={{ width: 30, height: 30, display: "grid", placeItems: "center", padding: 0 }}>
@@ -485,7 +485,7 @@ export const ShowBuilderView: React.FC<ShowBuilderViewProps> = ({
         </ShowSection>
       </div>
 
-      {modal?.kind === "cue" && (
+      {modal?.kind === "broadcast" && (
         <CueEditor
           state={state}
           initial={modal.cue}
@@ -526,7 +526,7 @@ const CueEditor: React.FC<{
 }> = ({ state, initial, onClose, onSave }) => {
   const [title, setTitle] = useState(initial?.title ?? "");
   const [actions, setActions] = useState((initial?.actions ?? []).join("\n"));
-  const [obsScene, setObsScene] = useState(initial?.obsScene ?? "");
+  const [broadcastScene, setBroadcastScene] = useState(initial?.broadcastScene ?? "");
   const [verticalScene, setVerticalScene] = useState(initial?.verticalScene ?? "");
   const [cameraPresetId, setCameraPresetId] = useState(initial?.cameraPresetId ?? "");
   const [slideLabel, setSlideLabel] = useState(initial?.slideLabel ?? "");
@@ -555,7 +555,7 @@ const CueEditor: React.FC<{
         </Field>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
           <Field label="Program scene">
-            <input style={inputStyle} value={obsScene} onChange={(e) => setObsScene(e.target.value)} placeholder="Program scene name" />
+            <input style={inputStyle} value={broadcastScene} onChange={(e) => setBroadcastScene(e.target.value)} placeholder="Program scene name" />
           </Field>
           <Field label="Vertical / social scene">
             <input style={inputStyle} value={verticalScene} onChange={(e) => setVerticalScene(e.target.value)} placeholder="Vertical scene name" />
@@ -618,11 +618,11 @@ const CueEditor: React.FC<{
             disabled={!title.trim()}
             onClick={() =>
               onSave({
-                id: initial?.id ?? makeId("cue"),
+                id: initial?.id ?? makeId("broadcast"),
                 index: initial?.index ?? state.cues.length + 1,
                 title: title.trim(),
                 actions: actions.split("\n").map((line) => line.trim()).filter(Boolean),
-                obsScene,
+                broadcastScene,
                 verticalScene,
                 cameraPresetId,
                 slideLabel,
@@ -649,7 +649,7 @@ const DcaEditor: React.FC<{
 }> = ({ initial, onClose, onSave }) => {
   const [number, setNumber] = useState(initial?.number ?? 1);
   const [name, setName] = useState(initial?.name ?? "");
-  const [source, setSource] = useState(initial?.danteTxChannel ?? "");
+  const [source, setSource] = useState(initial?.aoipTxChannel ?? "");
   const [minDb, setMinDb] = useState(initial?.minDb ?? -6);
   const [maxDb, setMaxDb] = useState(initial?.maxDb ?? 6);
   const [levelDb, setLevelDb] = useState(initial?.levelDb ?? 0);
@@ -709,7 +709,7 @@ const DcaEditor: React.FC<{
                 guardMute,
                 signalDb: -90,
                 signalPresent: false,
-                danteTxChannel: source,
+                aoipTxChannel: source,
               })
             }
             style={primaryButton}

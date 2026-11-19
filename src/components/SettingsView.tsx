@@ -27,20 +27,20 @@ interface SettingsViewProps {
 }
 
 type SettingsTab =
-  | "x32"
-  | "dante"
+  | "console"
+  | "aoip"
   | "broadcast"
   | "slides"
-  | "ndi"
+  | "ipVideo"
   | "general"
   | "station";
 
 const TABS: Array<{ id: SettingsTab; label: string; icon: React.ReactNode }> = [
-  { id: "x32", label: "Audio Mixing", icon: <Sliders size={15} /> },
-  { id: "dante", label: "Audio Network", icon: <Network size={15} /> },
+  { id: "console", label: "Audio Mixing", icon: <Sliders size={15} /> },
+  { id: "aoip", label: "Audio Network", icon: <Network size={15} /> },
   { id: "broadcast", label: "Broadcasting", icon: <Video size={15} /> },
   { id: "slides", label: "Slides", icon: <Monitor size={15} /> },
-  { id: "ndi", label: "Cameras", icon: <Camera size={15} /> },
+  { id: "ipVideo", label: "Cameras", icon: <Camera size={15} /> },
   { id: "station", label: "Station & Sync", icon: <Users size={15} /> },
   { id: "general", label: "General", icon: <Shield size={15} /> },
 ];
@@ -111,7 +111,7 @@ function cloneSettings(settings: AppSettings): AppSettings {
 }
 
 export const SettingsView: React.FC<SettingsViewProps> = ({ state, onSave, onCheckUpdates }) => {
-  const [tab, setTab] = useState<SettingsTab>("x32");
+  const [tab, setTab] = useState<SettingsTab>("console");
   const [draft, setDraft] = useState<AppSettings>(() => cloneSettings(state.settings));
   const [showSecret, setShowSecret] = useState(false);
   const [showMidiModal, setShowMidiModal] = useState(false);
@@ -143,7 +143,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ state, onSave, onChe
 
   const pinValid =
     draft.general.engineerPin === "" || /^\d{4,8}$/.test(draft.general.engineerPin);
-  const x32Valid = draft.x32.oscPort > 0;
+  const consoleValid = draft.console.oscPort > 0;
 
   function patchSection<K extends keyof AppSettings>(
     key: K,
@@ -154,7 +154,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ state, onSave, onChe
   }
 
   const handleSave = () => {
-    if (!pinValid || !x32Valid) return;
+    if (!pinValid || !consoleValid) return;
     lastSavedSettingsRef.current = JSON.stringify(draft);
     onSave(cloneSettings(draft));
     setSaveNote("Saved to AppState — persisted by the Rust backend.");
@@ -176,11 +176,11 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ state, onSave, onChe
     });
   };
 
-  const addDestination = (platform: "youtube" | "facebook" | "custom") => {
+  const addDestination = (platform: "videoPlatform" | "socialPlatform" | "custom") => {
     const id = `${platform}-${Date.now().toString(36)}`;
     const preset = {
-      youtube: { platform: "YouTube Live", rtmpUrl: "rtmps://a.rtmp.youtube.com/live2" },
-      facebook: { platform: "Facebook Live", rtmpUrl: "rtmps://live-api-s.facebook.com:443/rtmp" },
+      videoPlatform: { platform: "Video Platform Live", rtmpUrl: "rtmps://ingest.example.com/live2" },
+      socialPlatform: { platform: "Social Platform Live", rtmpUrl: "rtmps://ingest.example.com:443/rtmp" },
       custom: { platform: "Custom RTMPS", rtmpUrl: "" },
     }[platform];
     patchSection("broadcast", {
@@ -198,18 +198,18 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ state, onSave, onChe
   };
 
   const importShowChannels = () => {
-    patchSection("x32", {
+    patchSection("console", {
       dcaMappings: state.dcas.map((dca) => ({
         dcaId: dca.id,
         dcaNumber: dca.number,
         dcaName: dca.name,
-        sourceChannel: dca.danteTxChannel,
+        sourceChannel: dca.aoipTxChannel,
       })),
     });
   };
 
   const importShowPresets = () => {
-    patchSection("ndiPtz", {
+    patchSection("ipVideoPtz", {
       presetNames: state.cameras.map((camera) => ({
         presetId: camera.id,
         cameraId: camera.cameraId,
@@ -219,16 +219,16 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ state, onSave, onChe
   };
 
   const updateDcaMapping = (dcaId: string, sourceChannel: string) => {
-    patchSection("x32", {
-      dcaMappings: draft.x32.dcaMappings.map((mapping) =>
+    patchSection("console", {
+      dcaMappings: draft.console.dcaMappings.map((mapping) =>
         mapping.dcaId === dcaId ? { ...mapping, sourceChannel } : mapping
       ),
     });
   };
 
   const updatePresetName = (presetId: string, label: string) => {
-    patchSection("ndiPtz", {
-      presetNames: draft.ndiPtz.presetNames.map((preset) =>
+    patchSection("ipVideoPtz", {
+      presetNames: draft.ipVideoPtz.presetNames.map((preset) =>
         preset.presetId === presetId ? { ...preset, label } : preset
       ),
     });
@@ -281,7 +281,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ state, onSave, onChe
             type="button"
             className="btn"
             onClick={handleSave}
-            disabled={!dirty || !pinValid || !x32Valid}
+            disabled={!dirty || !pinValid || !consoleValid}
             style={{
               height: 38,
               padding: "0 16px",
@@ -297,7 +297,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ state, onSave, onChe
         </div>
       </div>
 
-      {(saveNote || !pinValid || !x32Valid) && (
+      {(saveNote || !pinValid || !consoleValid) && (
         <div
           style={{
             marginBottom: 14,
@@ -310,7 +310,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ state, onSave, onChe
           }}
         >
           {saveNote ??
-            [!x32Valid && "OSC port must be between 1 and 65535.", !pinValid && "Engineer PIN must be empty or 4–8 digits."]
+            [!consoleValid && "OSC port must be between 1 and 65535.", !pinValid && "Engineer PIN must be empty or 4–8 digits."]
               .filter(Boolean)
               .join(" ")}
         </div>
@@ -340,7 +340,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ state, onSave, onChe
         ))}
       </div>
 
-      {tab === "x32" && (
+      {tab === "console" && (
         <div className="card" style={{ padding: 20, display: "grid", gap: 14 }}>
           <h3 style={{ margin: 0 }}>Audio Mixing — Console Control</h3>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 12 }}>
@@ -348,8 +348,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ state, onSave, onChe
               <input
                 style={inputStyle}
                 className="mono"
-                value={draft.x32.ipAddress}
-                onChange={(e) => patchSection("x32", { ipAddress: e.target.value })}
+                value={draft.console.ipAddress}
+                onChange={(e) => patchSection("console", { ipAddress: e.target.value })}
                 placeholder="192.168.1.50"
               />
             </Field>
@@ -360,8 +360,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ state, onSave, onChe
                 type="number"
                 min={1}
                 max={65535}
-                value={draft.x32.oscPort}
-                onChange={(e) => patchSection("x32", { oscPort: Number(e.target.value) })}
+                value={draft.console.oscPort}
+                onChange={(e) => patchSection("console", { oscPort: Number(e.target.value) })}
               />
             </Field>
             <Field label="Keepalive interval (s)" hint="Keepalive subscription refresh cadence.">
@@ -371,9 +371,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ state, onSave, onChe
                 type="number"
                 min={1}
                 max={120}
-                value={draft.x32.keepaliveIntervalSec}
+                value={draft.console.keepaliveIntervalSec}
                 onChange={(e) =>
-                  patchSection("x32", { keepaliveIntervalSec: Number(e.target.value) })
+                  patchSection("console", { keepaliveIntervalSec: Number(e.target.value) })
                 }
               />
             </Field>
@@ -389,7 +389,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ state, onSave, onChe
               </button>
             </div>
             <div style={{ display: "grid", gap: 8 }}>
-              {draft.x32.dcaMappings.map((mapping) => (
+              {draft.console.dcaMappings.map((mapping) => (
                 <div
                   key={mapping.dcaId}
                   style={{ display: "grid", gridTemplateColumns: "180px 1fr", gap: 12, alignItems: "center" }}
@@ -411,7 +411,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ state, onSave, onChe
                   />
                 </div>
               ))}
-              {draft.x32.dcaMappings.length === 0 && (
+              {draft.console.dcaMappings.length === 0 && (
                 <div style={{ fontSize: 12, color: "#9CA3AF" }}>
                   No DCA mappings yet. Add channels in the show builder, then import them here.
                 </div>
@@ -421,7 +421,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ state, onSave, onChe
         </div>
       )}
 
-      {tab === "dante" && (
+      {tab === "aoip" && (
         <div className="card" style={{ padding: 20, display: "grid", gap: 14 }}>
           <h3 style={{ margin: 0 }}>Audio Network</h3>
           <div style={{ display: "grid", gridTemplateColumns: "1.2fr 1fr 1fr", gap: 12 }}>
@@ -429,12 +429,12 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ state, onSave, onChe
               <input
                 style={inputStyle}
                 className="mono"
-                list="dante-interfaces"
-                value={draft.dante.subnetInterface}
-                onChange={(e) => patchSection("dante", { subnetInterface: e.target.value })}
+                list="aoip-interfaces"
+                value={draft.aoip.subnetInterface}
+                onChange={(e) => patchSection("aoip", { subnetInterface: e.target.value })}
                 placeholder="en0 — Audio VLAN"
               />
-              <datalist id="dante-interfaces">
+              <datalist id="aoip-interfaces">
                 <option value="Auto (default route)" />
                 <option value="en0 — Ethernet / Audio VLAN" />
                 <option value="en1 — Wi-Fi" />
@@ -449,8 +449,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ state, onSave, onChe
                 type="number"
                 min={1}
                 max={65535}
-                value={draft.dante.conmonMeterPort}
-                onChange={(e) => patchSection("dante", { conmonMeterPort: Number(e.target.value) })}
+                value={draft.aoip.conmonMeterPort}
+                onChange={(e) => patchSection("aoip", { conmonMeterPort: Number(e.target.value) })}
               />
             </Field>
             <Field label="Control UDP port" hint="Device control / identify channel. Default 8700.">
@@ -460,9 +460,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ state, onSave, onChe
                 type="number"
                 min={1}
                 max={65535}
-                value={draft.dante.conmonControlPort}
+                value={draft.aoip.conmonControlPort}
                 onChange={(e) =>
-                  patchSection("dante", { conmonControlPort: Number(e.target.value) })
+                  patchSection("aoip", { conmonControlPort: Number(e.target.value) })
                 }
               />
             </Field>
@@ -479,9 +479,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ state, onSave, onChe
                   className="mono"
                   type="number"
                   min={1}
-                  value={draft.dante.clockSyncWarnMs}
+                  value={draft.aoip.clockSyncWarnMs}
                   onChange={(e) =>
-                    patchSection("dante", { clockSyncWarnMs: Number(e.target.value) })
+                    patchSection("aoip", { clockSyncWarnMs: Number(e.target.value) })
                   }
                 />
               </Field>
@@ -491,9 +491,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ state, onSave, onChe
                   className="mono"
                   type="number"
                   min={1}
-                  value={draft.dante.clockSyncErrorMs}
+                  value={draft.aoip.clockSyncErrorMs}
                   onChange={(e) =>
-                    patchSection("dante", { clockSyncErrorMs: Number(e.target.value) })
+                    patchSection("aoip", { clockSyncErrorMs: Number(e.target.value) })
                   }
                 />
               </Field>
@@ -514,7 +514,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ state, onSave, onChe
                     className="mono"
                     value={dest.rtmpUrl}
                     onChange={(e) => updateDestination(dest.id, { rtmpUrl: e.target.value })}
-                    placeholder="rtmps://a.rtmp.youtube.com/live2"
+                    placeholder="rtmps://ingest.example.com/live2"
                   />
                 </Field>
                 <Field label="Stream key">
@@ -582,8 +582,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ state, onSave, onChe
                     patchSection("broadcast", { encoder: e.target.value as VideoEncoder })
                   }
                 >
-                  <option value="NVENC">NVENC (NVIDIA)</option>
-                  <option value="VideoToolbox">VideoToolbox (Apple)</option>
+                  <option value="HardwareGpu">Hardware GPU</option>
+                  <option value="HardwareMedia">Hardware Media</option>
                   <option value="Software">Software (x264)</option>
                 </select>
               </Field>
@@ -596,7 +596,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ state, onSave, onChe
         <div className="card" style={{ padding: 20, display: "grid", gap: 14 }}>
           <h3 style={{ margin: 0 }}>Slides & Presentation</h3>
           <SubSection
-            title="Song Library Credentials (CCLI SongSelect)"
+            title="Song Library Credentials (Song Library)"
             description="OAuth credentials for song search & import. Stored locally on the production machine."
           >
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
@@ -604,11 +604,11 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ state, onSave, onChe
                 <input
                   style={inputStyle}
                   className="mono"
-                  value={draft.slides.songselectClientId}
+                  value={draft.slides.songLibraryClientId}
                   onChange={(e) =>
-                    patchSection("slides", { songselectClientId: e.target.value })
+                    patchSection("slides", { songLibraryClientId: e.target.value })
                   }
-                  placeholder="songselect-client-id"
+                  placeholder="songLibrary-client-id"
                 />
               </Field>
               <Field label="OAuth client secret">
@@ -617,11 +617,11 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ state, onSave, onChe
                     style={{ ...inputStyle, paddingRight: 40 }}
                     className="mono"
                     type={showSecret ? "text" : "password"}
-                    value={draft.slides.songselectClientSecret}
+                    value={draft.slides.songLibraryClientSecret}
                     onChange={(e) =>
-                      patchSection("slides", { songselectClientSecret: e.target.value })
+                      patchSection("slides", { songLibraryClientSecret: e.target.value })
                     }
-                    placeholder="songselect-client-secret"
+                    placeholder="songLibrary-client-secret"
                   />
                   <button
                     type="button"
@@ -691,12 +691,12 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ state, onSave, onChe
                   style={inputStyle}
                   className="mono"
                   list="display-assignments"
-                  value={draft.slides.displayAssignments.ndiAlphaOutput}
+                  value={draft.slides.displayAssignments.ipVideoAlphaOutput}
                   onChange={(e) =>
                     patchSection("slides", {
                       displayAssignments: {
                         ...draft.slides.displayAssignments,
-                        ndiAlphaOutput: e.target.value,
+                        ipVideoAlphaOutput: e.target.value,
                       },
                     })
                   }
@@ -714,7 +714,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ state, onSave, onChe
         </div>
       )}
 
-      {tab === "ndi" && (
+      {tab === "ipVideo" && (
         <div className="card" style={{ padding: 20, display: "grid", gap: 14 }}>
           <h3 style={{ margin: 0 }}>Cameras & Discovery</h3>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
@@ -722,9 +722,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ state, onSave, onChe
               <input
                 style={inputStyle}
                 className="mono"
-                value={draft.ndiPtz.discoveryRangeStart}
+                value={draft.ipVideoPtz.discoveryRangeStart}
                 onChange={(e) =>
-                  patchSection("ndiPtz", { discoveryRangeStart: e.target.value })
+                  patchSection("ipVideoPtz", { discoveryRangeStart: e.target.value })
                 }
                 placeholder="192.168.1.1"
               />
@@ -733,9 +733,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ state, onSave, onChe
               <input
                 style={inputStyle}
                 className="mono"
-                value={draft.ndiPtz.discoveryRangeEnd}
+                value={draft.ipVideoPtz.discoveryRangeEnd}
                 onChange={(e) =>
-                  patchSection("ndiPtz", { discoveryRangeEnd: e.target.value })
+                  patchSection("ipVideoPtz", { discoveryRangeEnd: e.target.value })
                 }
                 placeholder="192.168.1.254"
               />
@@ -747,8 +747,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ state, onSave, onChe
                 type="number"
                 min={1}
                 max={65535}
-                value={draft.ndiPtz.viscaPort}
-                onChange={(e) => patchSection("ndiPtz", { viscaPort: Number(e.target.value) })}
+                value={draft.ipVideoPtz.ptzIpPort}
+                onChange={(e) => patchSection("ipVideoPtz", { ptzIpPort: Number(e.target.value) })}
               />
             </Field>
           </div>
@@ -758,7 +758,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ state, onSave, onChe
             description="Friendly labels shown on Show Mode preset buttons."
           >
             <div style={{ display: "grid", gap: 8 }}>
-              {draft.ndiPtz.presetNames.map((preset) => (
+              {draft.ipVideoPtz.presetNames.map((preset) => (
                 <div
                   key={preset.presetId}
                   style={{ display: "grid", gridTemplateColumns: "180px 1fr", gap: 12, alignItems: "center" }}
@@ -774,7 +774,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ state, onSave, onChe
                   />
                 </div>
               ))}
-              {draft.ndiPtz.presetNames.length === 0 && (
+              {draft.ipVideoPtz.presetNames.length === 0 && (
                 <div style={{ fontSize: 12, color: "#9CA3AF" }}>
                   No PTZ presets discovered yet.
                 </div>
