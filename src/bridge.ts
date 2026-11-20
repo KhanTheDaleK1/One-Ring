@@ -2349,3 +2349,63 @@ export async function stopIpVideoBridgeOutput(): Promise<IpVideoBridgeStatusInfo
 export async function sendIpVideoBridgeTestFrame(width = 1280, height = 720): Promise<number> {
   return invokeTauri<number>("ip_video_send_test_frame", { width, height });
 }
+
+export interface AiChatMessageItem {
+  role: "user" | "assistant";
+  content: string;
+}
+
+export interface AiProposedActionItem {
+  kind: string;
+  label: string;
+  payload: Record<string, unknown>;
+}
+
+export interface AiAssistantStatusInfo {
+  available: boolean;
+  provider: string;
+  model: string;
+  opencodeInstalled: boolean;
+  detail: string;
+}
+
+export interface AiChatResponseInfo {
+  reply: string;
+  actions: AiProposedActionItem[];
+  provider: string;
+  model: string;
+}
+
+export async function getAiAssistantStatus(): Promise<AiAssistantStatusInfo> {
+  if (!isTauriRuntime()) {
+    return {
+      available: false,
+      provider: "opencode_cli",
+      model: "opencode/big-pickle",
+      opencodeInstalled: false,
+      detail: "OpenCode CLI runs in the desktop app (or configure Ollama / HTTPS endpoint in Settings)",
+    };
+  }
+  return invokeTauri<AiAssistantStatusInfo>("ai_assistant_status");
+}
+
+export async function aiAssistantChat(
+  message: string,
+  history: AiChatMessageItem[],
+  context: Record<string, unknown>
+): Promise<AiChatResponseInfo> {
+  if (!isTauriRuntime()) {
+    return {
+      reply:
+        "Browser preview mode cannot launch local OpenCode CLI directly. Open the One Ring desktop app to chat with OpenCode Free models (or configure Ollama / an HTTPS endpoint in Settings -> General).",
+      actions: [],
+      provider: "browser-preview",
+      model: "offline",
+    };
+  }
+  return invokeTauri<AiChatResponseInfo>("ai_assistant_chat", {
+    message,
+    history,
+    context,
+  });
+}

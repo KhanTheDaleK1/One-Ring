@@ -3531,6 +3531,51 @@ async fn ip_video_send_test_frame(
         .map_err(|e| format!("IP video test frame failed: {e}"))?
 }
 
+
+#[tauri::command]
+async fn ai_assistant_status(
+    state: State<'_, ManagedState>,
+) -> Result<runtime::ai_assistant::AiAssistantStatus, String> {
+    let (provider, model, endpoint) = {
+        let inner = state.inner.lock().map_err(|_| "State lock poisoned".to_string())?;
+        (
+            inner.settings.general.ai_provider.clone(),
+            inner.settings.general.ai_model.clone(),
+            inner.settings.general.ai_endpoint.clone(),
+        )
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        runtime::ai_assistant::status(&provider, &model, &endpoint)
+    })
+    .await
+    .map_err(|e| format!("AI status check failed: {e}"))
+}
+
+#[tauri::command]
+async fn ai_assistant_chat(
+    state: State<'_, ManagedState>,
+    message: String,
+    history: Option<Vec<runtime::ai_assistant::AiChatMessage>>,
+    context: Option<serde_json::Value>,
+) -> Result<runtime::ai_assistant::AiChatResponse, String> {
+    let (provider, model, endpoint, api_key) = {
+        let inner = state.inner.lock().map_err(|_| "State lock poisoned".to_string())?;
+        (
+            inner.settings.general.ai_provider.clone(),
+            inner.settings.general.ai_model.clone(),
+            inner.settings.general.ai_endpoint.clone(),
+            inner.settings.general.ai_api_key.clone(),
+        )
+    };
+    let hist = history.unwrap_or_default();
+    let ctx = context.unwrap_or_else(|| serde_json::json!({}));
+    tauri::async_runtime::spawn_blocking(move || {
+        runtime::ai_assistant::chat(&provider, &model, &endpoint, &api_key, &message, &hist, &ctx)
+    })
+    .await
+    .map_err(|e| format!("AI assistant task failed: {e}"))?
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -3782,7 +3827,9 @@ pub fn run() {
             ip_video_discover_sources,
             ip_video_start_output,
             ip_video_stop_output,
-            ip_video_send_test_frame
+            ip_video_send_test_frame,
+            ai_assistant_status,
+            ai_assistant_chat
         ])
         .build(tauri::generate_context!())
         .expect("error while building One Ring")

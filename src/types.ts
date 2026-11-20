@@ -484,6 +484,10 @@ export interface GeneralSettings {
   autoCrashReporting?: boolean;
   /** HTTPS relay that accepts sanitized crash reports. Empty means one-click issue reporting. */
   crashRelayUrl?: string;
+  aiProvider?: string;
+  aiModel?: string;
+  aiEndpoint?: string;
+  aiApiKey?: string;
 }
 
 /** Sanitized, shareable summary of a recorded frontend or runtime crash. */

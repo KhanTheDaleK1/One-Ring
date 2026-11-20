@@ -510,6 +510,22 @@ pub struct GeneralSettings {
     /// HTTPS-only relay endpoint; empty by default.
     #[serde(default = "default_crash_relay_url")]
     pub crash_relay_url: String,
+    #[serde(default = "default_ai_provider")]
+    pub ai_provider: String,
+    #[serde(default = "default_ai_model")]
+    pub ai_model: String,
+    #[serde(default)]
+    pub ai_endpoint: String,
+    #[serde(default)]
+    pub ai_api_key: String,
+}
+
+fn default_ai_provider() -> String {
+    "opencode_cli".into()
+}
+
+fn default_ai_model() -> String {
+    "opencode/big-pickle".into()
 }
 
 impl Default for GeneralSettings {
@@ -523,6 +539,10 @@ impl Default for GeneralSettings {
             confirm_unsaved_leave: default_confirm_unsaved_leave(),
             auto_crash_reporting: false,
             crash_relay_url: default_crash_relay_url(),
+            ai_provider: default_ai_provider(),
+            ai_model: default_ai_model(),
+            ai_endpoint: String::new(),
+            ai_api_key: String::new(),
         }
     }
 }

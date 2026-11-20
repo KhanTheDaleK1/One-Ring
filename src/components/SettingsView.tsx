@@ -2472,7 +2472,58 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             </div>
           </SubSection>
 
-          <SubSection
+                    <SubSection
+            title="AI Production Assistant"
+            description="Power the built-in AI slide & service assistant using free OpenCode CLI models, local Ollama, or any HTTPS OpenAI-compatible endpoint."
+          >
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 12 }}>
+              <Field label="AI provider" hint="OpenCode CLI uses free models locally with zero API keys.">
+                <select
+                  style={inputStyle}
+                  value={draft.general.aiProvider ?? "opencode_cli"}
+                  onChange={(e) => patchSection("general", { aiProvider: e.target.value })}
+                >
+                  <option value="opencode_cli">OpenCode CLI (Free Local Models)</option>
+                  <option value="ollama">Ollama (Local Loopback)</option>
+                  <option value="openai_compatible">OpenAI-Compatible HTTPS API</option>
+                </select>
+              </Field>
+              <Field label="Model" hint="e.g. opencode/big-pickle or llama3.2">
+                <input
+                  style={inputStyle}
+                  className="mono"
+                  value={draft.general.aiModel ?? "opencode/big-pickle"}
+                  onChange={(e) => patchSection("general", { aiModel: e.target.value })}
+                  placeholder="opencode/big-pickle"
+                />
+              </Field>
+              {(draft.general.aiProvider === "ollama" || draft.general.aiProvider === "openai_compatible") && (
+                <Field label="Endpoint URL" hint="HTTPS URL or http://127.0.0.1:11434/v1/chat/completions">
+                  <input
+                    style={inputStyle}
+                    className="mono"
+                    value={draft.general.aiEndpoint ?? ""}
+                    onChange={(e) => patchSection("general", { aiEndpoint: e.target.value })}
+                    placeholder="http://127.0.0.1:11434/v1/chat/completions"
+                  />
+                </Field>
+              )}
+              {draft.general.aiProvider === "openai_compatible" && (
+                <Field label="API key" hint="Stored in local settings.json (0600); redacted from diagnostics.">
+                  <input
+                    style={inputStyle}
+                    className="mono"
+                    type="password"
+                    value={draft.general.aiApiKey ?? ""}
+                    onChange={(e) => patchSection("general", { aiApiKey: e.target.value })}
+                    placeholder="••••••••"
+                  />
+                </Field>
+              )}
+            </div>
+          </SubSection>
+
+<SubSection
             title="Crash Reporting"
             description="Opt in to sharing sanitized crash logs recorded during a previous session."
             keywords="crash reporting relay https privacy sanitized issue"

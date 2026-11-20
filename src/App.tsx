@@ -36,6 +36,7 @@ import { PairingPrompt, type DiscoveredPeerInfo } from "./components/PairingProm
 import { getDiscoveredPeers } from "./bridge";
 import { WelcomeTour } from "./components/WelcomeTour";
 import { UpdateModal } from "./components/UpdateModal";
+import { AiAssistantDrawer } from "./components/AiAssistantDrawer";
 import { BroadcastSettingsModal } from "./components/BroadcastSettingsModal";
 import { ModalDialog } from "./components/ModalDialog";
 import { Notice } from "./components/UiPrimitives";
@@ -1022,6 +1023,22 @@ export const App: React.FC = () => {
             <span className="mono" style={{ fontWeight: 600 }}>{state.serviceName || "Untitled Show"}</span>
             <Pencil size={11} color="#60A5FA" />
           </button>
+          <button
+            type="button"
+            className="btn btn-sm"
+            onClick={() => setShowAiDrawer((v) => !v)}
+            title="Open AI Production Assistant (OpenCode Free / Ollama / API)"
+            style={{
+              background: showAiDrawer ? "#4C1D95" : "#1E1B4B",
+              borderColor: "#7C3AED",
+              color: "#DDD6FE",
+              display: "flex",
+              alignItems: "center",
+              gap: 5,
+            }}
+          >
+            AI Assistant
+          </button>
           <span
             style={{
               fontSize: 11,
@@ -1686,7 +1703,15 @@ export const App: React.FC = () => {
       </ModalDialog>
 
       {availableUpdate && (
-        <UpdateModal update={availableUpdate} onDismiss={() => setAvailableUpdate(null)} />
+        <AiAssistantDrawer
+        isOpen={showAiDrawer}
+        onClose={() => setShowAiDrawer(false)}
+        state={state}
+        onApplySong={(title, slides) => void handleImportSong(title, slides)}
+        onApplyTheme={(patch) => void handleUpdateSlideTheme({ ...state.slides.theme, ...patch })}
+        onApplyStageMessage={(text) => void handleStageMessage(text)}
+      />
+      <UpdateModal update={availableUpdate} onDismiss={() => setAvailableUpdate(null)} />
       )}
 
       <BroadcastSettingsModal

@@ -504,3 +504,4 @@ mod tests {
 }
 pub mod video_switcher_adapter;
 pub mod ip_video_bridge;
+pub mod ai_assistant;
