@@ -629,7 +629,9 @@ async fn http_get_body(url: &str) -> Result<String, String> {
     let url = url.to_string();
     tokio::task::spawn_blocking(move || {
         if url.starts_with("https://") {
-            let out = std::process::Command::new("curl")
+            let mut cmd = std::process::Command::new("curl");
+            crate::runtime::hide_console_window(&mut cmd);
+            let out = cmd
                 .args(["-sS", "-m", "5", &url])
                 .output()
                 .map_err(|e| format!("curl failed: {e}"))?;
@@ -704,7 +706,9 @@ fn http_post_via_curl(url: &str, payload: &str, auth_token: &str) -> Result<(), 
     args.push("-d".to_string());
     args.push(payload.to_string());
     args.push(url.to_string());
-    let out = std::process::Command::new("curl")
+    let mut cmd = std::process::Command::new("curl");
+    crate::runtime::hide_console_window(&mut cmd);
+    let out = cmd
         .args(&args)
         .output()
         .map_err(|e| format!("curl failed: {e}"))?;

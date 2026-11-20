@@ -14,6 +14,14 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use crate::runtime::audience_relay::{
     now_ms, parse_ffmpeg_progress_line, FfmpegProgressSample, StreamStatsSnapshot,
 };
+use std::ffi::OsStr;
+
+/// Every daemon subprocess is background work: suppress its Windows console window.
+fn background_command(program: impl AsRef<OsStr>) -> Command {
+    let mut cmd = Command::new(program);
+    crate::runtime::hide_console_window(&mut cmd);
+    cmd
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -197,7 +205,7 @@ impl BroadcastDaemonSupervisor {
         let bin = find_broadcast_binary().ok_or_else(|| {
             "BROADCAST binary not found on system. Install Broadcast Studio or place ffmpeg in PATH for headless mode.".to_string()
         })?;
-        let child = Command::new(&bin)
+        let child = background_command(&bin)
             .args(["--minimize-to-tray", "--disable-shutdown-check"])
             .spawn()
             .map_err(|e| format!("Failed to spawn headless BROADCAST ({}): {e}", bin))?;
@@ -310,7 +318,7 @@ pub fn list_host_audio_devices() -> Vec<HostMediaDevice> {
     let mut devices = Vec::new();
     #[cfg(target_os = "macos")]
     {
-        if let Ok(out) = Command::new("system_profiler").args(["SPAudioDataType", "-json"]).output() {
+        if let Ok(out) = background_command("system_profiler").args(["SPAudioDataType", "-json"]).output() {
             if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&out.stdout) {
                 if let Some(arr) = v.get("SPAudioDataType").and_then(|x| x.as_array()) {
                     for cat in arr {
@@ -338,7 +346,7 @@ pub fn list_host_audio_devices() -> Vec<HostMediaDevice> {
     }
     #[cfg(target_os = "windows")]
     {
-        if let Ok(out) = Command::new("powershell")
+        if let Ok(out) = background_command("powershell")
             .args([
                 "-NoProfile",
                 "-Command",
@@ -364,7 +372,7 @@ pub fn list_host_video_devices() -> Vec<HostMediaDevice> {
     let mut devices = Vec::new();
     #[cfg(target_os = "macos")]
     {
-        if let Ok(out) = Command::new("system_profiler").args(["SPCameraDataType", "-json"]).output() {
+        if let Ok(out) = background_command("system_profiler").args(["SPCameraDataType", "-json"]).output() {
             if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&out.stdout) {
                 if let Some(arr) = v.get("SPCameraDataType").and_then(|x| x.as_array()) {
                     for item in arr {
@@ -378,7 +386,7 @@ pub fn list_host_video_devices() -> Vec<HostMediaDevice> {
     }
     #[cfg(target_os = "windows")]
     {
-        if let Ok(out) = Command::new("powershell")
+        if let Ok(out) = background_command("powershell")
             .args([
                 "-NoProfile",
                 "-Command",
@@ -527,7 +535,7 @@ pub fn probe_available_encoders() -> Vec<EncoderCapability> {
     let Some(bin) = find_ffmpeg_binary() else {
         return Vec::new();
     };
-    let output = Command::new(bin)
+    let output = background_command(bin)
         .args(["-hide_banner", "-encoders"])
         .output();
     let Ok(output) = output else {
@@ -692,7 +700,7 @@ impl FfmpegStreamProcess {
 
         args.extend(["-progress".into(), "pipe:1".into(), "-nostats".into()]);
 
-        let mut child = Command::new(&bin)
+        let mut child = background_command(&bin)
             .args(&args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -798,7 +806,7 @@ pub fn screen_archive_members(names: &[String]) -> Result<(), String> {
 /// List member names without unpacking so they can be screened first.
 fn list_archive_members(file_path: &str) -> Result<Vec<String>, String> {
     #[cfg(not(target_os = "windows"))]
-    let output = Command::new("unzip")
+    let output = background_command("unzip")
         .args(["-Z1", file_path])
         .output()
         .map_err(|e| format!("Failed to list archive members: {e}"))?;
@@ -809,7 +817,7 @@ fn list_archive_members(file_path: &str) -> Result<Vec<String>, String> {
         file_path.replace('\'', "''")
     );
     #[cfg(target_os = "windows")]
-    let output = Command::new("powershell")
+    let output = background_command("powershell")
         .args(["-NoProfile", "-Command", &script])
         .output()
         .map_err(|e| format!("Failed to list archive members: {e}"))?;
@@ -927,7 +935,7 @@ pub fn parse_slide_archive(file_path: &str) -> Result<Vec<ImportedSongPayload>, 
     let _cleanup = TempDirGuard(tmp_dir.clone());
 
     #[cfg(not(target_os = "windows"))]
-    let unpack_ok = Command::new("unzip")
+    let unpack_ok = background_command("unzip")
         .args(["-o", file_path, "-d", &tmp_dir.to_string_lossy()])
         .output()
         .map(|o| o.status.success())
@@ -939,7 +947,7 @@ pub fn parse_slide_archive(file_path: &str) -> Result<Vec<ImportedSongPayload>, 
     std::fs::copy(p, &archive_path)
         .map_err(|e| format!("Failed to stage .slide_archive as archive.zip: {e}"))?;
     #[cfg(target_os = "windows")]
-    let unpack_ok = Command::new("powershell")
+    let unpack_ok = background_command("powershell")
         .args([
             "-NoProfile",
             "-Command",
@@ -963,7 +971,7 @@ pub fn parse_slide_archive(file_path: &str) -> Result<Vec<ImportedSongPayload>, 
         Ok(meta) if meta.file_type().is_file() => {
             let db_str = db_path.to_string_lossy();
             // Prefer JSON mode in sqlite3 so multi-line RTF/text columns never split across rows.
-            if let Ok(out) = Command::new("sqlite3")
+            if let Ok(out) = background_command("sqlite3")
                 .args([
                     "-json",
                     db_str.as_ref(),
@@ -1084,7 +1092,7 @@ impl ReplayBufferProcess {
             seg_pattern,
         ]);
 
-        let child = Command::new(&bin)
+        let child = background_command(&bin)
             .args(&args)
             .stdin(Stdio::piped())
             .spawn()
@@ -1156,7 +1164,7 @@ impl ReplayBufferProcess {
                 "+faststart".into(),
                 out_path.to_string_lossy().to_string(),
             ]);
-            let status = Command::new(&bin)
+            let status = background_command(&bin)
                 .args(&ffmpeg_args)
                 .output()
                 .map_err(|e| format!("Failed to assemble replay clip: {e}"))?;
@@ -1210,7 +1218,7 @@ pub fn remux_mkv_to_mp4(input_path: &str) -> Result<String, String> {
     let temp_out = final_out.with_file_name(format!("{stem}_remux_{}.mp4", std::process::id()));
     let input_arg = p.to_string_lossy().to_string();
     let temp_arg = temp_out.to_string_lossy().to_string();
-    let status = Command::new(&bin)
+    let status = background_command(&bin)
         .args([
             "-n",
             "-i", &input_arg,

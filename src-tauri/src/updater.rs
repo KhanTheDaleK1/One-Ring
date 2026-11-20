@@ -117,6 +117,7 @@ pub fn check_for_updates() -> Result<Option<UpdateInfo>, String> {
             url
         );
         c.args(["-NoProfile", "-Command", &script]);
+        crate::runtime::hide_console_window(&mut c);
         c
     };
 
@@ -131,6 +132,7 @@ pub fn check_for_updates() -> Result<Option<UpdateInfo>, String> {
             "User-Agent: One-Ring-Production-Suite",
             &url,
         ]);
+        crate::runtime::hide_console_window(&mut c);
         c
     };
 

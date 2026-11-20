@@ -131,7 +131,7 @@ const SEARCH_KEYWORDS: Record<SettingsTab, string> = {
   slides: "presentation song library credentials display oauth display assignment",
   ipVideo: "camera ptz discovery preset roster ip port range control",
   station: "sync hub lan cloud profile token role station name",
-  general: "pin ui scale contrast accessibility diagnostics profile updates config version maintenance",
+  general: "pin ui scale contrast accessibility crash reporting relay privacy diagnostics profile updates config version maintenance",
 };
 
 const DEFAULT_SECTIONS: AppSettings = {
@@ -183,6 +183,8 @@ const DEFAULT_SECTIONS: AppSettings = {
     uiScale: 100,
     highContrast: false,
     confirmUnsavedLeave: true,
+    autoCrashReporting: false,
+    crashRelayUrl: "",
   },
   station: {
     role: "master",
@@ -231,6 +233,18 @@ function isValidEndpoint(value: string): boolean {
   try {
     const parsed = new URL(value);
     return ["http:", "https:", "ws:", "wss:"].includes(parsed.protocol) && Boolean(parsed.hostname);
+  } catch {
+    return false;
+  }
+}
+
+/** Crash relays are optional, but any configured endpoint must be HTTPS. */
+function isValidCrashRelayUrl(value: string): boolean {
+  const trimmed = value.trim();
+  if (!trimmed) return true;
+  try {
+    const parsed = new URL(trimmed);
+    return parsed.protocol === "https:" && Boolean(parsed.hostname);
   } catch {
     return false;
   }
@@ -614,6 +628,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 
     if (draft.general.engineerPin !== "" && !/^\d{4,8}$/.test(draft.general.engineerPin)) {
       add("pin", "general", "Engineer PIN must be empty or 4–8 digits.");
+    }
+    if (!isValidCrashRelayUrl(draft.general.crashRelayUrl ?? "")) {
+      add("crashRelay", "general", "Crash relay endpoint must be empty or a valid https:// URL.");
     }
     if (draft.console.ipAddress.trim() && !isValidHost(draft.console.ipAddress)) {
       add("consoleIp", "console", "Enter a valid IPv4 address or hostname for the console.");
@@ -2451,6 +2468,50 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                   />
                   Confirm before leaving with unsaved edits
                 </label>
+              </div>
+            </div>
+          </SubSection>
+
+          <SubSection
+            title="Crash Reporting"
+            description="Opt in to sharing sanitized crash logs recorded during a previous session."
+            keywords="crash reporting relay https privacy sanitized issue"
+            search={search}
+          >
+            <div style={{ display: "grid", gap: 12 }}>
+              <label
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 8,
+                  fontSize: 12,
+                  fontWeight: 700,
+                  color: "#D1D5DB",
+                }}
+              >
+                <input
+                  type="checkbox"
+                  checked={draft.general.autoCrashReporting ?? false}
+                  onChange={(event) =>
+                    patchSection("general", { autoCrashReporting: event.target.checked })
+                  }
+                />
+                Automatically send sanitized crash reports on startup
+              </label>
+              <Field label="Crash Relay Endpoint (HTTPS)" error={validation.crashRelay}>
+                <input
+                  style={inputWithError(validation.crashRelay)}
+                  className="mono"
+                  value={draft.general.crashRelayUrl ?? ""}
+                  onChange={(event) =>
+                    patchSection("general", { crashRelayUrl: event.target.value })
+                  }
+                  placeholder="https://your-crash-relay.workers.dev/crash"
+                />
+              </Field>
+              <div style={{ fontSize: 12, color: "#9CA3AF", lineHeight: 1.5 }}>
+                Crash reports strip user paths, PINs, stream keys, and tokens. Leave relay blank to
+                use one-click GitHub Issue reporting.
               </div>
             </div>
           </SubSection>

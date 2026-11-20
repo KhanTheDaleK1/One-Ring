@@ -187,7 +187,9 @@ pub fn parse_lrclib_json(raw: &[u8]) -> Result<Vec<LyricSearchResult>, String> {
 
 #[cfg(not(target_os = "windows"))]
 fn fetch_search_response(url: &str) -> Result<Vec<u8>, String> {
-    let output = std::process::Command::new("curl")
+    let mut cmd = std::process::Command::new("curl");
+    crate::runtime::hide_console_window(&mut cmd);
+    let output = cmd
         .args([
             "-fsSL",
             "--max-time",
@@ -219,7 +221,9 @@ fn fetch_search_response(url: &str) -> Result<Vec<u8>, String> {
         "if ($r.Content.Length -gt 524288) { throw 'Response too large' };",
         "[Console]::Out.Write($r.Content)"
     );
-    let output = std::process::Command::new("powershell")
+    let mut cmd = std::process::Command::new("powershell");
+    crate::runtime::hide_console_window(&mut cmd);
+    let output = cmd
         .args(["-NoProfile", "-NonInteractive", "-Command", script])
         .env("ONERING_LYRIC_URL", url)
         .output()

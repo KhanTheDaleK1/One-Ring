@@ -335,7 +335,9 @@ impl BroadcastWorkerSupervisor {
         if self.is_running() {
             return Ok(());
         }
-        let child = Command::new(program)
+        let mut cmd = Command::new(program);
+        crate::runtime::hide_console_window(&mut cmd);
+        let child = cmd
             .args(args)
             .stdin(Stdio::piped())
             .stdout(Stdio::null())

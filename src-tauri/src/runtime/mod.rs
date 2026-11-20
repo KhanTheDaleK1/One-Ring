@@ -28,6 +28,23 @@ pub mod dual_stream_adapter;
 pub mod console_adapter;
 pub mod native_capture;
 pub mod lyrics_search;
+pub mod crash_reporter;
+
+/// Keep background helper processes from briefly flashing a console window on Windows.
+///
+/// Interactive launches (browser/file-manager reveal) deliberately skip this helper so their
+/// windows remain visible. On non-Windows targets this is a no-op.
+pub fn hide_console_window(cmd: &mut std::process::Command) {
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000);
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = cmd;
+    }
+}
 
 use crate::protocols::{DeviceCapabilities, DeviceKind};
 use crate::state::SharedState;

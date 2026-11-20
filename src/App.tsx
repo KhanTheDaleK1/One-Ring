@@ -7,16 +7,20 @@ import {
   applyStatePatch,
   bridge,
   broadcastLanSyncEvent,
+  dismissCrashReport,
   getEngineerLockStatus,
   isTrustedSyncPayload,
+  listPendingCrashReports,
   lockEngineerMode,
+  openUrl,
   stampSyncPayload,
   subscribeEvents,
   unlockEngineerMode,
+  uploadCrashReport,
   UPDATE_REPO_URL,
 } from "./bridge";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { AppStateSnapshot, ViewMode } from "./types";
+import type { AppStateSnapshot, CrashReportSummary, ViewMode } from "./types";
 import { PreflightView } from "./components/PreflightView";
 import { ShowBuilderView, type BuilderIntent } from "./components/ShowBuilderView";
 import { ShowModeView } from "./components/ShowModeView";
@@ -35,6 +39,7 @@ import { UpdateModal } from "./components/UpdateModal";
 import { BroadcastSettingsModal } from "./components/BroadcastSettingsModal";
 import { ModalDialog } from "./components/ModalDialog";
 import { Notice } from "./components/UiPrimitives";
+import { buildCrashIssueUrl } from "./components/CrashErrorBoundary";
 import { checkForUpdate, probeHardwareEncoders, type EncoderCapability } from "./bridge";
 import type { BroadcastProfileSettings, UpdateInfo } from "./types";
 
@@ -168,6 +173,12 @@ export const App: React.FC = () => {
   const [hardwareEncoders, setHardwareEncoders] = useState<EncoderCapability[]>([]);
   const [encodersLoading, setEncodersLoading] = useState(false);
 
+  // Crash notices are advisory: they never block the booth surface.
+  const [pendingCrashReports, setPendingCrashReports] = useState<CrashReportSummary[]>([]);
+  const [crashBannerBusy, setCrashBannerBusy] = useState(false);
+  const [crashBannerNote, setCrashBannerNote] = useState<string | null>(null);
+  const autoCrashAttemptedRef = useRef(false);
+
   // Booth display preferences are authored in Settings and applied to the document root.
   useEffect(() => {
     const root = document.documentElement;
@@ -266,6 +277,13 @@ export const App: React.FC = () => {
         setAvailableUpdate(info);
       }
     });
+
+    // Surface sanitized crash summaries left by a previous session, if any.
+    listPendingCrashReports()
+      .then((reports) => {
+        if (!disposed && Array.isArray(reports)) setPendingCrashReports(reports);
+      })
+      .catch(() => undefined);
 
     
     // Listen for macOS menu items: "About One Ring" or "Check for Updates..."
@@ -391,6 +409,31 @@ export const App: React.FC = () => {
   useEffect(() => {
     stateRef.current = state;
   }, [state]);
+
+  const activeCrashReport = pendingCrashReports[0] ?? null;
+  const crashRelayUrl = state?.settings.general.crashRelayUrl?.trim() ?? "";
+
+  // Opt-in automatic sharing: attempt once per launch, then fall back to the advisory banner.
+  useEffect(() => {
+    if (!activeCrashReport || autoCrashAttemptedRef.current) return;
+    if (!state?.settings.general.autoCrashReporting || !crashRelayUrl) return;
+    autoCrashAttemptedRef.current = true;
+    let cancelled = false;
+    void uploadCrashReport(activeCrashReport.id)
+      .then(async (result) => {
+        if (!result.ok || cancelled) return;
+        await dismissCrashReport(activeCrashReport.id).catch(() => false);
+        if (!cancelled) {
+          setPendingCrashReports((reports) =>
+            reports.filter((report) => report.id !== activeCrashReport.id)
+          );
+        }
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [activeCrashReport, state?.settings.general.autoCrashReporting, crashRelayUrl]);
 
   const executeMidiAction = useCallback((action: string, value: number) => {
     const snapshot = stateRef.current;
@@ -761,6 +804,54 @@ export const App: React.FC = () => {
     findSettingsButton("Revert")?.click();
   };
 
+  const sendCrashReport = async (): Promise<void> => {
+    if (!activeCrashReport || crashBannerBusy) return;
+    setCrashBannerBusy(true);
+    setCrashBannerNote(null);
+    try {
+      if (crashRelayUrl) {
+        const result = await uploadCrashReport(activeCrashReport.id);
+        if (result.ok) {
+          if (result.issueUrl) await openUrl(result.issueUrl);
+          await dismissCrashReport(activeCrashReport.id).catch(() => false);
+          setPendingCrashReports((reports) =>
+            reports.filter((report) => report.id !== activeCrashReport.id)
+          );
+          return;
+        }
+        setCrashBannerNote("The crash relay could not accept the report. Opening the issue form instead.");
+      }
+
+      const issueUrl = buildCrashIssueUrl(activeCrashReport);
+      if (issueUrl) {
+        await openUrl(issueUrl);
+        await dismissCrashReport(activeCrashReport.id).catch(() => false);
+        setPendingCrashReports((reports) =>
+          reports.filter((report) => report.id !== activeCrashReport.id)
+        );
+      } else {
+        setCrashBannerNote(
+          "No issue destination is configured for this build. You can dismiss this notice."
+        );
+      }
+    } catch {
+      setCrashBannerNote("Crash reporting is unavailable right now. You can dismiss this notice.");
+    } finally {
+      setCrashBannerBusy(false);
+    }
+  };
+
+  const dismissCrashNotice = async (): Promise<void> => {
+    if (!activeCrashReport || crashBannerBusy) return;
+    setCrashBannerBusy(true);
+    await dismissCrashReport(activeCrashReport.id).catch(() => false);
+    setPendingCrashReports((reports) =>
+      reports.filter((report) => report.id !== activeCrashReport.id)
+    );
+    setCrashBannerNote(null);
+    setCrashBannerBusy(false);
+  };
+
   const closePinDialog = () => {
     setPinTarget(null);
     setPinValue("");
@@ -1099,6 +1190,58 @@ export const App: React.FC = () => {
           </button>
         </div>
       </header>
+
+      {/* Previous-session crash notice — advisory only, the booth surface stays usable */}
+      {activeCrashReport && (
+        <div
+          role="status"
+          style={{
+            padding: "10px 20px",
+            background: "rgba(37,99,235,0.12)",
+            borderBottom: "1px solid #3B82F6",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: 12,
+            flexWrap: "wrap",
+          }}
+        >
+          <div style={{ display: "grid", gap: 2 }}>
+            <strong style={{ fontSize: 13, color: "#BFDBFE" }}>
+              One Ring recorded a crash log from a previous session
+            </strong>
+            <span style={{ fontSize: 11, color: "#93C5FD" }}>
+              Sanitized report {(activeCrashReport.fingerprint ?? "").slice(0, 8)}
+              {pendingCrashReports.length > 1
+                ? ` · +${pendingCrashReports.length - 1} more pending`
+                : ""}
+            </span>
+            {crashBannerNote && (
+              <span style={{ fontSize: 11, color: "#FBBF24" }}>{crashBannerNote}</span>
+            )}
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <button
+              type="button"
+              className="btn btn-primary"
+              disabled={crashBannerBusy}
+              onClick={() => void sendCrashReport()}
+              style={{ height: 32, padding: "0 12px", fontSize: 12 }}
+            >
+              Send Crash Report
+            </button>
+            <button
+              type="button"
+              className="btn"
+              disabled={crashBannerBusy}
+              onClick={() => void dismissCrashNotice()}
+              style={{ height: 32, padding: "0 12px", fontSize: 12 }}
+            >
+              Dismiss
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* SILENT PASTOR MIC BANNER (Aoip Conmon UDP :8751 0xFE detector) */}
       {state.silentMicAlert && (

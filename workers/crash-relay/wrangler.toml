@@ -1,0 +1,7 @@
+name = "one-ring-crash-relay"
+main = "src/index.ts"
+compatibility_date = "2024-05-01"
+
+# No account ID and no secrets are stored here. Both are supplied at deploy time:
+#   wrangler secret put GITHUB_TOKEN
+#   wrangler secret put GITHUB_REPO

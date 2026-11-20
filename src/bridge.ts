@@ -8,6 +8,7 @@ import type {
   CapturableDisplay,
   CapturableWindow,
   ConnectionTestResult,
+  CrashReportSummary,
   CueVerificationStep,
   DiscoveredLanDevice,
   NativeCaptureFrame,
@@ -1221,6 +1222,135 @@ export async function openUrl(url: string): Promise<void> {
     }
   }
   window.open(url, "_blank");
+}
+
+// ---------------------------------------------------------------------------------------------
+// Crash reporting — sanitized, shareable summaries with inert browser-preview fallbacks
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * Remove folder paths, addresses, credentials and token-bearing query values from any text
+ * that may be copied into a report. Applied before a crash summary leaves the renderer.
+ */
+export function sanitizeCrashText(input: string): string {
+  if (typeof input !== "string" || input.length === 0) return "";
+  let text = input;
+  // URLs can carry identities and short-lived credentials; keep only the scheme marker.
+  text = text.replace(/\b(?:https?|wss?):\/\/[^\s"'<>]+/gi, "[url]");
+  // Folder paths with at least one segment (POSIX or drive-letter rooted).
+  text = text.replace(/(?:[A-Za-z]:\\|\/)(?:[A-Za-z0-9._~ -]+[\\/])+[A-Za-z0-9._~ -]+/g, "[path]");
+  // Email-like and address-like fragments.
+  text = text.replace(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g, "[email]");
+  text = text.replace(/\b(?:\d{1,3}\.){3}\d{1,3}\b/g, "[address]");
+  // Credential assignments such as token=..., pin: ..., api_key: ...
+  text = text.replace(
+    /\b(token|secret|password|passphrase|authorization|bearer|pin|api[_-]?key|stream[_-]?key)(["'\s]*[:=]\s*)([^\s,;"')\]]+)/gi,
+    (_match, key: string, separator: string) => `${key}${separator}[REDACTED]`
+  );
+  // Secret-bearing query parameters in URLs.
+  text = text.replace(/([?&](?:token|key|sig|signature|access_token)=)[^&\s"']+/gi, "$1[REDACTED]");
+  return text.slice(0, 8000);
+}
+
+function crashFingerprint(parts: string[]): string {
+  let hash = 2166136261;
+  for (const char of parts.join("|")) {
+    hash ^= char.charCodeAt(0);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(16).padStart(8, "0");
+}
+
+/** Browser preview keeps a short-lived, in-memory queue; nothing is written to disk. */
+let simPendingCrashReports: CrashReportSummary[] = [];
+
+export interface CrashUploadResult {
+  ok: boolean;
+  issueUrl?: string;
+  deduplicated?: boolean;
+}
+
+/** Crash summaries recorded during this session or restored from the previous session. */
+export async function listPendingCrashReports(): Promise<CrashReportSummary[]> {
+  if (isTauri()) {
+    try {
+      const reports = await invokeTauri<CrashReportSummary[]>("list_pending_crash_reports");
+      return Array.isArray(reports) ? reports : [];
+    } catch {
+      return [];
+    }
+  }
+  return simPendingCrashReports.map((report) => ({ ...report }));
+}
+
+/** Persist a sanitized frontend crash; returns the recorded summary when a store is available. */
+export async function recordFrontendCrash(
+  message: string,
+  stack: string,
+  componentStack?: string
+): Promise<CrashReportSummary | null> {
+  const safeMessage = sanitizeCrashText(message).slice(0, 500) || "Frontend error";
+  const safeStack = sanitizeCrashText(stack).slice(0, 6000);
+  const safeComponentStack = sanitizeCrashText(componentStack ?? "").slice(0, 2000);
+
+  if (isTauri()) {
+    try {
+      const report = await invokeTauri<CrashReportSummary | null>("record_frontend_crash", {
+        message: safeMessage,
+        stack: safeStack,
+        componentStack: safeComponentStack,
+      });
+      return report ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  const report: CrashReportSummary = {
+    id: `frontend-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+    timestampUtc: new Date().toISOString(),
+    appVersion: "0.3.5",
+    os: "preview",
+    arch: "preview",
+    kind: "frontend",
+    message: safeMessage,
+    location: safeComponentStack ? "React component tree" : "frontend",
+    stack: [safeStack, safeComponentStack ? `component stack:\n${safeComponentStack}` : ""]
+      .filter(Boolean)
+      .join("\n\n"),
+    fingerprint: crashFingerprint([safeMessage, safeComponentStack]),
+  };
+  simPendingCrashReports = [report, ...simPendingCrashReports].slice(0, 8);
+  return { ...report };
+}
+
+/** Send a stored crash summary through the configured HTTPS relay. */
+export async function uploadCrashReport(crashId: string): Promise<CrashUploadResult> {
+  if (!crashId) return { ok: false };
+  if (isTauri()) {
+    try {
+      const result = await invokeTauri<CrashUploadResult>("upload_crash_report", { crashId });
+      return result ?? { ok: false };
+    } catch {
+      return { ok: false };
+    }
+  }
+  // Browser preview has no relay transport; issue reporting remains available in the UI.
+  return { ok: false };
+}
+
+/** Remove a crash summary once it has been shared or dismissed by the operator. */
+export async function dismissCrashReport(crashId: string): Promise<boolean> {
+  if (isTauri()) {
+    try {
+      return (await invokeTauri<boolean>("dismiss_crash_report", { crashId })) === true;
+    } catch {
+      return false;
+    }
+  }
+  const before = simPendingCrashReports.length;
+  simPendingCrashReports = simPendingCrashReports.filter((report) => report.id !== crashId);
+  return simPendingCrashReports.length !== before;
 }
 
 

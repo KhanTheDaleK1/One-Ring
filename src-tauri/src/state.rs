@@ -481,6 +481,13 @@ fn default_confirm_unsaved_leave() -> bool {
     true
 }
 
+/// Relay endpoint baked in at build time. Empty by default so no report leaves the machine.
+fn default_crash_relay_url() -> String {
+    option_env!("ONE_RING_CRASH_RELAY_URL")
+        .unwrap_or("")
+        .to_string()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GeneralSettings {
@@ -497,6 +504,12 @@ pub struct GeneralSettings {
     pub high_contrast: bool,
     #[serde(default = "default_confirm_unsaved_leave")]
     pub confirm_unsaved_leave: bool,
+    /// Opt-in switch: crash reports are only written locally until this is enabled.
+    #[serde(default)]
+    pub auto_crash_reporting: bool,
+    /// HTTPS-only relay endpoint; empty by default.
+    #[serde(default = "default_crash_relay_url")]
+    pub crash_relay_url: String,
 }
 
 impl Default for GeneralSettings {
@@ -508,6 +521,8 @@ impl Default for GeneralSettings {
             ui_scale: default_ui_scale(),
             high_contrast: false,
             confirm_unsaved_leave: default_confirm_unsaved_leave(),
+            auto_crash_reporting: false,
+            crash_relay_url: default_crash_relay_url(),
         }
     }
 }

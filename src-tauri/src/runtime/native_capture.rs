@@ -163,7 +163,9 @@ fn run_bounded_command(
     args: &[&str],
     max_bytes: usize,
 ) -> Result<(Vec<u8>, bool), String> {
-    let mut child = Command::new(program)
+    let mut cmd = Command::new(program);
+    crate::runtime::hide_console_window(&mut cmd);
+    let mut child = cmd
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())

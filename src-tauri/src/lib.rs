@@ -32,6 +32,7 @@ use state::{
     ManagedState, PreflightCheck, SceneSourceItem, ServiceCue, SharedState, ShowFile, SlideState,
     UndoEntry,
 };
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -2320,11 +2321,9 @@ end tell
 set system script's text item delimiters to linefeed
 return outLines as text
 "#;
-        if let Ok(out) = std::process::Command::new("osascript")
-            .arg("-e")
-            .arg(script)
-            .output()
-        {
+        let mut cmd = std::process::Command::new("osascript");
+        crate::runtime::hide_console_window(&mut cmd);
+        if let Ok(out) = cmd.arg("-e").arg(script).output() {
             let s = String::from_utf8_lossy(&out.stdout);
             for line in s.lines() {
                 let clean = line.trim();
@@ -2336,7 +2335,9 @@ return outLines as text
     }
     #[cfg(target_os = "windows")]
     {
-        if let Ok(out) = std::process::Command::new("powershell")
+        let mut cmd = std::process::Command::new("powershell");
+        crate::runtime::hide_console_window(&mut cmd);
+        if let Ok(out) = cmd
             .args([
                 "-NoProfile",
                 "-Command",
@@ -3326,6 +3327,63 @@ fn open_config_directory(
     Ok("Opened configuration directory".into())
 }
 
+fn crash_reports_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    app.path()
+        .app_config_dir()
+        .map(|dir| dir.join("crashes"))
+        .map_err(|err| format!("Could not resolve the crash directory: {err}"))
+}
+
+#[tauri::command]
+fn list_pending_crash_reports(
+    app: tauri::AppHandle,
+) -> Result<Vec<runtime::crash_reporter::CrashReport>, String> {
+    Ok(runtime::crash_reporter::list_pending(&crash_reports_dir(&app)?))
+}
+
+#[tauri::command]
+fn record_frontend_crash(
+    message: String,
+    stack: Option<String>,
+    component_stack: Option<String>,
+    app: tauri::AppHandle,
+) -> Result<runtime::crash_reporter::CrashReport, String> {
+    runtime::crash_reporter::record_frontend_crash(
+        &crash_reports_dir(&app)?,
+        &message,
+        stack.as_deref().unwrap_or(""),
+        component_stack.as_deref().unwrap_or(""),
+    )
+}
+
+#[tauri::command]
+fn upload_crash_report(
+    crash_id: String,
+    relay_url: Option<String>,
+    app: tauri::AppHandle,
+    managed: State<ManagedState>,
+) -> Result<serde_json::Value, String> {
+    let general = managed
+        .inner
+        .lock()
+        .map_err(|_| "State lock poisoned".to_string())?
+        .settings
+        .general
+        .clone();
+    if !general.auto_crash_reporting {
+        return Err("Crash reporting is disabled".into());
+    }
+    let relay_url = relay_url
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or(general.crash_relay_url);
+    runtime::crash_reporter::upload_crash_report(&crash_reports_dir(&app)?, &crash_id, &relay_url)
+}
+
+#[tauri::command]
+fn dismiss_crash_report(crash_id: String, app: tauri::AppHandle) -> Result<bool, String> {
+    runtime::crash_reporter::dismiss_crash(&crash_reports_dir(&app)?, &crash_id)
+}
+
 #[tauri::command]
 async fn list_capturable_windows() -> Vec<CapturableWindow> {
     tauri::async_runtime::spawn_blocking(runtime::native_capture::list_capturable_windows)
@@ -3467,6 +3525,29 @@ pub fn run() {
             // Settings IPC commands take `State<SharedState>` directly; register the same
             // snapshot handle so they observe every change made through `ManagedState`.
             app.manage(shared.clone());
+
+            // Crash reports are always captured locally. Relaying them requires both the explicit
+            // opt-in and an HTTPS endpoint, so an offline or unconfigured install stays offline.
+            if let Ok(config_dir) = app.path().app_config_dir() {
+                let crash_dir = config_dir.join("crashes");
+                runtime::crash_reporter::install_panic_hook(crash_dir.clone());
+                let general = shared.lock().unwrap().settings.general.clone();
+                if general.auto_crash_reporting {
+                    let relay_url = general.crash_relay_url.trim().to_string();
+                    if relay_url.to_ascii_lowercase().starts_with("https://") {
+                        tauri::async_runtime::spawn_blocking(move || {
+                            for report in runtime::crash_reporter::list_pending(&crash_dir) {
+                                let _ = runtime::crash_reporter::upload_crash_report(
+                                    &crash_dir,
+                                    &report.id,
+                                    &relay_url,
+                                );
+                            }
+                        });
+                    }
+                }
+            }
+
             let persisted_settings = shared.lock().unwrap().settings.clone();
             let config = RuntimeConfig::from_env_and_settings(&persisted_settings);
             if config.live {
@@ -3586,7 +3667,11 @@ pub fn run() {
             list_capturable_displays,
             capture_native_frame,
             start_native_capture_stream,
-            stop_native_capture_stream
+            stop_native_capture_stream,
+            list_pending_crash_reports,
+            record_frontend_crash,
+            upload_crash_report,
+            dismiss_crash_report
         ])
         .build(tauri::generate_context!())
         .expect("error while building One Ring")

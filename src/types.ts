@@ -480,6 +480,24 @@ export interface GeneralSettings {
   highContrast?: boolean;
   /** Warn before navigating away from the Settings page with unsaved edits. */
   confirmUnsavedLeave?: boolean;
+  /** Send sanitized crash logs automatically when a previous-session report is found. */
+  autoCrashReporting?: boolean;
+  /** HTTPS relay that accepts sanitized crash reports. Empty means one-click issue reporting. */
+  crashRelayUrl?: string;
+}
+
+/** Sanitized, shareable summary of a recorded frontend or runtime crash. */
+export interface CrashReportSummary {
+  id: string;
+  timestampUtc: string;
+  appVersion: string;
+  os: string;
+  arch: string;
+  kind: string;
+  message: string;
+  location: string;
+  stack: string;
+  fingerprint: string;
 }
 
 /** Result of an operator-triggered subsystem connectivity probe. */
