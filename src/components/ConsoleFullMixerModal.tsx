@@ -562,7 +562,7 @@ export const ConsoleFullMixerModal: React.FC<ConsoleFullMixerModalProps> = ({
 
   const consoleFrame = (
     <div
-      role="dialog"
+      role={embedded ? "region" : "dialog"}
       aria-modal={embedded ? undefined : true}
       aria-label="Console full mixer"
       style={{
