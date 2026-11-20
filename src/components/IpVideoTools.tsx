@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { HoldConfirmButton } from "./HoldConfirmButton";
 import {
   Video,
   Camera,
@@ -14,7 +15,6 @@ import {
   RotateCcw,
   Plus,
   Check,
-  AlertTriangle,
   Wifi,
   Save,
   Play,
@@ -181,6 +181,7 @@ export const IpVideoTools: React.FC<IpVideoToolsProps> = ({
   const [activePresetBySource, setActivePresetBySource] = useState<Record<string, number>>({});
   const [storedPresetsBySource, setStoredPresetsBySource] = useState<Record<string, number[]>>({});
   const [statusBanner, setStatusBanner] = useState<string | null>(null);
+  const [statusBannerTone, setStatusBannerTone] = useState<"info" | "error">("info");
 
   // Multi-receiver routing presets
   const [routingPresets, setRoutingPresets] = useState<RoutingPreset[]>(() => loadRoutingPresets());
@@ -205,13 +206,14 @@ export const IpVideoTools: React.FC<IpVideoToolsProps> = ({
     };
   }, []);
 
-  const notify = useCallback((msg: string) => {
+  const notify = useCallback((msg: string, tone: "info" | "error" = "info") => {
     setStatusBanner(msg);
+    setStatusBannerTone(tone);
     if (notifyTimerRef.current !== null) window.clearTimeout(notifyTimerRef.current);
     notifyTimerRef.current = window.setTimeout(() => {
       setStatusBanner(null);
       notifyTimerRef.current = null;
-    }, 2600);
+    }, 3200);
   }, []);
 
   // HTML5 Canvas SMPTE / HD Color Bars & Motion Sweep loop
@@ -575,6 +577,7 @@ export const IpVideoTools: React.FC<IpVideoToolsProps> = ({
       const routes = resolveRoutes(preset);
       let applied = 0;
       let skipped = 0;
+      let failed = 0;
       routes.forEach(({ receiverId, source }) => {
         const rx = receivers.find((r) => r.id === receiverId);
         if (!rx || !source) {
@@ -586,13 +589,35 @@ export const IpVideoTools: React.FC<IpVideoToolsProps> = ({
           skipped += 1;
           return;
         }
-        onSwitchReceiver(receiverId, source);
-        applied += 1;
+        try {
+          onSwitchReceiver(receiverId, source);
+          applied += 1;
+        } catch (err) {
+          failed += 1;
+          notify(
+            err instanceof Error
+              ? err.message
+              : `Failed to request route on ${rx.receiverName}`,
+            "error"
+          );
+        }
       });
+      if (failed > 0) {
+        notify(
+          `"${preset.name}" recall incomplete — ${applied} requested, ${failed} failed` +
+            (skipped > 0 ? `, ${skipped} skipped` : ""),
+          "error"
+        );
+        return;
+      }
+      if (applied === 0) {
+        notify(`"${preset.name}" could not be applied — no valid receiver routes`, "error");
+        return;
+      }
       setActiveRoutingPresetId(preset.id);
       setLastRoutingRecall(preset.name);
       notify(
-        `"${preset.name}" recalled — patched ${applied} receiver(s)` +
+        `"${preset.name}" recall requested for ${applied} receiver(s)` +
           (skipped > 0 ? ` · ${skipped} skipped` : "")
       );
     },
@@ -660,13 +685,15 @@ export const IpVideoTools: React.FC<IpVideoToolsProps> = ({
     >
       {statusBanner && (
         <div
+          role={statusBannerTone === "error" ? "alert" : "status"}
           style={{
             position: "fixed",
             bottom: 24,
             right: 24,
-            background: "#121721",
-            border: "1px solid #3B82F6",
-            color: "#FFFFFF",
+            maxWidth: 420,
+            background: statusBannerTone === "error" ? "#2A1215" : "#121721",
+            border: `1px solid ${statusBannerTone === "error" ? "#EF4444" : "#3B82F6"}`,
+            color: statusBannerTone === "error" ? "#FCA5A5" : "#FFFFFF",
             padding: "9px 14px",
             borderRadius: 8,
             fontSize: 12.5,
@@ -717,16 +744,37 @@ export const IpVideoTools: React.FC<IpVideoToolsProps> = ({
 
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           {driftedCount > 0 && (
-            <button
-              type="button"
-              onClick={() => {
+            <HoldConfirmButton
+              label={`Heal ${driftedCount} Drifted Receiver${driftedCount > 1 ? "s" : ""}`}
+              ariaLabel={`Auto-heal ${driftedCount} drifted IP Video receiver${driftedCount > 1 ? "s" : ""}. Hold to confirm.`}
+              holdMs={900}
+              danger={false}
+              onConfirm={() => {
+                let requested = 0;
+                let failed = 0;
                 receivers
                   .filter((r) => r.status === "DRIFT")
-                  .forEach((r) => onSwitchReceiver(r.id, r.expectedSource));
-                notify(`Re-patched ${driftedCount} drifted IP Video receiver(s)`);
+                  .forEach((r) => {
+                    try {
+                      onSwitchReceiver(r.id, r.expectedSource);
+                      requested += 1;
+                    } catch (err) {
+                      failed += 1;
+                      notify(
+                        err instanceof Error ? err.message : `Failed to heal ${r.receiverName}`,
+                        "error"
+                      );
+                    }
+                  });
+                if (failed > 0) {
+                  notify(`Auto-heal incomplete — ${requested} requested, ${failed} failed`, "error");
+                } else {
+                  notify(`Re-patch requested for ${requested} drifted receiver(s)`);
+                }
               }}
               style={{
                 height: 30,
+                minHeight: 30,
                 padding: "0 11px",
                 borderRadius: 6,
                 background: "#92400E",
@@ -735,14 +783,8 @@ export const IpVideoTools: React.FC<IpVideoToolsProps> = ({
                 fontSize: 11.5,
                 fontWeight: 700,
                 cursor: "pointer",
-                display: "flex",
-                alignItems: "center",
-                gap: 5,
               }}
-            >
-              <AlertTriangle size={13} />
-              Heal {driftedCount} Drifted Receiver{driftedCount > 1 ? "s" : ""}
-            </button>
+            />
           )}
         </div>
       </div>
@@ -884,12 +926,16 @@ export const IpVideoTools: React.FC<IpVideoToolsProps> = ({
                 <div className="mono" style={{ fontSize: 10.5, color: "#64748B" }}>
                   {routeCount} receiver{routeCount === 1 ? "" : "s"} · {preset.builtin ? "auto-matched to live sources" : "saved crosspoints"}
                 </div>
-                <button
-                  type="button"
-                  onClick={() => recallRoutingPreset(preset)}
+                <HoldConfirmButton
+                  label="Recall All"
+                  ariaLabel={`Recall routing preset ${preset.name} across ${routeCount} receiver(s). Hold to confirm.`}
+                  holdMs={900}
+                  danger={false}
                   disabled={routeCount === 0}
+                  onConfirm={() => recallRoutingPreset(preset)}
                   style={{
                     height: 30,
+                    minHeight: 30,
                     borderRadius: 6,
                     background: routeCount === 0 ? "#161B24" : active ? "#2563EB" : "#1E293B",
                     border: `1px solid ${routeCount === 0 ? "#283344" : "#3B82F6"}`,
@@ -897,14 +943,8 @@ export const IpVideoTools: React.FC<IpVideoToolsProps> = ({
                     fontSize: 11.5,
                     fontWeight: 800,
                     cursor: routeCount === 0 ? "not-allowed" : "pointer",
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    gap: 6,
                   }}
-                >
-                  <Play size={12} /> Recall All
-                </button>
+                />
               </div>
             );
           })}

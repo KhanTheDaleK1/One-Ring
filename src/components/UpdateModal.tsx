@@ -1,4 +1,4 @@
-import React, { useMemo } from "react";
+import React, { useEffect, useMemo } from "react";
 import { Download, Sparkles, X, ExternalLink } from "lucide-react";
 import type { UpdateInfo } from "../types";
 import { openUrl } from "../bridge";
@@ -9,6 +9,16 @@ interface UpdateModalProps {
 }
 
 export const UpdateModal: React.FC<UpdateModalProps> = ({ update, onDismiss }) => {
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        onDismiss();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [onDismiss]);
   // Determine user OS platform from userAgent
   const platform = useMemo(() => {
     if (typeof navigator === "undefined") return "unknown";
@@ -71,8 +81,14 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({ update, onDismiss }) =
         zIndex: 9999,
         padding: 20,
       }}
+      onClick={(event) => {
+        if (event.target === event.currentTarget) onDismiss();
+      }}
     >
       <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="update-modal-title"
         style={{
           width: "100%",
           maxWidth: 580,
@@ -105,7 +121,10 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({ update, onDismiss }) =
               <Sparkles size={24} color="#60A5FA" />
             </div>
             <div>
-              <div style={{ fontSize: 18, fontWeight: 700, color: "#FFFFFF", display: "flex", alignItems: "center", gap: 8 }}>
+              <div
+                id="update-modal-title"
+                style={{ fontSize: 18, fontWeight: 700, color: "#FFFFFF", display: "flex", alignItems: "center", gap: 8 }}
+              >
                 New Revision Available
                 <span
                   style={{
@@ -128,6 +147,7 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({ update, onDismiss }) =
           <button
             type="button"
             onClick={onDismiss}
+            aria-label="Close update dialog"
             style={{
               background: "transparent",
               border: "none",
@@ -210,7 +230,7 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({ update, onDismiss }) =
             style={{
               padding: "9px 16px",
               background: "#1E293B",
-              border: "1px solid #334155",
+              border: "1px solid #475569",
               color: "#CBD5E1",
               borderRadius: 6,
               cursor: "pointer",
@@ -250,7 +270,7 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({ update, onDismiss }) =
               gap: 4,
               padding: "9px 12px",
               background: "transparent",
-              border: "1px solid #334155",
+              border: "1px solid #475569",
               color: "#94A3B8",
               borderRadius: 6,
               cursor: "pointer",
@@ -258,7 +278,7 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({ update, onDismiss }) =
             }}
           >
             <ExternalLink size={14} />
-            GitHub
+            Release page
           </button>
         </div>
       </div>

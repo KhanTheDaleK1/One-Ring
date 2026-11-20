@@ -1,9 +1,8 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { HoldConfirmButton } from "./HoldConfirmButton";
 import {
   Check,
-  Lock,
-  Unlock,
   Clock,
   Activity,
   Radio,
@@ -212,6 +211,9 @@ export const AoipMatrixView: React.FC<AoipMatrixViewProps> = ({
   const [showSpareChannels, setShowSpareChannels] = useState<boolean>(false);
   const [identifyingLocal, setIdentifyingLocal] = useState<Record<string, boolean>>({});
   const [noticeMsg, setNoticeMsg] = useState<string | null>(null);
+  const [controlError, setControlError] = useState<string | null>(null);
+  const [controlPending, setControlPending] = useState<Record<string, boolean>>({});
+  const [pendingClearKey, setPendingClearKey] = useState<string | null>(null);
   const [optimisticPatches, setOptimisticPatches] = useState<
     Record<string, { txDevice: string; txChannel: string; rxStatus: AoipRoute["rxStatus"] }>
   >({});
@@ -219,9 +221,19 @@ export const AoipMatrixView: React.FC<AoipMatrixViewProps> = ({
   const [deviceIpMapping, setDeviceIpMapping] = useState<Record<string, string>>({});
   const [meterPeaks, setMeterPeaks] = useState<Record<string, number>>({});
 
+  const noticeTimerRef = useRef<number | null>(null);
+  const clearConfirmTimerRef = useRef<number | null>(null);
+
   useEffect(() => {
     setOptimisticPatches({});
   }, [routes]);
+
+  useEffect(() => {
+    return () => {
+      if (noticeTimerRef.current !== null) window.clearTimeout(noticeTimerRef.current);
+      if (clearConfirmTimerRef.current !== null) window.clearTimeout(clearConfirmTimerRef.current);
+    };
+  }, []);
 
   // Hydrate real discovered IPs and live dBFS peaks from the AoIP runtime (Tauri only).
   useEffect(() => {
@@ -288,7 +300,17 @@ export const AoipMatrixView: React.FC<AoipMatrixViewProps> = ({
 
   const showNotice = (msg: string) => {
     setNoticeMsg(msg);
-    setTimeout(() => setNoticeMsg(null), 2600);
+    if (noticeTimerRef.current !== null) window.clearTimeout(noticeTimerRef.current);
+    noticeTimerRef.current = window.setTimeout(() => {
+      setNoticeMsg(null);
+      noticeTimerRef.current = null;
+    }, 2600);
+  };
+
+  const cancelPendingClear = () => {
+    if (clearConfirmTimerRef.current !== null) window.clearTimeout(clearConfirmTimerRef.current);
+    clearConfirmTimerRef.current = null;
+    setPendingClearKey(null);
   };
 
   const isPreviewMode = routes.length === 0;
@@ -424,18 +446,45 @@ export const AoipMatrixView: React.FC<AoipMatrixViewProps> = ({
   };
 
   const activeDeviceIp = activeDeviceCfg.ip || deviceIpMap[activeDevice] || "";
-  const emitControl = (
+  const controlKey = (
+    action: "sample_rate" | "latency_ms" | "device_lock" | "clock_leader",
+    value: number
+  ) => `${activeDeviceIp}::${action}::${value}`;
+  const isControlPending = (
+    action: "sample_rate" | "latency_ms" | "device_lock" | "clock_leader",
+    value: number
+  ) => Boolean(controlPending[controlKey(action, value)]);
+
+  const emitControl = async (
     action: "sample_rate" | "latency_ms" | "device_lock" | "clock_leader",
     value: number
   ) => {
+    const key = controlKey(action, value);
     if (!activeDeviceIp.trim()) {
-      showNotice(
+      setControlError(
         `No IP configured for ${activeDevice} — set a device IP before sending Audio Network controls`
       );
       return false;
     }
-    onControlDevice?.(activeDeviceIp, action, value);
-    return true;
+    if (!onControlDevice) {
+      setControlError(`Device control channel unavailable — cannot send ${action} to ${activeDevice}`);
+      return false;
+    }
+    setControlError(null);
+    setControlPending((prev) => ({ ...prev, [key]: true }));
+    try {
+      await onControlDevice(activeDeviceIp, action, value);
+      return true;
+    } catch (err) {
+      setControlError(err instanceof Error ? err.message : `Failed to send ${action} to ${activeDevice}`);
+      return false;
+    } finally {
+      setControlPending((prev) => {
+        const next = { ...prev };
+        delete next[key];
+        return next;
+      });
+    }
   };
 
   const visibleTxCols = useMemo(
@@ -465,12 +514,12 @@ export const AoipMatrixView: React.FC<AoipMatrixViewProps> = ({
 
   const handleCrosspointClick = (row: RxRow, col: TxColumn) => {
     if (deviceLocked) {
-      showNotice("Device Lock active — unlock to modify Aoip subscriptions");
+      setControlError("Device Lock active — unlock to modify Aoip subscriptions");
       return;
     }
 
     if (!row.rxIp.trim()) {
-      showNotice(
+      setControlError(
         `No IP configured for ${row.device} — add the device IP in Settings before patching Aoip routes`
       );
       return;
@@ -478,19 +527,39 @@ export const AoipMatrixView: React.FC<AoipMatrixViewProps> = ({
 
     const isSame = row.txDevice === col.device && row.txChannel === col.channel;
     if (isSame) {
-      setOptimisticPatches((prev) => ({
-        ...prev,
-        [row.key]: { txDevice: "", txChannel: "", rxStatus: "UNRESOLVED" },
-      }));
-      onRoutePatch(row.rxIp, row.rxChanId, "", "");
-      showNotice(`Unsubscribed ${row.device} (${row.channel})`);
-    } else {
-      setOptimisticPatches((prev) => ({
-        ...prev,
-        [row.key]: { txDevice: col.device, txChannel: col.channel, rxStatus: "UNICAST" },
-      }));
-      onRoutePatch(row.rxIp, row.rxChanId, col.channel, col.device);
-      showNotice(`Patched ${row.device} (${row.channel}) <- ${col.device} (${col.channel})`);
+      if (pendingClearKey !== row.key) {
+        cancelPendingClear();
+        setPendingClearKey(row.key);
+        clearConfirmTimerRef.current = window.setTimeout(() => setPendingClearKey(null), 4000);
+        showNotice(`Confirm: select ${row.device} (${row.channel}) again to unsubscribe`);
+        return;
+      }
+      cancelPendingClear();
+    } else if (pendingClearKey) {
+      cancelPendingClear();
+    }
+
+    const nextPatch = isSame
+      ? { txDevice: "", txChannel: "", rxStatus: "UNRESOLVED" as const }
+      : { txDevice: col.device, txChannel: col.channel, rxStatus: "UNICAST" as const };
+
+    try {
+      if (isSame) {
+        onRoutePatch(row.rxIp, row.rxChanId, "", "");
+      } else {
+        onRoutePatch(row.rxIp, row.rxChanId, col.channel, col.device);
+      }
+      setControlError(null);
+      setOptimisticPatches((prev) => ({ ...prev, [row.key]: nextPatch }));
+      showNotice(
+        isSame
+          ? `Requested unsubscribe: ${row.device} (${row.channel})`
+          : `Requested patch: ${row.device} (${row.channel}) <- ${col.device} (${col.channel})`
+      );
+    } catch (err) {
+      setControlError(
+        err instanceof Error ? err.message : `Failed to update route on ${row.device} (${row.channel})`
+      );
     }
   };
 
@@ -502,8 +571,12 @@ export const AoipMatrixView: React.FC<AoipMatrixViewProps> = ({
       return;
     }
     setIdentifyingLocal((prev) => ({ ...prev, [devName]: !prev[devName] }));
-    onIdentifyDevice(ip);
-    showNotice(`Sent Aoip IDENTIFY (0x0063) to ${devName} (${ip})`);
+    try {
+      onIdentifyDevice(ip);
+      showNotice(`Requested Aoip IDENTIFY (0x0063) to ${devName} (${ip})`);
+    } catch (err) {
+      setControlError(err instanceof Error ? err.message : `Failed to request IDENTIFY on ${devName}`);
+    }
   };
 
   const hoveredRx = useMemo(
@@ -550,6 +623,29 @@ export const AoipMatrixView: React.FC<AoipMatrixViewProps> = ({
         </div>
       )}
 
+      {controlError && (
+        <div
+          role="alert"
+          style={{
+            position: "fixed",
+            bottom: 24,
+            left: 24,
+            maxWidth: 420,
+            background: "#2A1215",
+            border: "1px solid #EF4444",
+            color: "#FCA5A5",
+            padding: "9px 14px",
+            borderRadius: 8,
+            fontSize: 12.5,
+            fontWeight: 600,
+            zIndex: 10050,
+            boxShadow: "0 10px 30px rgba(0,0,0,0.6)",
+          }}
+        >
+          {controlError}
+        </div>
+      )}
+
       {/* Top Header & PTPv2 Clock Status Badge */}
       <div
         style={{
@@ -578,18 +674,18 @@ export const AoipMatrixView: React.FC<AoipMatrixViewProps> = ({
               gap: 7,
               padding: "4px 10px",
               borderRadius: 7,
-              background: "rgba(16, 185, 129, 0.14)",
-              border: "1px solid #10B981",
-              color: "#34D399",
+              background: "rgba(245, 158, 11, 0.12)",
+              border: "1px solid #F59E0B",
+              color: "#FBBF24",
               fontSize: 11.5,
               fontWeight: 700,
               fontFamily: '"JetBrains Mono", ui-monospace, monospace',
             }}
           >
             <Clock size={13} />
-            <span>PTPv2 Grandmaster: {grandmasterDevice}</span>
-            <span style={{ color: "#6EE7B7" }}>•</span>
-            <span>LOCKED (±0.002 ms)</span>
+            <span>PTPv2 Grandmaster (configured): {grandmasterDevice}</span>
+            <span style={{ color: "#FCD34D" }}>•</span>
+            <span>STATUS UNVERIFIED</span>
           </div>
 
           {isPreviewMode && (
@@ -665,17 +761,36 @@ export const AoipMatrixView: React.FC<AoipMatrixViewProps> = ({
             {totalSubscribed} Active Crosspoints
           </span>
 
-          <button
-            type="button"
-            onClick={() => {
+          <span
+            role="status"
+            aria-live="polite"
+            style={{
+              fontSize: 11,
+              color: Object.keys(controlPending).length > 0 ? "#FBBF24" : "#64748B",
+              fontFamily: '"JetBrains Mono", ui-monospace, monospace',
+            }}
+          >
+            {Object.keys(controlPending).length > 0 ? "Sending control..." : "Controls ready"}
+          </span>
+
+          <HoldConfirmButton
+            label={deviceLocked ? "Device Locked" : "Device Unlocked"}
+            ariaLabel={`${deviceLocked ? "Release" : "Engage"} device lock on ${activeDevice}. Hold to confirm.`}
+            holdMs={1100}
+            danger={!deviceLocked}
+            disabled={isControlPending("device_lock", deviceLocked ? 0 : 1)}
+            onConfirm={() => {
               const next = !deviceLocked;
-              if (emitControl("device_lock", next ? 1 : 0)) {
-                setDeviceLocked(next);
-                showNotice(next ? "Device Lock engaged: matrix read-only" : "Device Lock released");
-              }
+              void (async () => {
+                if (await emitControl("device_lock", next ? 1 : 0)) {
+                  setDeviceLocked(next);
+                  showNotice(next ? "Device lock requested: matrix read-only" : "Device unlock requested");
+                }
+              })();
             }}
             style={{
               height: 34,
+              minHeight: 34,
               padding: "0 12px",
               borderRadius: 7,
               fontSize: 12,
@@ -684,14 +799,8 @@ export const AoipMatrixView: React.FC<AoipMatrixViewProps> = ({
               background: deviceLocked ? "#7F1D1D" : "#161B24",
               border: `1px solid ${deviceLocked ? "#EF4444" : "#283344"}`,
               color: deviceLocked ? "#FECACA" : "#E2E8F0",
-              display: "flex",
-              alignItems: "center",
-              gap: 6,
             }}
-          >
-            {deviceLocked ? <Lock size={14} color="#F87171" /> : <Unlock size={14} color="#34D399" />}
-            {deviceLocked ? "Device Locked" : "Device Unlocked"}
-          </button>
+          />
         </div>
       </div>
 
@@ -745,12 +854,14 @@ export const AoipMatrixView: React.FC<AoipMatrixViewProps> = ({
                 <button
                   key={sr}
                   type="button"
-                  disabled={deviceLocked}
+                  disabled={deviceLocked || isControlPending("sample_rate", sr)}
                   onClick={() => {
-                    if (emitControl("sample_rate", sr)) {
-                      patchDeviceConfig({ sampleRate: sr });
-                      showNotice(`${activeDevice} Sample Rate set to ${sr} kHz`);
-                    }
+                    void (async () => {
+                      if (await emitControl("sample_rate", sr)) {
+                        patchDeviceConfig({ sampleRate: sr });
+                        showNotice(`${activeDevice} sample rate change requested: ${sr} kHz`);
+                      }
+                    })();
                   }}
                   style={{
                     height: 28,
@@ -758,11 +869,11 @@ export const AoipMatrixView: React.FC<AoipMatrixViewProps> = ({
                     borderRadius: 5,
                     fontSize: 11,
                     fontWeight: 700,
-                    cursor: deviceLocked ? "not-allowed" : "pointer",
+                    cursor: deviceLocked || isControlPending("sample_rate", sr) ? "not-allowed" : "pointer",
                     background: active ? "#2563EB" : "#161B24",
                     border: `1px solid ${active ? "#60A5FA" : "#283344"}`,
                     color: active ? "#FFFFFF" : "#94A3B8",
-                    opacity: deviceLocked ? 0.6 : 1,
+                    opacity: deviceLocked || isControlPending("sample_rate", sr) ? 0.6 : 1,
                   }}
                 >
                   {sr} kHz
@@ -802,12 +913,16 @@ export const AoipMatrixView: React.FC<AoipMatrixViewProps> = ({
                 <button
                   key={lat}
                   type="button"
-                  disabled={deviceLocked}
+                  disabled={deviceLocked || isControlPending("latency_ms", lat)}
                   onClick={() => {
-                    if (emitControl("latency_ms", lat)) {
-                      patchDeviceConfig({ latencyMs: lat });
-                      showNotice(`${activeDevice} Rx Latency set to ${lat.toFixed(lat < 1 ? 2 : 1)} ms`);
-                    }
+                    void (async () => {
+                      if (await emitControl("latency_ms", lat)) {
+                        patchDeviceConfig({ latencyMs: lat });
+                        showNotice(
+                          `${activeDevice} Rx latency change requested: ${lat.toFixed(lat < 1 ? 2 : 1)} ms`
+                        );
+                      }
+                    })();
                   }}
                   style={{
                     height: 28,
@@ -815,12 +930,12 @@ export const AoipMatrixView: React.FC<AoipMatrixViewProps> = ({
                     borderRadius: 5,
                     fontSize: 11,
                     fontWeight: 700,
-                    cursor: deviceLocked ? "not-allowed" : "pointer",
+                    cursor: deviceLocked || isControlPending("latency_ms", lat) ? "not-allowed" : "pointer",
                     fontFamily: '"JetBrains Mono", ui-monospace, monospace',
                     background: active ? "#065F46" : "#161B24",
                     border: `1px solid ${active ? "#10B981" : "#283344"}`,
                     color: active ? "#34D399" : "#94A3B8",
-                    opacity: deviceLocked ? 0.6 : 1,
+                    opacity: deviceLocked || isControlPending("latency_ms", lat) ? 0.6 : 1,
                   }}
                 >
                   {lat < 1 ? lat.toFixed(2) : lat.toFixed(1)} ms
@@ -832,11 +947,13 @@ export const AoipMatrixView: React.FC<AoipMatrixViewProps> = ({
           {/* Clock Leader */}
           <button
             type="button"
-            disabled={deviceLocked}
+            disabled={deviceLocked || isControlPending("clock_leader", 1)}
             onClick={() => {
-              if (emitControl("clock_leader", 1)) {
-                showNotice(`${activeDevice} set as Clock Leader`);
-              }
+              void (async () => {
+                if (await emitControl("clock_leader", 1)) {
+                  showNotice(`${activeDevice} clock leader change requested`);
+                }
+              })();
             }}
             style={{
               height: 28,
@@ -844,11 +961,11 @@ export const AoipMatrixView: React.FC<AoipMatrixViewProps> = ({
               borderRadius: 5,
               fontSize: 11,
               fontWeight: 700,
-              cursor: deviceLocked ? "not-allowed" : "pointer",
+              cursor: deviceLocked || isControlPending("clock_leader", 1) ? "not-allowed" : "pointer",
               background: "#161B24",
               border: "1px solid #F59E0B",
               color: "#FBBF24",
-              opacity: deviceLocked ? 0.6 : 1,
+              opacity: deviceLocked || isControlPending("clock_leader", 1) ? 0.6 : 1,
               display: "flex",
               alignItems: "center",
               gap: 5,
@@ -1343,22 +1460,12 @@ export const AoipMatrixView: React.FC<AoipMatrixViewProps> = ({
                               return (
                                 <td
                                   key={`${row.key}-${col.key}`}
-                                  onMouseEnter={() =>
-                                    setHoveredCell({ rxKey: row.key, txKey: col.key })
-                                  }
-                                  onMouseLeave={() => setHoveredCell(null)}
-                                  onClick={() => handleCrosspointClick(row, col)}
-                                  title={
-                                    isPatched
-                                      ? `Subscribed: ${row.device}/${row.channel} ← ${col.device}/${col.channel} (Click to unsubscribe)`
-                                      : `Patch ${row.device}/${row.channel} ← ${col.device}/${col.channel}`
-                                  }
                                   style={{
                                     width: 36,
                                     height: 30,
+                                    padding: 0,
                                     textAlign: "center",
                                     verticalAlign: "middle",
-                                    cursor: deviceLocked ? "not-allowed" : "pointer",
                                     borderBottom: "1px solid #1E2533",
                                     borderRight: isGroupEnd
                                       ? "2px solid #283344"
@@ -1371,41 +1478,79 @@ export const AoipMatrixView: React.FC<AoipMatrixViewProps> = ({
                                     transition: "background-color 0.08s ease",
                                   }}
                                 >
-                                  {isPatched ? (
-                                    <span
-                                      style={{
-                                        display: "inline-flex",
-                                        alignItems: "center",
-                                        justifyContent: "center",
-                                        width: 20,
-                                        height: 20,
-                                        borderRadius: 5,
-                                        background:
-                                          row.rxStatus === "UNRESOLVED" ? "#991B1B" : "#059669",
-                                        border: `1px solid ${
-                                          row.rxStatus === "UNRESOLVED" ? "#EF4444" : "#34D399"
-                                        }`,
-                                        color: "#FFFFFF",
-                                        boxShadow: "0 0 8px rgba(16, 185, 129, 0.35)",
-                                      }}
-                                    >
-                                      {row.rxStatus === "UNRESOLVED" ? (
-                                        <AlertTriangle size={12} />
-                                      ) : (
-                                        <Check size={13} strokeWidth={3} />
-                                      )}
-                                    </span>
-                                  ) : (
-                                    <span
-                                      style={{
-                                        display: "inline-block",
-                                        width: 6,
-                                        height: 6,
-                                        borderRadius: "50%",
-                                        background: isCellHover ? "#60A5FA" : "#1E2533",
-                                      }}
-                                    />
-                                  )}
+                                  <button
+                                    type="button"
+                                    disabled={deviceLocked}
+                                    aria-label={
+                                      isPatched
+                                        ? `${row.device} ${row.channel} subscribed from ${col.device} ${col.channel}. Select again to unsubscribe.`
+                                        : `Patch ${row.device} ${row.channel} from ${col.device} ${col.channel}`
+                                    }
+                                    aria-pressed={isPatched}
+                                    title={
+                                      isPatched
+                                        ? pendingClearKey === row.key
+                                          ? `Confirm unsubscribe: ${row.device}/${row.channel}`
+                                          : `Subscribed: ${row.device}/${row.channel} ← ${col.device}/${col.channel} (Select again to unsubscribe)`
+                                        : `Patch ${row.device}/${row.channel} ← ${col.device}/${col.channel}`
+                                    }
+                                    onMouseEnter={() =>
+                                      setHoveredCell({ rxKey: row.key, txKey: col.key })
+                                    }
+                                    onMouseLeave={() => setHoveredCell(null)}
+                                    onFocus={() =>
+                                      setHoveredCell({ rxKey: row.key, txKey: col.key })
+                                    }
+                                    onBlur={() => setHoveredCell(null)}
+                                    onClick={() => handleCrosspointClick(row, col)}
+                                    style={{
+                                      width: "100%",
+                                      height: 30,
+                                      padding: 0,
+                                      border: "none",
+                                      background: "transparent",
+                                      display: "flex",
+                                      alignItems: "center",
+                                      justifyContent: "center",
+                                      cursor: deviceLocked ? "not-allowed" : "pointer",
+                                    }}
+                                  >
+                                    {isPatched ? (
+                                      <span
+                                        style={{
+                                          display: "inline-flex",
+                                          alignItems: "center",
+                                          justifyContent: "center",
+                                          width: 20,
+                                          height: 20,
+                                          borderRadius: 5,
+                                          background:
+                                            row.rxStatus === "UNRESOLVED" ? "#991B1B" : "#059669",
+                                          border: `1px solid ${
+                                            row.rxStatus === "UNRESOLVED" ? "#EF4444" : "#34D399"
+                                          }`,
+                                          color: "#FFFFFF",
+                                          boxShadow: "0 0 8px rgba(16, 185, 129, 0.35)",
+                                        }}
+                                      >
+                                        {row.rxStatus === "UNRESOLVED" ? (
+                                          <AlertTriangle size={12} />
+                                        ) : (
+                                          <Check size={13} strokeWidth={3} />
+                                        )}
+                                      </span>
+                                    ) : (
+                                      <span
+                                        style={{
+                                          display: "inline-block",
+                                          width: 6,
+                                          height: 6,
+                                          borderRadius: "50%",
+                                          background: isCellHover ? "#60A5FA" : "#1E2533",
+                                        }}
+                                      />
+                                    )}
+                                  </button>
                                 </td>
                               );
                             });

@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { Pencil, Check, X } from "lucide-react";
 
 interface ShowNameModalProps {
@@ -16,7 +16,26 @@ export const ShowNameModal: React.FC<ShowNameModalProps> = ({
 }) => {
   const [name, setName] = useState(currentName);
 
+  useEffect(() => {
+    if (isOpen) setName(currentName);
+  }, [isOpen, currentName]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        onClose();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [isOpen, onClose]);
+
   if (!isOpen) return null;
+
+  const trimmed = name.trim();
+  const canSave = trimmed.length > 0;
 
   return (
     <div
@@ -34,8 +53,14 @@ export const ShowNameModal: React.FC<ShowNameModalProps> = ({
         zIndex: 9999,
         padding: 20,
       }}
+      onClick={(event) => {
+        if (event.target === event.currentTarget) onClose();
+      }}
     >
       <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="show-name-modal-title"
         style={{
           width: "100%",
           maxWidth: 440,
@@ -51,13 +76,17 @@ export const ShowNameModal: React.FC<ShowNameModalProps> = ({
         }}
       >
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 8, fontWeight: 700, fontSize: 16 }}>
+          <div
+            id="show-name-modal-title"
+            style={{ display: "flex", alignItems: "center", gap: 8, fontWeight: 700, fontSize: 16 }}
+          >
             <Pencil size={18} color="#60A5FA" />
             Edit Service / Show Name
           </div>
           <button
             type="button"
             onClick={onClose}
+            aria-label="Close show name dialog"
             style={{ background: "transparent", border: "none", color: "#94A3B8", cursor: "pointer" }}
           >
             <X size={18} />
@@ -65,14 +94,18 @@ export const ShowNameModal: React.FC<ShowNameModalProps> = ({
         </div>
 
         <div>
-          <label style={{ display: "block", fontSize: 12, color: "#94A3B8", marginBottom: 6 }}>
-            Show Title (e.g. "Sunday Morning - 10:30 AM")
+          <label
+            htmlFor="show-name-input"
+            style={{ display: "block", fontSize: 12, color: "#94A3B8", marginBottom: 6 }}
+          >
+            Show title
           </label>
           <input
+            id="show-name-input"
             type="text"
             value={name}
             onChange={(e) => setName(e.target.value)}
-            placeholder="e.g. Sunday Morning Worship"
+            placeholder="e.g. Sunday Morning Service"
             autoFocus
             style={{
               width: "100%",
@@ -86,6 +119,11 @@ export const ShowNameModal: React.FC<ShowNameModalProps> = ({
               boxSizing: "border-box",
             }}
           />
+          {!canSave && (
+            <div style={{ marginTop: 6, fontSize: 12, color: "#F87171" }}>
+              Enter a show name to save.
+            </div>
+          )}
         </div>
 
         <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 4 }}>
@@ -95,7 +133,7 @@ export const ShowNameModal: React.FC<ShowNameModalProps> = ({
             style={{
               padding: "8px 14px",
               background: "#1E293B",
-              border: "1px solid #334155",
+              border: "1px solid #475569",
               color: "#CBD5E1",
               borderRadius: 6,
               cursor: "pointer",
@@ -105,8 +143,10 @@ export const ShowNameModal: React.FC<ShowNameModalProps> = ({
           </button>
           <button
             type="button"
+            disabled={!canSave}
             onClick={() => {
-              if (name.trim()) onSave(name.trim());
+              if (!canSave) return;
+              onSave(trimmed);
               onClose();
             }}
             style={{
@@ -114,11 +154,11 @@ export const ShowNameModal: React.FC<ShowNameModalProps> = ({
               alignItems: "center",
               gap: 6,
               padding: "8px 16px",
-              background: "#2563EB",
-              border: "1px solid #3B82F6",
-              color: "#FFFFFF",
+              background: canSave ? "#2563EB" : "#1E293B",
+              border: `1px solid ${canSave ? "#3B82F6" : "#475569"}`,
+              color: canSave ? "#FFFFFF" : "#94A3B8",
               borderRadius: 6,
-              cursor: "pointer",
+              cursor: canSave ? "pointer" : "not-allowed",
               fontWeight: 600,
             }}
           >

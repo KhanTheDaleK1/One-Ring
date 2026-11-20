@@ -194,6 +194,15 @@ export const SlideEditorModal: React.FC<SlideEditorModalProps> = ({
     setSelectedId(normalized[clamp(initialIndex, 0, Math.max(0, normalized.length - 1))]?.id || "");
   }, [isOpen, songTitle, initialIndex]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  useEffect(() => {
+    if (!isOpen) return;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [isOpen, onClose]);
+
   if (!isOpen) return null;
 
   const selectedIndex = Math.max(
@@ -322,6 +331,9 @@ export const SlideEditorModal: React.FC<SlideEditorModalProps> = ({
 
   return (
     <div
+      role="dialog"
+      aria-modal="true"
+      aria-label="Slide and Theme Editor"
       style={{
         position: "fixed",
         inset: 0,
@@ -365,7 +377,7 @@ export const SlideEditorModal: React.FC<SlideEditorModalProps> = ({
               value={draftTitle}
               onChange={(e) => setDraftTitle(e.target.value)}
               placeholder="Deck / song title"
-              style={{ ...fieldStyle, width: 260 }}
+              style={{ ...fieldStyle, width: "min(260px, 100%)" }}
             />
             <span style={{ fontSize: 11, color: "#64748B" }}>
               {draftSlides.length} slide{draftSlides.length === 1 ? "" : "s"}
@@ -382,13 +394,13 @@ export const SlideEditorModal: React.FC<SlideEditorModalProps> = ({
             flex: 1,
             minHeight: 0,
             display: "grid",
-            gridTemplateColumns: "210px minmax(0, 1fr) 300px",
+            gridTemplateColumns: "minmax(160px, 210px) minmax(0, 1fr) minmax(220px, 300px)",
             gap: 12,
             padding: 14,
           }}
         >
           {/* Slide strip */}
-          <div style={{ display: "flex", flexDirection: "column", gap: 8, minHeight: 0 }}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 8, minHeight: 0, minWidth: 0 }}>
             <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
               <button type="button" onClick={addSlide} style={toolButtonStyle} title="Add slide">
                 <Plus size={13} /> Add
@@ -517,7 +529,7 @@ export const SlideEditorModal: React.FC<SlideEditorModalProps> = ({
           </div>
 
           {/* Property panel */}
-          <div style={{ overflowY: "auto", display: "flex", flexDirection: "column", gap: 12, paddingRight: 2 }}>
+          <div style={{ overflowY: "auto", display: "flex", flexDirection: "column", gap: 12, paddingRight: 2, minWidth: 0 }}>
             <div style={{ background: "#111827", border: "1px solid #263244", borderRadius: 8, padding: 12, display: "flex", flexDirection: "column", gap: 10 }}>
               <div>
                 <label style={sectionStyle}>Slide Section</label>

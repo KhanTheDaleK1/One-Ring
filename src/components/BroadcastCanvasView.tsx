@@ -48,6 +48,7 @@ import {
   type MediaEngineStatus,
 } from "../bridge";
 import { ProgramCanvasRenderer } from "./ProgramCanvasRenderer";
+import { HoldConfirmButton } from "./HoldConfirmButton";
 import { StreamAudienceDock } from "./StreamAudienceDock";
 import { SourceSettingsModal } from "./SourceSettingsModal";
 import { SourceFiltersModal } from "./SourceFiltersModal";
@@ -180,12 +181,18 @@ function loadSavedProfile(state: AppStateSnapshot): BroadcastProfileSettings {
 }
 
 function loadSavedStreamConfig(state: AppStateSnapshot): { rtmpUrl: string; streamKey: string } {
+  let persistedUrl = "";
   try {
     const raw = localStorage.getItem(STREAM_CONFIG_STORAGE_KEY);
     if (raw) {
       const parsed = JSON.parse(raw);
-      if (parsed && typeof parsed.rtmpUrl === "string" && typeof parsed.streamKey === "string") {
-        return { rtmpUrl: parsed.rtmpUrl, streamKey: parsed.streamKey };
+      if (parsed && typeof parsed === "object") {
+        if (typeof parsed.rtmpUrl === "string") persistedUrl = parsed.rtmpUrl;
+        // A5: older builds may have persisted the ingest secret. Drop it on sight
+        // and rewrite only the URL so the secret cannot survive a reload.
+        if ("streamKey" in parsed) {
+          localStorage.setItem(STREAM_CONFIG_STORAGE_KEY, JSON.stringify({ rtmpUrl: persistedUrl }));
+        }
       }
     }
   } catch {
@@ -195,7 +202,8 @@ function loadSavedStreamConfig(state: AppStateSnapshot): { rtmpUrl: string; stre
     state.settings?.broadcast?.destinations?.find((d) => d.enabled) ||
     state.settings?.broadcast?.destinations?.[0];
   return {
-    rtmpUrl: dest?.rtmpUrl || "rtmps://ingest.example.com/live2",
+    rtmpUrl: persistedUrl || dest?.rtmpUrl || "rtmps://ingest.example.com/live2",
+    // The key is session-only: it comes from app state, never from browser storage.
     streamKey: dest?.streamKey || "",
   };
 }
@@ -309,6 +317,11 @@ export const BroadcastCanvasView: React.FC<BroadcastCanvasViewProps> = ({
   const [projectorModal, setProjectorModal] = useState<
     null | { mode: "multiview" } | { mode: "source"; sourceId: string }
   >(null);
+  const [pendingDelete, setPendingDelete] = useState<{
+    kind: "scene" | "source";
+    id: string;
+    name: string;
+  } | null>(null);
   const [ccInput, setCcInput] = useState("");
   const [lastCaption, setLastCaption] = useState<string | null>(null);
 
@@ -614,6 +627,17 @@ export const BroadcastCanvasView: React.FC<BroadcastCanvasViewProps> = ({
     }
   };
 
+  const confirmPendingDelete = () => {
+    if (!pendingDelete) return;
+    if (pendingDelete.kind === "scene") {
+      handleRemoveScene(pendingDelete.id);
+    } else {
+      onRemoveSource(pendingDelete.id);
+      if (selectedSourceId === pendingDelete.id) setSelectedSourceId(null);
+    }
+    setPendingDelete(null);
+  };
+
   const handleSaveScenesExplicit = () => {
     const merged = sceneList.map((sc) => (sc.id === activeSceneId ? { ...sc, sources } : sc));
     setSceneList(merged);
@@ -837,6 +861,11 @@ export const BroadcastCanvasView: React.FC<BroadcastCanvasViewProps> = ({
   // Global Hotkeys listener
   const hotkeyHandlerRef = useRef<(e: KeyboardEvent) => void>(() => {});
   hotkeyHandlerRef.current = (e: KeyboardEvent) => {
+    if (e.key === "Escape" && pendingDelete) {
+      e.preventDefault();
+      setPendingDelete(null);
+      return;
+    }
     if (projectorModal && e.key === "Escape") {
       e.preventDefault();
       setProjectorModal(null);
@@ -848,7 +877,8 @@ export const BroadcastCanvasView: React.FC<BroadcastCanvasViewProps> = ({
       settingsModalSource ||
       filtersModalSource ||
       transformModalSource ||
-      projectorModal
+      projectorModal ||
+      pendingDelete
     ) {
       return;
     }
@@ -944,14 +974,14 @@ export const BroadcastCanvasView: React.FC<BroadcastCanvasViewProps> = ({
   };
 
   const handleSaveBroadcastStreamConfig = (url: string, key: string) => {
-    const nextCfg = { rtmpUrl: url, streamKey: key };
-    setStreamConfig(nextCfg);
+    // Keep the secret in React state only (A5). The persisted copy holds the URL.
+    setStreamConfig({ rtmpUrl: url, streamKey: key });
     try {
-      localStorage.setItem(STREAM_CONFIG_STORAGE_KEY, JSON.stringify(nextCfg));
+      localStorage.setItem(STREAM_CONFIG_STORAGE_KEY, JSON.stringify({ rtmpUrl: url }));
     } catch {
       // ignore
     }
-    notify("Saved stream ingest configuration");
+    notify("Saved ingest URL (stream key kept for this session only)");
   };
 
   const handleSaveBroadcastHotkeys = (nextHotkeys: Record<string, string>) => {
@@ -1314,7 +1344,16 @@ export const BroadcastCanvasView: React.FC<BroadcastCanvasViewProps> = ({
       </div>
 
       {/* Main Broadcast Work Area */}
-      <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) 400px", gap: 14, flex: 1, minHeight: 0 }}>
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "minmax(0, 1fr) minmax(280px, 400px)",
+          gap: 14,
+          flex: 1,
+          minHeight: 0,
+          minWidth: 0,
+        }}
+      >
         {/* Left: Program / Studio Dual Video Canvas & Live CC Bar */}
         <div
           style={{
@@ -1743,7 +1782,7 @@ export const BroadcastCanvasView: React.FC<BroadcastCanvasViewProps> = ({
         </div>
 
         {/* Right: Broadcast Scenes, Sources Stack & Stream Controls */}
-        <div style={{ display: "flex", flexDirection: "column", gap: 12, minHeight: 0 }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: 12, minHeight: 0, minWidth: 0 }}>
           {/* Broadcast Scenes Switcher & Collections Dock */}
           <div style={{ background: "#0D1117", border: "1px solid #1E2533", borderRadius: 10, padding: 12 }}>
             <div
@@ -1888,8 +1927,9 @@ export const BroadcastCanvasView: React.FC<BroadcastCanvasViewProps> = ({
                     {sceneList.length > 1 && (
                       <button
                         type="button"
-                        title={`Delete ${sc.name}`}
-                        onClick={() => handleRemoveScene(sc.id)}
+                        aria-label={`Delete scene ${sc.name}`}
+                        title={`Delete ${sc.name} (requires confirmation)`}
+                        onClick={() => setPendingDelete({ kind: "scene", id: sc.id, name: sc.name })}
                         style={{
                           background: "transparent",
                           border: "1px solid #283344",
@@ -1953,7 +1993,18 @@ export const BroadcastCanvasView: React.FC<BroadcastCanvasViewProps> = ({
                 {sources.map((s) => (
                   <div
                     key={s.id}
+                    role="button"
+                    tabIndex={0}
+                    aria-label={`Select source ${s.name}`}
+                    aria-pressed={selectedSourceId === s.id}
                     onClick={() => setSelectedSourceId(s.id)}
+                    onKeyDown={(e) => {
+                      if (e.target !== e.currentTarget) return;
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        setSelectedSourceId(s.id);
+                      }
+                    }}
                     onContextMenu={(e) => {
                       e.preventDefault();
                       e.stopPropagation();
@@ -1993,6 +2044,7 @@ export const BroadcastCanvasView: React.FC<BroadcastCanvasViewProps> = ({
                             setRenamingId(null);
                           }}
                           onKeyDown={(e) => {
+                            e.stopPropagation();
                             if (e.key === "Enter") {
                               if (renameText.trim()) {
                                 patchSource(s.id, (prev) => ({ ...prev, name: renameText.trim() }));
@@ -2117,10 +2169,11 @@ export const BroadcastCanvasView: React.FC<BroadcastCanvasViewProps> = ({
                       </button>
                       <button
                         type="button"
-                        title="Remove Source"
+                        aria-label={`Remove source ${s.name}`}
+                        title="Remove Source (requires confirmation)"
                         onClick={(e) => {
                           e.stopPropagation();
-                          onRemoveSource(s.id);
+                          setPendingDelete({ kind: "source", id: s.id, name: s.name });
                         }}
                         style={{
                           background: "transparent",
@@ -2716,6 +2769,74 @@ export const BroadcastCanvasView: React.FC<BroadcastCanvasViewProps> = ({
                   No sources available in active scene to project. Add a source first.
                 </div>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Destructive action confirmation — prevents accidental scene/source loss during a live show */}
+      {pendingDelete && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="Confirm deletion"
+          aria-describedby="broadcast-delete-confirm-text"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setPendingDelete(null);
+          }}
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(5, 7, 11, 0.82)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 10120,
+            padding: 20,
+          }}
+        >
+          <div
+            style={{
+              width: "100%",
+              maxWidth: 430,
+              background: "#12161F",
+              border: "1px solid #EF4444",
+              borderRadius: 12,
+              padding: 20,
+              boxShadow: "0 20px 60px rgba(0,0,0,0.7)",
+            }}
+          >
+            <h3 style={{ margin: "0 0 10px", color: "#FCA5A5", fontSize: 16 }}>
+              Delete {pendingDelete.kind}?
+            </h3>
+            <p id="broadcast-delete-confirm-text" style={{ margin: "0 0 18px", color: "#CBD5E1", fontSize: 13, lineHeight: 1.5 }}>
+              <strong>{pendingDelete.name}</strong> will be removed from this broadcast scene.
+              {anyLive && " The show is currently live — double-check before continuing."}
+            </p>
+            <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", flexWrap: "wrap" }}>
+              <button
+                type="button"
+                onClick={() => setPendingDelete(null)}
+                style={{
+                  minHeight: 42,
+                  padding: "0 14px",
+                  background: "#1C222D",
+                  border: "1px solid #334155",
+                  color: "#E2E8F0",
+                  borderRadius: 6,
+                  cursor: "pointer",
+                  fontSize: 13,
+                  fontWeight: 600,
+                }}
+              >
+                Cancel
+              </button>
+              <HoldConfirmButton
+                label={`Hold to delete ${pendingDelete.kind}`}
+                holdMs={1200}
+                onConfirm={confirmPendingDelete}
+                style={{ minHeight: 42, fontSize: 13 }}
+              />
             </div>
           </div>
         </div>

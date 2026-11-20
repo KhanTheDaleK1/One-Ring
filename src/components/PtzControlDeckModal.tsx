@@ -359,6 +359,17 @@ export const PtzControlDeckModal: React.FC<PtzControlDeckModalProps> = ({
     };
   }, [isOpen, stopAll]);
 
+  useEffect(() => {
+    if (!isOpen) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      e.stopPropagation();
+      onClose();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [isOpen, onClose]);
+
   if (!isOpen) return null;
 
   const addCamera = () => {
@@ -504,6 +515,9 @@ export const PtzControlDeckModal: React.FC<PtzControlDeckModalProps> = ({
     >
       <div
         className="card"
+        role="dialog"
+        aria-modal="true"
+        aria-label="PTZ control deck and preset programmer"
         style={{
           width: 1080,
           maxWidth: "96vw",

@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { Sliders, Activity, Plus, Trash2, X, Radio } from "lucide-react";
 
 export interface MidiBinding {
@@ -84,6 +84,17 @@ export const MidiTriggerModal: React.FC<MidiTriggerModalProps> = ({
   const [isListening, setIsListening] = useState<string | null>(null);
   const [midiStatus, setMidiStatus] = useState<string>("Checking Web MIDI devices...");
 
+  const savedBindingsRef = useRef<string>(JSON.stringify(bindings));
+  const isDirty = JSON.stringify(bindings) !== savedBindingsRef.current;
+
+  const requestClose = useCallback(() => {
+    if (JSON.stringify(bindings) !== savedBindingsRef.current) {
+      if (!window.confirm("Discard unsaved MIDI binding changes?")) return;
+      setBindings(JSON.parse(savedBindingsRef.current) as MidiBinding[]);
+    }
+    onClose();
+  }, [bindings, onClose]);
+
   useEffect(() => {
     if (!isOpen) return;
     let midiAccess: any = null;
@@ -149,6 +160,17 @@ export const MidiTriggerModal: React.FC<MidiTriggerModalProps> = ({
     };
   }, [isOpen]);
 
+  useEffect(() => {
+    if (!isOpen) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      e.stopPropagation();
+      requestClose();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [isOpen, requestClose]);
+
   if (!isOpen) return null;
 
   const handleAddBinding = () => {
@@ -172,10 +194,13 @@ export const MidiTriggerModal: React.FC<MidiTriggerModalProps> = ({
   };
 
   const handleDone = () => {
+    const serialized = JSON.stringify(bindings);
     try {
-      localStorage.setItem(MIDI_STORAGE_KEY, JSON.stringify(bindings));
+      localStorage.setItem(MIDI_STORAGE_KEY, serialized);
     } catch {}
     onSaveBindings?.(bindings);
+    savedBindingsRef.current = serialized;
+    window.dispatchEvent(new CustomEvent("onering-midi-updated"));
     onClose();
   };
 
@@ -194,6 +219,9 @@ export const MidiTriggerModal: React.FC<MidiTriggerModalProps> = ({
     >
       <div
         className="card"
+        role="dialog"
+        aria-modal="true"
+        aria-label="MIDI hardware and control surface mapping"
         style={{
           width: "860px",
           maxHeight: "85vh",
@@ -222,13 +250,14 @@ export const MidiTriggerModal: React.FC<MidiTriggerModalProps> = ({
                 MIDI Hardware & Control Surface Mapping
               </h2>
               <span className="mono" style={{ fontSize: 12, color: "#9CA3AF" }}>
-                USB MIDI Controllers, Control Surfaces, Control Surface, Foot Pedals
+                USB MIDI Controllers, Control Surfaces, Foot Pedals
+                {isDirty && <strong style={{ color: "#FBBF24", marginLeft: 6 }}>• Unsaved changes</strong>}
               </span>
             </div>
           </div>
           <button
             type="button"
-            onClick={onClose}
+            onClick={requestClose}
             className="btn"
             style={{ padding: "6px 8px", background: "transparent", border: "none" }}
           >

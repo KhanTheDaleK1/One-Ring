@@ -70,7 +70,7 @@ type SettingsTab =
 type RelayMode = "disabled" | AudienceRelayConfig["mode"];
 type HealthLevel = "ok" | "warn" | "error" | "none";
 
-const APP_VERSION = "0.3.3";
+const APP_VERSION = "0.3.4";
 const RELAY_STORAGE_KEY = "onering_audience_relay_config";
 const CAMERA_ROSTER_KEY = "onering_ptz_camera_roster";
 
@@ -312,7 +312,6 @@ const inputStyle: React.CSSProperties = {
   color: "#F3F4F6",
   border: "1px solid #2E3746",
   fontSize: 13,
-  outline: "none",
 };
 
 const labelStyle: React.CSSProperties = {
@@ -440,6 +439,66 @@ const SecretInput: React.FC<{
   </div>
 );
 
+const NumericInput: React.FC<{
+  value: number;
+  onCommit: (value: number) => void;
+  min?: number;
+  max?: number;
+  step?: number;
+  integer?: boolean;
+  style?: React.CSSProperties;
+  className?: string;
+  "aria-label"?: string;
+}> = ({ value, onCommit, min, max, step, integer = true, style, className, ...rest }) => {
+  const [text, setText] = useState(String(value));
+  const [focused, setFocused] = useState(false);
+
+  useEffect(() => {
+    if (!focused) setText(String(value));
+  }, [value, focused]);
+
+  const commit = () => {
+    const raw = text.trim();
+    if (raw === "") {
+      setText(String(value));
+      return;
+    }
+    let parsed = integer ? parseInt(raw, 10) : Number(raw);
+    if (!Number.isFinite(parsed)) {
+      setText(String(value));
+      return;
+    }
+    if (typeof min === "number") parsed = Math.max(min, parsed);
+    if (typeof max === "number") parsed = Math.min(max, parsed);
+    if (parsed !== value) onCommit(parsed);
+    setText(String(parsed));
+  };
+
+  return (
+    <input
+      {...rest}
+      type="number"
+      className={className}
+      style={style}
+      min={min}
+      max={max}
+      step={step}
+      value={text}
+      onFocus={() => setFocused(true)}
+      onChange={(event) => setText(event.target.value)}
+      onBlur={() => {
+        setFocused(false);
+        commit();
+      }}
+      onKeyDown={(event) => {
+        if (event.key === "Enter") {
+          event.currentTarget.blur();
+        }
+      }}
+    />
+  );
+};
+
 export const SettingsView: React.FC<SettingsViewProps> = ({
   state,
   onSave,
@@ -458,6 +517,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const [showSecrets, setShowSecrets] = useState<Record<string, boolean>>({});
   const [showMidiModal, setShowMidiModal] = useState(false);
   const [saveNote, setSaveNote] = useState<string | null>(null);
+  const [saveError, setSaveError] = useState<string | null>(null);
   const [hostDisplays, setHostDisplays] = useState<HostDisplayInfo[]>([]);
   const [testResults, setTestResults] = useState<Partial<Record<SettingsTab, ConnectionTestResult>>>(
     {}
@@ -500,6 +560,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     setDraft(cloneSettings(state.settings));
     if (lastSavedSettingsRef.current !== incomingSettings) {
       setSaveNote(null);
+      setSaveError(null);
     }
     lastSavedSettingsRef.current = null;
   }, [incomingSettings]);
@@ -547,73 +608,100 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     return () => window.removeEventListener("beforeunload", warn);
   }, [dirty, draft.general.confirmUnsavedLeave]);
 
-  const validation = useMemo(() => {
-    const errors: Record<string, string> = {};
+  const validationIssues = useMemo(() => {
+    const issues: Array<{ key: string; tab: SettingsTab; message: string }> = [];
+    const add = (key: string, tab: SettingsTab, message: string) => issues.push({ key, tab, message });
+
     if (draft.general.engineerPin !== "" && !/^\d{4,8}$/.test(draft.general.engineerPin)) {
-      errors.pin = "Engineer PIN must be empty or 4–8 digits.";
+      add("pin", "general", "Engineer PIN must be empty or 4–8 digits.");
     }
     if (draft.console.ipAddress.trim() && !isValidHost(draft.console.ipAddress)) {
-      errors.consoleIp = "Enter a valid IPv4 address or hostname.";
+      add("consoleIp", "console", "Enter a valid IPv4 address or hostname for the console.");
     }
     if (!isValidPort(draft.console.oscPort)) {
-      errors.consolePort = "OSC port must be between 1 and 65535.";
+      add("consolePort", "console", "OSC port must be between 1 and 65535.");
     }
     if (draft.console.keepaliveIntervalSec < 1 || draft.console.keepaliveIntervalSec > 120) {
-      errors.keepalive = "Keepalive interval must be between 1 and 120 seconds.";
+      add("keepalive", "console", "Keepalive interval must be between 1 and 120 seconds.");
     }
     if (!isValidPort(draft.aoip.conmonMeterPort)) {
-      errors.aoipMeterPort = "Metering UDP port must be between 1 and 65535.";
+      add("aoipMeterPort", "aoip", "Metering UDP port must be between 1 and 65535.");
     }
     if (!isValidPort(draft.aoip.conmonControlPort)) {
-      errors.aoipControlPort = "Control UDP port must be between 1 and 65535.";
+      add("aoipControlPort", "aoip", "Control UDP port must be between 1 and 65535.");
     }
     if (draft.aoip.clockSyncWarnMs < 1 || draft.aoip.clockSyncErrorMs < 1) {
-      errors.clockThresholds = "Clock thresholds must be positive values.";
+      add("clockThresholds", "aoip", "Clock thresholds must be positive values.");
     }
     draft.broadcast.destinations.forEach((destination) => {
       if (destination.enabled && !isValidRtmpUrl(destination.rtmpUrl)) {
-        errors[`rtmp-${destination.id}`] = "Use an rtmp:// or rtmps:// ingest URL.";
+        add(
+          `rtmp-${destination.id}`,
+          "broadcast",
+          `Use an rtmp:// or rtmps:// ingest URL for ${destination.platform || "this destination"}.`
+        );
       }
     });
     if (relayMode !== "disabled") {
       if (!relay.endpointUrl.trim() || !isValidEndpoint(relay.endpointUrl)) {
-        errors.relayEndpoint = "Enter a valid http(s) or ws(s) endpoint URL.";
+        add("relayEndpoint", "broadcast", "Enter a valid http(s) or ws(s) relay endpoint URL.");
       }
       if (relay.statsWebhookUrl.trim() && !isValidEndpoint(relay.statsWebhookUrl)) {
-        errors.relayStats = "Viewer count poll URL must be a valid http(s) or ws(s) URL.";
+        add("relayStats", "broadcast", "Viewer count poll URL must be a valid http(s) or ws(s) URL.");
       }
     }
     if (draft.ipVideoPtz.discoveryRangeStart.trim() && !isValidHost(draft.ipVideoPtz.discoveryRangeStart)) {
-      errors.rangeStart = "Discovery range start must be a valid IPv4 address or hostname.";
+      add("rangeStart", "ipVideo", "Discovery range start must be a valid IPv4 address or hostname.");
     }
     if (draft.ipVideoPtz.discoveryRangeEnd.trim() && !isValidHost(draft.ipVideoPtz.discoveryRangeEnd)) {
-      errors.rangeEnd = "Discovery range end must be a valid IPv4 address or hostname.";
+      add("rangeEnd", "ipVideo", "Discovery range end must be a valid IPv4 address or hostname.");
     }
     if (!isValidPort(draft.ipVideoPtz.ptzIpPort)) {
-      errors.ptzPort = "Camera control port must be between 1 and 65535.";
+      add("ptzPort", "ipVideo", "Camera control port must be between 1 and 65535.");
     }
     cameras.forEach((camera) => {
-      if (!camera.name.trim()) errors[`camera-name-${camera.id}`] = "Camera name is required.";
-      if (!isValidHost(camera.ipAddress)) errors[`camera-ip-${camera.id}`] = "Enter a valid IPv4 address or hostname.";
-      if (!isValidPort(camera.port)) errors[`camera-port-${camera.id}`] = "Port must be between 1 and 65535.";
+      if (!camera.name.trim()) add(`camera-name-${camera.id}`, "ipVideo", "Camera name is required.");
+      if (!isValidHost(camera.ipAddress)) {
+        add(`camera-ip-${camera.id}`, "ipVideo", `Enter a valid IP or hostname for ${camera.name || "a camera"}.`);
+      }
+      if (!isValidPort(camera.port)) add(`camera-port-${camera.id}`, "ipVideo", "Camera port must be between 1 and 65535.");
     });
     if (!isValidEndpoint(draft.sync.hubAddress)) {
-      errors.hubAddress = "Hub address must be a valid ws:// or wss:// URL.";
+      add("hubAddress", "station", "Hub address must be a valid ws:// or wss:// URL.");
     }
     if (!isValidPort(draft.sync.syncPort)) {
-      errors.syncPort = "Sync port must be between 1 and 65535.";
+      add("syncPort", "station", "Sync port must be between 1 and 65535.");
     }
     if (
       draft.sync.cloudSyncEnabled &&
       draft.sync.accountEmail.trim() &&
       !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(draft.sync.accountEmail)
     ) {
-      errors.accountEmail = "Enter a valid account email address.";
+      add("accountEmail", "station", "Enter a valid account email address.");
     }
-    return errors;
+    return issues;
   }, [draft, cameras, relay, relayMode]);
 
-  const isValid = Object.keys(validation).length === 0;
+  const validation = useMemo(
+    () => Object.fromEntries(validationIssues.map((issue) => [issue.key, issue.message])) as Record<string, string>,
+    [validationIssues]
+  );
+
+  const isValid = validationIssues.length === 0;
+
+  const validationGroups = useMemo(() => {
+    const groups = new Map<SettingsTab, string[]>();
+    for (const issue of validationIssues) {
+      const list = groups.get(issue.tab) ?? [];
+      list.push(issue.message);
+      groups.set(issue.tab, list);
+    }
+    return Array.from(groups.entries()).map(([tabId, messages]) => ({
+      tabId,
+      label: TABS.find((entry) => entry.id === tabId)?.label ?? tabId,
+      messages,
+    }));
+  }, [validationIssues]);
 
   function toggleSecret(key: string) {
     setShowSecrets((previous) => ({ ...previous, [key]: !previous[key] }));
@@ -622,19 +710,30 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   function patchSection<K extends keyof AppSettings>(key: K, patch: Partial<AppSettings[K]>) {
     setDraft((previous) => ({ ...previous, [key]: { ...previous[key], ...patch } }));
     setSaveNote(null);
+    setSaveError(null);
   }
 
-  const handleSave = () => {
-    if (!dirty || !isValid) return;
-    lastSavedSettingsRef.current = JSON.stringify(draft);
-    onSave(cloneSettings(draft));
-    setSaveNote("Settings saved — the runtime configuration has been refreshed.");
+  const handleSave = async (): Promise<boolean> => {
+    if (!dirty || !isValid) return false;
+    const payload = cloneSettings(draft);
+    try {
+      await Promise.resolve(onSave(payload));
+      lastSavedSettingsRef.current = JSON.stringify(payload);
+      setSaveNote("Settings saved — the runtime configuration has been refreshed.");
+      setSaveError(null);
+      return true;
+    } catch (error) {
+      setSaveError(`Could not save settings: ${String(error)}`);
+      setSaveNote(null);
+      return false;
+    }
   };
 
   const handleRevert = () => {
     setDraft(cloneSettings(state.settings));
     setPendingTab(null);
     setSaveNote(null);
+    setSaveError(null);
   };
 
   const requestTab = (next: SettingsTab) => {
@@ -646,10 +745,16 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     setTab(next);
   };
 
-  const resolvePendingTab = (saveCurrent: boolean) => {
+  const resolvePendingTab = async (saveCurrent: boolean) => {
     if (!pendingTab) return;
-    if (saveCurrent) handleSave();
-    else setDraft(cloneSettings(state.settings));
+    if (saveCurrent) {
+      const ok = await handleSave();
+      if (!ok) return;
+    } else {
+      setDraft(cloneSettings(state.settings));
+      setSaveError(null);
+      setSaveNote(null);
+    }
     setTab(pendingTab);
     setPendingTab(null);
   };
@@ -1016,11 +1121,25 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     try {
       const payload = await file.text();
       const result = await importSettingsBundle(payload);
-      if (result) {
-        onSave(cloneSettings(result.settings));
-        setBundleNote("Settings profile imported. Review the values, then save.");
-      } else {
+      if (!result) {
         setBundleNote("Import failed: the selected file is not a settings profile.");
+        return;
+      }
+      const applyNow = window.confirm(
+        "Import and apply this settings profile now? This will replace your current saved settings. Choose Cancel to load it into the draft for review instead."
+      );
+      if (applyNow) {
+        try {
+          await Promise.resolve(onSave(cloneSettings(result.settings)));
+          setBundleNote("Settings profile imported and saved.");
+          setSaveError(null);
+        } catch (error) {
+          setBundleNote(`Settings profile was read, but could not be saved: ${String(error)}`);
+          setDraft(cloneSettings(result.settings));
+        }
+      } else {
+        setDraft(cloneSettings(result.settings));
+        setBundleNote("Imported into draft — review the changes, then save when ready.");
       }
     } catch (error) {
       setBundleNote(`Import failed: ${String(error)}`);
@@ -1148,8 +1267,6 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     );
   };
 
-  const errorMessages = Object.values(validation);
-
   return (
     <div style={{ padding: 20, maxWidth: 1220, margin: "0 auto" }}>
       <div
@@ -1169,7 +1286,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         }}
       >
         <div>
-          <h2 style={{ margin: 0, fontSize: 22 }}>Settings & Device Configuration</h2>
+          <h2 style={{ margin: 0, fontSize: 22 }}>Settings &amp; Device Configuration</h2>
           <p style={{ margin: "4px 0 0", color: "#9CA3AF", fontSize: 13 }}>
             Configure every production domain, verify links, and maintain the booth installation.
           </p>
@@ -1200,7 +1317,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           <button
             type="button"
             className="btn"
-            onClick={handleSave}
+            onClick={() => void handleSave()}
             disabled={!dirty || !isValid}
             title={!isValid ? "Resolve validation errors before saving." : undefined}
             style={{
@@ -1264,13 +1381,29 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             You have unsaved changes. Save them, discard them, or stay on this tab before switching to{" "}
             <strong>{TABS.find((entry) => entry.id === pendingTab)?.label}</strong>.
           </span>
-          <button type="button" className="btn" onClick={() => resolvePendingTab(true)} disabled={!isValid} style={{ height: 30, padding: "0 10px", fontSize: 11 }}>
+          <button
+            type="button"
+            className="btn"
+            onClick={() => void resolvePendingTab(true)}
+            disabled={!isValid}
+            style={{ height: 30, padding: "0 10px", fontSize: 11 }}
+          >
             Save &amp; switch
           </button>
-          <button type="button" className="btn" onClick={() => resolvePendingTab(false)} style={{ height: 30, padding: "0 10px", fontSize: 11 }}>
+          <button
+            type="button"
+            className="btn"
+            onClick={() => void resolvePendingTab(false)}
+            style={{ height: 30, padding: "0 10px", fontSize: 11 }}
+          >
             Discard &amp; switch
           </button>
-          <button type="button" className="btn" onClick={() => setPendingTab(null)} style={{ height: 30, padding: "0 10px", fontSize: 11 }}>
+          <button
+            type="button"
+            className="btn"
+            onClick={() => setPendingTab(null)}
+            style={{ height: 30, padding: "0 10px", fontSize: 11 }}
+          >
             Stay here
           </button>
         </div>
@@ -1296,8 +1429,66 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         </div>
       )}
 
-      {errorMessages.length > 0 && (
+      {validationGroups.length > 0 && (
         <div
+          role="alert"
+          style={{
+            marginBottom: 14,
+            padding: "12px 14px",
+            borderRadius: 8,
+            background: "rgba(239,68,68,0.10)",
+            border: "1px solid #EF4444",
+            color: "#FCA5A5",
+            fontSize: 12,
+            display: "grid",
+            gap: 10,
+          }}
+        >
+          <strong>Fix these settings before saving:</strong>
+          {validationGroups.map((group) => (
+            <div
+              key={group.tabId}
+              style={{
+                display: "grid",
+                gap: 6,
+                paddingTop: 8,
+                borderTop: "1px solid rgba(239,68,68,0.35)",
+              }}
+            >
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  gap: 8,
+                  flexWrap: "wrap",
+                }}
+              >
+                <span style={{ fontWeight: 700 }}>
+                  {group.label} — {group.messages.length} issue{group.messages.length === 1 ? "" : "s"}
+                </span>
+                <button
+                  type="button"
+                  className="btn"
+                  onClick={() => requestTab(group.tabId)}
+                  style={{ height: 28, padding: "0 10px", fontSize: 11 }}
+                >
+                  Go to {group.label}
+                </button>
+              </div>
+              <ul style={{ margin: 0, paddingLeft: 18, display: "grid", gap: 4 }}>
+                {group.messages.map((message, index) => (
+                  <li key={`${group.tabId}-${index}`}>{message}</li>
+                ))}
+              </ul>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {saveError && (
+        <div
+          role="alert"
           style={{
             marginBottom: 14,
             padding: "10px 14px",
@@ -1308,8 +1499,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             fontSize: 12,
           }}
         >
-          <strong>Validation:</strong> {errorMessages.slice(0, 4).join(" ")}
-          {errorMessages.length > 4 ? ` (+${errorMessages.length - 4} more)` : ""}
+          {saveError}
         </div>
       )}
 
@@ -1348,7 +1538,12 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 16 }}>
         {visibleTabs.map((entry) => {
           const level = healthLevelForTab(entry.id);
-          const matched = query.length > 0 && `${entry.label} ${entry.id} ${SEARCH_KEYWORDS[entry.id]}`.toLowerCase().includes(query);
+          const matched =
+            query.length > 0 &&
+            `${entry.label} ${entry.id} ${SEARCH_KEYWORDS[entry.id]}`.toLowerCase().includes(query);
+          const isDirty = dirtyTabs.includes(entry.id);
+          const healthText =
+            level === "ok" ? "OK" : level === "warn" ? "Warn" : level === "error" ? "Error" : "—";
           return (
             <button
               key={entry.id}
@@ -1357,28 +1552,56 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               aria-pressed={tab === entry.id}
               onClick={() => requestTab(entry.id)}
               style={{
-                height: 40,
-                padding: "0 14px",
+                minHeight: 40,
+                padding: "6px 12px",
                 fontSize: 13,
                 display: "flex",
                 alignItems: "center",
                 gap: 6,
+                flexWrap: "wrap",
                 background: tab === entry.id ? "#2563EB" : "#1C222D",
                 borderColor: matched ? "#FBBF24" : tab === entry.id ? "#60A5FA" : "#2E3746",
               }}
             >
               {entry.icon}
               {entry.label}
-              {dirtyTabs.includes(entry.id) && (
+              {isDirty && (
                 <span
                   title="Unsaved changes in this tab"
-                  style={{ width: 7, height: 7, borderRadius: "50%", background: "#FBBF24" }}
-                />
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 4,
+                    fontSize: 10,
+                    fontWeight: 700,
+                    color: "#92400E",
+                    background: "#FBBF24",
+                    borderRadius: 999,
+                    padding: "1px 6px",
+                  }}
+                >
+                  <span aria-hidden="true">●</span> Unsaved
+                </span>
               )}
               <span
                 title={`Connection status: ${level}`}
-                style={{ width: 7, height: 7, borderRadius: "50%", background: statusColor[level] }}
-              />
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 4,
+                  fontSize: 10,
+                  fontWeight: 700,
+                  color: "#E5E7EB",
+                  border: `1px solid ${statusColor[level]}`,
+                  borderRadius: 999,
+                  padding: "1px 6px",
+                }}
+              >
+                <span aria-hidden="true" style={{ color: statusColor[level] }}>
+                  {level === "ok" ? "✓" : level === "warn" ? "!" : level === "error" ? "×" : "•"}
+                </span>
+                {healthText}
+              </span>
             </button>
           );
         })}
@@ -1400,7 +1623,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         <div className="card" style={cardStyle}>
           {renderToolbar("console")}
           <h3 style={{ margin: 0 }}>Audio Mixing — Console Control</h3>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 12 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 12 }}>
             <Field label="Mixer IP address" hint="IPv4 address or hostname of the mixing console on the control VLAN." error={validation.consoleIp}>
               <input
                 style={inputWithError(validation.consoleIp)}
@@ -1411,27 +1634,23 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               />
             </Field>
             <Field label="OSC port" hint="UDP control port. Console default is 10023." error={validation.consolePort}>
-              <input
+              <NumericInput
                 style={inputWithError(validation.consolePort)}
                 className="mono"
-                type="number"
                 min={1}
                 max={65535}
                 value={draft.console.oscPort}
-                onChange={(event) => patchSection("console", { oscPort: Number(event.target.value) })}
+                onCommit={(oscPort) => patchSection("console", { oscPort })}
               />
             </Field>
             <Field label="Keepalive interval (s)" hint="Keepalive subscription refresh cadence." error={validation.keepalive}>
-              <input
+              <NumericInput
                 style={inputWithError(validation.keepalive)}
                 className="mono"
-                type="number"
                 min={1}
                 max={120}
                 value={draft.console.keepaliveIntervalSec}
-                onChange={(event) =>
-                  patchSection("console", { keepaliveIntervalSec: Number(event.target.value) })
-                }
+                onCommit={(keepaliveIntervalSec) => patchSection("console", { keepaliveIntervalSec })}
               />
             </Field>
           </div>
@@ -1457,7 +1676,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               {draft.console.dcaMappings.map((mapping) => (
                 <div
                   key={mapping.dcaId}
-                  style={{ display: "grid", gridTemplateColumns: "180px 1fr", gap: 12, alignItems: "center" }}
+                  style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 12, alignItems: "center" }}
                 >
                   <div>
                     <div style={{ fontWeight: 700, fontSize: 13 }}>
@@ -1490,7 +1709,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         <div className="card" style={cardStyle}>
           {renderToolbar("aoip")}
           <h3 style={{ margin: 0 }}>Audio Network</h3>
-          <div style={{ display: "grid", gridTemplateColumns: "1.2fr 1fr 1fr", gap: 12 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 12 }}>
             <Field label="Network interface" hint="NIC used for audio-network discovery and metering traffic.">
               <input
                 style={inputStyle}
@@ -1509,27 +1728,23 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               </datalist>
             </Field>
             <Field label="Metering UDP port" hint="Peak metering UDP port. Default 8751." error={validation.aoipMeterPort}>
-              <input
+              <NumericInput
                 style={inputWithError(validation.aoipMeterPort)}
                 className="mono"
-                type="number"
                 min={1}
                 max={65535}
                 value={draft.aoip.conmonMeterPort}
-                onChange={(event) => patchSection("aoip", { conmonMeterPort: Number(event.target.value) })}
+                onCommit={(conmonMeterPort) => patchSection("aoip", { conmonMeterPort })}
               />
             </Field>
             <Field label="Control UDP port" hint="Device control / identify channel. Default 8700." error={validation.aoipControlPort}>
-              <input
+              <NumericInput
                 style={inputWithError(validation.aoipControlPort)}
                 className="mono"
-                type="number"
                 min={1}
                 max={65535}
                 value={draft.aoip.conmonControlPort}
-                onChange={(event) =>
-                  patchSection("aoip", { conmonControlPort: Number(event.target.value) })
-                }
+                onCommit={(conmonControlPort) => patchSection("aoip", { conmonControlPort })}
               />
             </Field>
           </div>
@@ -1540,29 +1755,23 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             keywords="clock timing ptp threshold warning error"
             search={search}
           >
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 12 }}>
               <Field label="Warning at (ms)" hint="Amber health status." error={validation.clockThresholds}>
-                <input
+                <NumericInput
                   style={inputWithError(validation.clockThresholds)}
                   className="mono"
-                  type="number"
                   min={1}
                   value={draft.aoip.clockSyncWarnMs}
-                  onChange={(event) =>
-                    patchSection("aoip", { clockSyncWarnMs: Number(event.target.value) })
-                  }
+                  onCommit={(clockSyncWarnMs) => patchSection("aoip", { clockSyncWarnMs })}
                 />
               </Field>
               <Field label="Error at (ms)" hint="Red health status / preflight failure." error={validation.clockThresholds}>
-                <input
+                <NumericInput
                   style={inputWithError(validation.clockThresholds)}
                   className="mono"
-                  type="number"
                   min={1}
                   value={draft.aoip.clockSyncErrorMs}
-                  onChange={(event) =>
-                    patchSection("aoip", { clockSyncErrorMs: Number(event.target.value) })
-                  }
+                  onCommit={(clockSyncErrorMs) => patchSection("aoip", { clockSyncErrorMs })}
                 />
               </Field>
             </div>
@@ -1594,7 +1803,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               keywords="stream destination rtmp key ingest"
               search={search}
             >
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1.5fr 1.4fr auto", gap: 12, alignItems: "end" }}>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 12, alignItems: "end" }}>
                 <Field label="Platform label">
                   <input
                     style={inputStyle}
@@ -1667,7 +1876,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             keywords="recording path container encoder"
             search={search}
           >
-            <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1fr", gap: 12 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 12 }}>
               <Field label="Recording path" hint="Folder or filename stem for service recordings.">
                 <input
                   style={inputStyle}
@@ -1713,7 +1922,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             keywords="audience chat telemetry relay websocket webhook irc viewer token endpoint"
             search={search}
           >
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1.5fr 1fr", gap: 12 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 12 }}>
               <Field label="Relay mode">
                 <select
                   style={inputStyle}
@@ -1811,7 +2020,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             keywords="song library credentials oauth client secret"
             search={search}
           >
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 12 }}>
               <Field label="OAuth client ID">
                 <input
                   style={inputStyle}
@@ -1842,7 +2051,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             keywords="display assignment foh stage multiview output"
             search={search}
           >
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 12 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 12 }}>
               <Field label="FOH Display" hint="Operator preview / FOH output window.">
                 {renderDisplaySelect(
                   draft.slides.displayAssignments.fohWindow,
@@ -1888,7 +2097,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         <div className="card" style={cardStyle}>
           {renderToolbar("ipVideo")}
           <h3 style={{ margin: 0 }}>Cameras & Discovery</h3>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 12 }}>
             <Field label="Discovery range start" hint="First IPv4 address swept for cameras." error={validation.rangeStart}>
               <input
                 style={inputWithError(validation.rangeStart)}
@@ -1912,14 +2121,13 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               />
             </Field>
             <Field label="Camera control UDP port" hint="Camera control UDP port. Default 52381." error={validation.ptzPort}>
-              <input
+              <NumericInput
                 style={inputWithError(validation.ptzPort)}
                 className="mono"
-                type="number"
                 min={1}
                 max={65535}
                 value={draft.ipVideoPtz.ptzIpPort}
-                onChange={(event) => patchSection("ipVideoPtz", { ptzIpPort: Number(event.target.value) })}
+                onCommit={(ptzIpPort) => patchSection("ipVideoPtz", { ptzIpPort })}
               />
             </Field>
           </div>
@@ -1944,7 +2152,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               {cameras.map((camera) => (
                 <div
                   key={camera.id}
-                  style={{ display: "grid", gridTemplateColumns: "1.2fr 1.4fr 0.7fr auto", gap: 10, alignItems: "start" }}
+                  style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 10, alignItems: "start" }}
                 >
                   <Field label="Name" error={validation[`camera-name-${camera.id}`]}>
                     <input
@@ -1964,14 +2172,13 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                     />
                   </Field>
                   <Field label="Port" error={validation[`camera-port-${camera.id}`]}>
-                    <input
+                    <NumericInput
                       style={inputWithError(validation[`camera-port-${camera.id}`])}
                       className="mono"
-                      type="number"
                       min={1}
                       max={65535}
                       value={camera.port}
-                      onChange={(event) => updateCamera(camera.id, { port: Number(event.target.value) })}
+                      onCommit={(port) => updateCamera(camera.id, { port })}
                     />
                   </Field>
                   <button
@@ -2014,7 +2221,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               {draft.ipVideoPtz.presetNames.map((preset) => (
                 <div
                   key={preset.presetId}
-                  style={{ display: "grid", gridTemplateColumns: "180px 1fr", gap: 12, alignItems: "center" }}
+                  style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 12, alignItems: "center" }}
                 >
                   <div className="mono" style={{ fontSize: 12, color: "#9CA3AF" }}>
                     {preset.cameraId} / {preset.presetId}
@@ -2047,7 +2254,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             keywords="station role name lock booth"
             search={search}
           >
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1.5fr auto", gap: 12, alignItems: "end" }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 12, alignItems: "end" }}>
               <Field label="Station role">
                 <select
                   style={inputStyle}
@@ -2086,7 +2293,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             keywords="sync lan hub cloud profile token email venue auto sync"
             search={search}
           >
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 12 }}>
               <Field label="Hub address" error={validation.hubAddress}>
                 <input
                   style={inputWithError(validation.hubAddress)}
@@ -2097,14 +2304,13 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                 />
               </Field>
               <Field label="Sync port" error={validation.syncPort}>
-                <input
+                <NumericInput
                   style={inputWithError(validation.syncPort)}
                   className="mono"
-                  type="number"
                   min={1}
                   max={65535}
                   value={draft.sync.syncPort}
-                  onChange={(event) => patchSection("sync", { syncPort: Number(event.target.value) })}
+                  onCommit={(syncPort) => patchSection("sync", { syncPort })}
                 />
               </Field>
               <Field label="Profile name">
@@ -2213,7 +2419,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             keywords="booth display accessibility scale zoom contrast high ui"
             search={search}
           >
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 12 }}>
               <Field label="UI scale" hint="Applied to the document root after save.">
                 <select
                   style={inputStyle}

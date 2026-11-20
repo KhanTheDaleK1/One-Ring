@@ -33,12 +33,36 @@ import { getDiscoveredPeers } from "./bridge";
 import { WelcomeTour } from "./components/WelcomeTour";
 import { UpdateModal } from "./components/UpdateModal";
 import { BroadcastSettingsModal } from "./components/BroadcastSettingsModal";
+import { ModalDialog } from "./components/ModalDialog";
+import { Notice } from "./components/UiPrimitives";
 import { checkForUpdate, probeHardwareEncoders, type EncoderCapability } from "./bridge";
 import type { BroadcastProfileSettings, UpdateInfo } from "./types";
 
 const BROADCAST_PROFILE_KEY = "onering_broadcast_profile";
 const BROADCAST_STREAM_KEY = "onering_broadcast_stream_config";
 const BROADCAST_HOTKEYS_KEY = "onering_broadcast_hotkeys";
+const MIDI_BINDINGS_STORAGE_KEY = "onering_midi_bindings_v1";
+const MIDI_UPDATED_EVENT = "onering-midi-updated";
+
+type MidiBinding = {
+  id: string;
+  name?: string;
+  channel: number;
+  messageType: "NoteOn" | "ControlChange" | "ProgramChange";
+  controlOrNote: number;
+  action: string;
+};
+
+function readMidiBindings(): MidiBinding[] {
+  try {
+    const raw = localStorage.getItem(MIDI_BINDINGS_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed: unknown = JSON.parse(raw);
+    return Array.isArray(parsed) ? (parsed as MidiBinding[]) : [];
+  } catch {
+    return [];
+  }
+}
 
 /** "show" is the volunteer-first boot surface; "master" remains the legacy show-mode tab id. */
 type AppViewMode = ViewMode | "show";
@@ -99,9 +123,26 @@ export const App: React.FC = () => {
   const [mode, setMode] = useState<AppViewMode>("show");
   const [engineerUnlocked, setEngineerUnlocked] = useState(false);
   const [pinTarget, setPinTarget] = useState<AppViewMode | null>(null);
+  const [pinMode, setPinMode] = useState<"unlock" | "setup">("unlock");
   const [pinValue, setPinValue] = useState("");
+  const [pinConfirmValue, setPinConfirmValue] = useState("");
   const [pinError, setPinError] = useState<string | null>(null);
   const [pinBusy, setPinBusy] = useState(false);
+  const pinInputRef = useRef<HTMLInputElement | null>(null);
+  const pinConfirmRef = useRef<HTMLInputElement | null>(null);
+
+  // MIDI bindings are owned by the mapping modal, so a version counter plus a
+  // custom event keep the global listener in step with the latest saved set.
+  const [midiBindingsVersion, setMidiBindingsVersion] = useState(0);
+  const midiBindingsRef = useRef<MidiBinding[]>(readMidiBindings());
+
+  // Settings owns its draft. The host observes its visible dirty state so top
+  // level navigation can offer Save / Discard / Stay instead of dropping work.
+  const [settingsDirty, setSettingsDirty] = useState(false);
+  const settingsHostRef = useRef<HTMLDivElement | null>(null);
+  const [pendingNavTarget, setPendingNavTarget] = useState<AppViewMode | null>(null);
+  const [guardError, setGuardError] = useState<string | null>(null);
+  const [guardBusy, setGuardBusy] = useState(false);
   const [availableUpdate, setAvailableUpdate] = useState<UpdateInfo | null>(null);
   const [isEditingShowName, setIsEditingShowName] = useState(false);
   const [discoveredPeer, setDiscoveredPeer] = useState<DiscoveredPeerInfo | null>(null);
@@ -144,20 +185,57 @@ export const App: React.FC = () => {
     };
   }, [state?.settings.general.uiScale, state?.settings.general.highContrast]);
 
+  const notifyMidiBindingsUpdated = useCallback(() => {
+    setMidiBindingsVersion((version) => version + 1);
+    window.dispatchEvent(new Event(MIDI_UPDATED_EVENT));
+  }, []);
+
   useEffect(() => {
-    if (!state?.settings.general.highContrast) return;
-    const style = document.createElement("style");
-    style.dataset.oneringContrast = "high";
-    style.textContent = [
-      '[data-contrast="high"] body { background: #000000 !important; color: #FFFFFF !important; }',
-      '[data-contrast="high"] .card { background: #000000 !important; border-color: #FFFFFF !important; }',
-      '[data-contrast="high"] .btn { border-color: #FFFFFF !important; color: #FFFFFF !important; }',
-    ].join("\n");
-    document.head.appendChild(style);
-    return () => {
-      style.remove();
+    midiBindingsRef.current = readMidiBindings();
+  }, [midiBindingsVersion]);
+
+  // The mapping modal writes bindings straight to local storage; watch that
+  // write and raise the shared event so the live listener refreshes at once.
+  useEffect(() => {
+    let lastSnapshot = localStorage.getItem(MIDI_BINDINGS_STORAGE_KEY);
+    const syncFromStorage = () => {
+      const current = localStorage.getItem(MIDI_BINDINGS_STORAGE_KEY);
+      if (current !== lastSnapshot) {
+        lastSnapshot = current;
+        notifyMidiBindingsUpdated();
+      }
     };
-  }, [state?.settings.general.highContrast]);
+    const handleStorage = (event: StorageEvent) => {
+      if (event.key !== MIDI_BINDINGS_STORAGE_KEY) return;
+      lastSnapshot = event.newValue;
+      notifyMidiBindingsUpdated();
+    };
+    window.addEventListener("storage", handleStorage);
+    const timer = window.setInterval(syncFromStorage, 250);
+    return () => {
+      window.removeEventListener("storage", handleStorage);
+      window.clearInterval(timer);
+    };
+  }, [notifyMidiBindingsUpdated]);
+
+  useEffect(() => {
+    if (mode !== "settings") {
+      setSettingsDirty(false);
+      return;
+    }
+    const host = settingsHostRef.current;
+    if (!host) return;
+    const detect = () => {
+      const text = host.textContent ?? "";
+      setSettingsDirty(
+        text.includes("Unsaved changes in:") || text.includes("You have unsaved changes")
+      );
+    };
+    detect();
+    const observer = new MutationObserver(detect);
+    observer.observe(host, { childList: true, subtree: true, characterData: true });
+    return () => observer.disconnect();
+  }, [mode]);
 
   useEffect(() => {
     if (!showBroadcastSettings) return;
@@ -200,10 +278,10 @@ export const App: React.FC = () => {
         } else {
           // Provide fallback about info even if offline
           setAvailableUpdate({
-            current_version: "0.3.3",
-            latest_version: "v0.3.3-alpha",
+            current_version: "0.3.4",
+            latest_version: "v0.3.4-alpha",
             release_name: "One Ring — Church Production Suite",
-            release_notes: "You are running One Ring v0.3.3-alpha. All systems up to date.",
+            release_notes: "You are running One Ring v0.3.4-alpha. All systems up to date.",
             published_at: new Date().toISOString(),
             html_url: UPDATE_REPO_URL,
             download_url: null,
@@ -373,33 +451,11 @@ export const App: React.FC = () => {
   // Global Web MIDI runtime: honour user bindings from Settings → MIDI Triggers
   // even when the settings/mapping modal is closed.
   useEffect(() => {
-    const STORAGE_KEY = "onering_midi_bindings_v1";
-    type Binding = {
-      id: string;
-      name?: string;
-      channel: number;
-      messageType: "NoteOn" | "ControlChange" | "ProgramChange";
-      controlOrNote: number;
-      action: string;
-    };
-
-    const readBindings = (): Binding[] => {
-      try {
-        const raw = localStorage.getItem(STORAGE_KEY);
-        if (!raw) return [];
-        const parsed = JSON.parse(raw);
-        return Array.isArray(parsed) ? (parsed as Binding[]) : [];
-      } catch {
-        return [];
-      }
-    };
-
-    let bindings = readBindings();
     const refreshBindings = () => {
-      bindings = readBindings();
+      midiBindingsRef.current = readMidiBindings();
     };
     window.addEventListener("storage", refreshBindings);
-    window.addEventListener("onering-midi-updated", refreshBindings);
+    window.addEventListener(MIDI_UPDATED_EVENT, refreshBindings);
 
     const nav = navigator as Navigator & {
       requestMIDIAccess?: () => Promise<any>;
@@ -417,13 +473,13 @@ export const App: React.FC = () => {
       const control = data[1] & 0x7f;
       const value = data.length > 2 ? data[2] & 0x7f : 0;
 
-      let messageType: Binding["messageType"] | null = null;
+      let messageType: MidiBinding["messageType"] | null = null;
       if (kind === 0x90 && value > 0) messageType = "NoteOn";
       else if (kind === 0xb0) messageType = "ControlChange";
       else if (kind === 0xc0) messageType = "ProgramChange";
       if (!messageType) return;
 
-      const binding = bindings.find(
+      const binding = midiBindingsRef.current.find(
         (entry) =>
           entry.channel === channel &&
           entry.messageType === messageType &&
@@ -456,7 +512,7 @@ export const App: React.FC = () => {
     return () => {
       disposed = true;
       window.removeEventListener("storage", refreshBindings);
-      window.removeEventListener("onering-midi-updated", refreshBindings);
+      window.removeEventListener(MIDI_UPDATED_EVENT, refreshBindings);
       if (midiAccess) {
         midiAccess.onstatechange = null;
         for (const input of attachedInputs) {
@@ -681,24 +737,83 @@ export const App: React.FC = () => {
     } catch {}
   }, [state?.slides, state?.sources, isOutputWindow]);
 
-  // Returning to the volunteer surface always locks engineer controls in the host runtime.
-  const returnToShowMode = () => {
-    void lockEngineerMode().catch(() => undefined);
-    setEngineerUnlocked(false);
+  // The Settings draft lives in SettingsView; locate its visible controls so
+  // App can offer Save / Discard / Stay without changing its public props.
+  const findSettingsButton = (text: string): HTMLButtonElement | null =>
+    Array.from(settingsHostRef.current?.querySelectorAll("button") ?? []).find((button) =>
+      (button.textContent ?? "").includes(text)
+    ) ?? null;
+
+  const saveSettingsDraft = async (): Promise<boolean> => {
+    const button = findSettingsButton("Save Configuration");
+    if (!button || button.disabled) return false;
+    const baseline = JSON.stringify(stateRef.current?.settings);
+    button.click();
+    const startedAt = Date.now();
+    while (Date.now() - startedAt < 4000) {
+      if (JSON.stringify(stateRef.current?.settings) !== baseline) return true;
+      await new Promise<void>((resolve) => window.setTimeout(resolve, 50));
+    }
+    return false;
+  };
+
+  const discardSettingsDraft = () => {
+    findSettingsButton("Revert")?.click();
+  };
+
+  const closePinDialog = () => {
     setPinTarget(null);
     setPinValue("");
+    setPinConfirmValue("");
     setPinError(null);
+  };
+
+  // Returning to the volunteer surface always locks engineer controls in the host runtime.
+  const commitShowMode = () => {
+    void lockEngineerMode().catch(() => undefined);
+    setEngineerUnlocked(false);
+    setPendingNavTarget(null);
+    setGuardError(null);
+    setGuardBusy(false);
+    closePinDialog();
     setMode("show");
   };
 
+  const commitNavigation = (target: AppViewMode | null) => {
+    if (!target) return;
+    setPendingNavTarget(null);
+    setGuardError(null);
+    setGuardBusy(false);
+    if (isShowMode(target)) commitShowMode();
+    else setMode(target);
+  };
+
+  const requestGuardedNavigation = (target: AppViewMode): boolean => {
+    if (mode === "settings" && settingsDirty && target !== "settings") {
+      setGuardError(null);
+      setPendingNavTarget(target);
+      return false;
+    }
+    return true;
+  };
+
+  const returnToShowMode = () => {
+    if (requestGuardedNavigation("show")) commitShowMode();
+  };
+
   const requestMode = (target: AppViewMode) => {
+    if (!requestGuardedNavigation(target)) return;
     if (isShowMode(target)) {
-      returnToShowMode();
+      commitShowMode();
       return;
     }
     if (!engineerUnlocked) {
       setPinError(null);
       setPinValue("");
+      setPinConfirmValue("");
+      const pinConfigured =
+        (stateRef.current?.settings.general.engineerPin ?? "").trim().length > 0;
+      setPinMode(pinConfigured ? "unlock" : "setup");
       setPinTarget(target);
       return;
     }
@@ -706,27 +821,50 @@ export const App: React.FC = () => {
   };
 
   const submitEngineerPin = async () => {
-    if (!pinTarget || pinBusy) return;
+    if (!pinTarget || pinBusy || !state) return;
     const pin = pinValue.trim();
-    if (!pin) {
-      setPinError("Enter the Engineer PIN to continue.");
+    const confirmPin = pinConfirmValue.trim();
+    if (!/^\d{4,8}$/.test(pin)) {
+      setPinError("Enter a PIN of 4 to 8 digits.");
       return;
     }
     setPinBusy(true);
     try {
-      const accepted = await unlockEngineerMode(pin);
-      if (!accepted) {
-        setPinError("That PIN was not accepted. Try again.");
-        setPinValue("");
-        return;
+      if (pinMode === "setup") {
+        if (pin !== confirmPin) {
+          setPinError("PIN and confirmation do not match.");
+          return;
+        }
+        const updated = await bridge.saveSettings({
+          ...state.settings,
+          general: { ...state.settings.general, engineerPin: pin },
+        });
+        setState(updated);
+        notifyMidiBindingsUpdated();
+        const accepted = await unlockEngineerMode(pin);
+        if (!accepted) {
+          setPinMode("unlock");
+          setPinConfirmValue("");
+          setPinError("PIN saved, but unlock was rejected. Enter it again to continue.");
+          return;
+        }
+      } else {
+        const accepted = await unlockEngineerMode(pin);
+        if (!accepted) {
+          setPinError("That PIN was not accepted. Try again.");
+          setPinValue("");
+          return;
+        }
       }
       setEngineerUnlocked(true);
       setMode(pinTarget);
-      setPinTarget(null);
-      setPinValue("");
-      setPinError(null);
+      closePinDialog();
     } catch {
-      setPinError("Engineer unlock is unavailable. Try again.");
+      setPinError(
+        pinMode === "setup"
+          ? "Could not save the Engineer PIN. Try again."
+          : "Engineer unlock is unavailable. Try again."
+      );
     } finally {
       setPinBusy(false);
     }
@@ -743,9 +881,10 @@ export const App: React.FC = () => {
   const anyLive = state.broadcasts.some((b) => b.live);
 
   return (
-    <div style={{ minHeight: "100vh", background: "#0B0D10", color: "#F3F4F6" }}>
+    <div className="app-shell">
       {/* TOP HEALTH STRIP */}
       <header
+        className="app-header"
         style={{
           height: 64,
           padding: "0 16px",
@@ -757,7 +896,7 @@ export const App: React.FC = () => {
           gap: 12,
         }}
       >
-        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+        <div className="app-header__group" style={{ display: "flex", alignItems: "center", gap: 10 }}>
           <strong style={{ fontSize: 16, letterSpacing: "-0.01em" }}>ONE RING</strong>
           <button
             type="button"
@@ -796,7 +935,7 @@ export const App: React.FC = () => {
           </span>
         </div>
 
-        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+        <div className="app-header__group app-header__health" style={{ display: "flex", alignItems: "center", gap: 6 }}>
           {state.health.map((h) => (
             <span
               key={h.id}
@@ -827,7 +966,7 @@ export const App: React.FC = () => {
           ))}
         </div>
 
-        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+        <div className="app-header__group app-header__nav" style={{ display: "flex", alignItems: "center", gap: 6 }}>
           {lanSyncConnected && (
             <span
               className="mono"
@@ -1290,109 +1429,105 @@ export const App: React.FC = () => {
         onClose={() => setIsEditingShowName(false)}
       />
 
-      {pinTarget && (
-        <div
-          role="presentation"
-          style={{
-            position: "fixed",
-            inset: 0,
-            zIndex: 950,
-            background: "rgba(3,6,12,0.86)",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            padding: 20,
+      <ModalDialog
+        isOpen={pinTarget !== null}
+        title={pinMode === "setup" ? "Set Engineer PIN" : "Engineer PIN required"}
+        onClose={closePinDialog}
+        initialFocusRef={pinInputRef}
+        disableClose={pinBusy}
+        descriptionId="onering-pin-description"
+        panelStyle={{ width: "min(440px, 100%)" }}
+      >
+        <form
+          onSubmit={(event) => {
+            event.preventDefault();
+            void submitEngineerPin();
           }}
-          onMouseDown={(event) => {
-            if (event.target === event.currentTarget && !pinBusy) setPinTarget(null);
-          }}
+          style={{ display: "grid", gap: 14 }}
         >
-          <form
-            onSubmit={(event) => {
-              event.preventDefault();
-              void submitEngineerPin();
-            }}
-            style={{
-              width: "min(420px, 100%)",
-              background: "#141A24",
-              border: "1px solid #334155",
-              borderRadius: 12,
-              padding: 24,
-              display: "grid",
-              gap: 14,
-              boxShadow: "0 24px 70px rgba(0,0,0,0.7)",
-            }}
-          >
-            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-              <Lock size={20} color="#60A5FA" />
-              <strong style={{ fontSize: 17 }}>Engineer PIN required</strong>
-            </div>
-            <p style={{ margin: 0, fontSize: 13, lineHeight: 1.5, color: "#CBD5E1" }}>
-              Volunteer Show Mode keeps the cue deck available. Enter the Engineer PIN to open
-              configuration and mixing controls.
-            </p>
+          <p id="onering-pin-description" className="onering-dialog-description">
+            {pinMode === "setup"
+              ? "No Engineer PIN is configured yet. Create one now to unlock configuration and mixing controls."
+              : "Volunteer Show Mode keeps the cue deck available. Enter the Engineer PIN to open configuration and mixing controls."}
+          </p>
+          <div style={{ display: "grid", gap: 6 }}>
+            <label htmlFor="onering-engineer-pin" style={{ fontSize: 12, color: "var(--text-secondary)" }}>
+              {pinMode === "setup" ? "New Engineer PIN (4–8 digits)" : "Engineer PIN"}
+            </label>
             <input
+              id="onering-engineer-pin"
+              ref={pinInputRef}
               type="password"
-              autoFocus
               inputMode="numeric"
-              autoComplete="off"
+              autoComplete={pinMode === "setup" ? "new-password" : "off"}
               value={pinValue}
               onChange={(event) => {
                 setPinValue(event.target.value);
                 setPinError(null);
               }}
-              onKeyDown={(event) => {
-                if (event.key === "Escape" && !pinBusy) setPinTarget(null);
-              }}
-              placeholder="Engineer PIN"
-              aria-label="Engineer PIN"
+              placeholder={pinMode === "setup" ? "Choose a PIN" : "Engineer PIN"}
+              aria-label={pinMode === "setup" ? "New Engineer PIN" : "Engineer PIN"}
+              aria-invalid={pinError ? true : undefined}
               style={{
                 width: "100%",
                 height: 42,
                 boxSizing: "border-box",
                 padding: "0 12px",
-                background: "#0B0F16",
-                border: `1px solid ${pinError ? "#EF4444" : "#334155"}`,
+                background: "var(--surface-sunken)",
+                border: `1px solid ${pinError ? "var(--danger)" : "var(--border-strong)"}`,
                 borderRadius: 8,
-                color: "#F3F4F6",
+                color: "var(--text-primary)",
                 fontSize: 15,
                 letterSpacing: "0.2em",
               }}
             />
-            {pinError && (
-              <span role="alert" style={{ fontSize: 12, color: "#FCA5A5" }}>
-                {pinError}
-              </span>
-            )}
-            <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
-              <button
-                type="button"
-                className="btn"
-                disabled={pinBusy}
-                onClick={() => setPinTarget(null)}
-                style={{ height: 36, padding: "0 14px", fontSize: 12 }}
-              >
-                Cancel
-              </button>
-              <button
-                type="submit"
-                className="btn"
-                disabled={pinBusy}
-                style={{
-                  height: 36,
-                  padding: "0 16px",
-                  fontSize: 12,
-                  background: "#2563EB",
-                  borderColor: "#60A5FA",
-                  color: "#FFFFFF",
+          </div>
+          {pinMode === "setup" && (
+            <div style={{ display: "grid", gap: 6 }}>
+              <label htmlFor="onering-engineer-pin-confirm" style={{ fontSize: 12, color: "var(--text-secondary)" }}>
+                Confirm PIN
+              </label>
+              <input
+                id="onering-engineer-pin-confirm"
+                ref={pinConfirmRef}
+                type="password"
+                inputMode="numeric"
+                autoComplete="new-password"
+                value={pinConfirmValue}
+                onChange={(event) => {
+                  setPinConfirmValue(event.target.value);
+                  setPinError(null);
                 }}
-              >
-                {pinBusy ? "Checking..." : "Unlock Engineer Mode"}
-              </button>
+                placeholder="Repeat PIN"
+                aria-label="Confirm Engineer PIN"
+                style={{
+                  width: "100%",
+                  height: 42,
+                  boxSizing: "border-box",
+                  padding: "0 12px",
+                  background: "var(--surface-sunken)",
+                  border: `1px solid ${pinError ? "var(--danger)" : "var(--border-strong)"}`,
+                  borderRadius: 8,
+                  color: "var(--text-primary)",
+                  fontSize: 15,
+                  letterSpacing: "0.2em",
+                }}
+              />
             </div>
-          </form>
-        </div>
-      )}
+          )}
+          {pinError && <Notice tone="error" message={pinError} />}
+          <div className="onering-dialog-footer">
+            <button type="button" className="btn" disabled={pinBusy} onClick={closePinDialog}>
+              Cancel
+            </button>
+            <button type="submit" className="btn btn-primary" disabled={pinBusy}>
+              {pinBusy
+                ? pinMode === "setup" ? "Saving..." : "Checking..."
+                : pinMode === "setup" ? "Set PIN & Unlock" : "Unlock Engineer Mode"}
+            </button>
+          </div>
+        </form>
+      </ModalDialog>
 
       {availableUpdate && (
         <UpdateModal update={availableUpdate} onDismiss={() => setAvailableUpdate(null)} />
@@ -1452,30 +1587,95 @@ export const App: React.FC = () => {
       />
 
       {mode === "settings" && (
-        <SettingsView
-          state={state}
-          onSave={(settings) => bridge.saveSettings(settings).then(setState)}
-          onOpenBroadcastSettings={() => setShowBroadcastSettings(true)}
-          onCheckUpdates={async () => {
-            const info = await checkForUpdate();
-            if (info) {
-              setAvailableUpdate(info);
-            } else {
-              setAvailableUpdate({
-                current_version: "0.3.3",
-                latest_version: "v0.3.3-alpha",
-                release_name: "One Ring v0.3.3-alpha",
-                release_notes: "You are running the latest version. All systems are up to date.",
-                published_at: new Date().toISOString(),
-                html_url: `${UPDATE_REPO_URL}/releases`,
-                download_url: null,
-                update_available: false,
-                assets: [],
-              });
-            }
-          }}
-        />
+        <div ref={settingsHostRef}>
+          <SettingsView
+            state={state}
+            onSave={(settings) => {
+              bridge
+                .saveSettings(settings)
+                .then((nextState) => {
+                  setState(nextState);
+                  notifyMidiBindingsUpdated();
+                })
+                .catch(() => undefined);
+            }}
+            onOpenBroadcastSettings={() => setShowBroadcastSettings(true)}
+            onCheckUpdates={async () => {
+              const info = await checkForUpdate();
+              if (info) {
+                setAvailableUpdate(info);
+              } else {
+                setAvailableUpdate({
+                  current_version: "0.3.4",
+                  latest_version: "v0.3.4-alpha",
+                  release_name: "One Ring v0.3.4-alpha",
+                  release_notes: "You are running the latest version. All systems are up to date.",
+                  published_at: new Date().toISOString(),
+                  html_url: `${UPDATE_REPO_URL}/releases`,
+                  download_url: null,
+                  update_available: false,
+                  assets: [],
+                });
+              }
+            }}
+          />
+        </div>
       )}
+
+      <ModalDialog
+        isOpen={pendingNavTarget !== null}
+        title="Unsaved settings changes"
+        onClose={() => setPendingNavTarget(null)}
+        disableClose={guardBusy}
+        descriptionId="onering-unsaved-settings-description"
+        panelStyle={{ width: "min(480px, 100%)" }}
+      >
+        <p id="onering-unsaved-settings-description" className="onering-dialog-description">
+          Settings has unsaved edits. Save them, discard them, or stay here before switching tabs.
+        </p>
+        {guardError && (
+          <Notice tone="error" message={guardError} onDismiss={() => setGuardError(null)} />
+        )}
+        <div className="onering-dialog-footer">
+          <button
+            type="button"
+            className="btn"
+            disabled={guardBusy}
+            onClick={() => setPendingNavTarget(null)}
+          >
+            Stay here
+          </button>
+          <button
+            type="button"
+            className="btn"
+            disabled={guardBusy}
+            onClick={() => {
+              discardSettingsDraft();
+              commitNavigation(pendingNavTarget);
+            }}
+          >
+            Discard &amp; leave
+          </button>
+          <button
+            type="button"
+            className="btn btn-primary"
+            disabled={guardBusy}
+            onClick={async () => {
+              setGuardBusy(true);
+              const saved = await saveSettingsDraft();
+              setGuardBusy(false);
+              if (saved) commitNavigation(pendingNavTarget);
+              else {
+                setGuardError(
+                  "Save did not complete. Resolve any validation errors in Settings, then try again."
+                );
+              }
+            }}
+          >
+            {guardBusy ? "Saving..." : "Save & leave"}
+          </button>
+        </div>
+      </ModalDialog>
     </div>
   );
 };

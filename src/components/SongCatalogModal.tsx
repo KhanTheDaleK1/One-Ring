@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { Search, Music, Key, Download, CheckCircle, ExternalLink, RefreshCw, X } from "lucide-react";
 
 export interface SongLibraryResult {
@@ -29,6 +29,18 @@ export const SongCatalogModal: React.FC<SongCatalogModalProps> = ({
   const [results, setResults] = useState<SongLibraryResult[]>([]);
   const [selectedSong, setSelectedSong] = useState<SongLibraryResult | null>(null);
   const [importedIds, setImportedIds] = useState<Set<string>>(new Set());
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        onClose();
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [isOpen, onClose]);
 
   if (!isOpen) return null;
 
@@ -118,6 +130,9 @@ export const SongCatalogModal: React.FC<SongCatalogModalProps> = ({
 
   return (
     <div
+      role="dialog"
+      aria-modal="true"
+      aria-label="Built-in Hymn Sample Catalog"
       style={{
         position: "fixed",
         inset: 0,
@@ -127,12 +142,17 @@ export const SongCatalogModal: React.FC<SongCatalogModalProps> = ({
         display: "flex",
         alignItems: "center",
         justifyContent: "center",
+        padding: 16,
+        boxSizing: "border-box",
       }}
     >
       <div
         className="card"
         style={{
-          width: "900px",
+          width: "100%",
+          maxWidth: 900,
+          boxSizing: "border-box",
+          margin: "16px",
           maxHeight: "85vh",
           display: "flex",
           flexDirection: "column",
@@ -157,15 +177,17 @@ export const SongCatalogModal: React.FC<SongCatalogModalProps> = ({
             <Music size={22} color="#38BDF8" />
             <div>
               <h2 style={{ margin: 0, fontSize: 17, fontWeight: 700, color: "#F9FAFB" }}>
-                Song Library® Lyric Search & Import
+                Built-in Public Domain Hymn Samples
               </h2>
               <span className="mono" style={{ fontSize: 12, color: "#9CA3AF" }}>
-                Active License #{licenseNumber} • Auto Reporting Enabled
+                No live catalog configured — showing built-in samples
               </span>
             </div>
           </div>
           <button
+            type="button"
             onClick={onClose}
+            aria-label="Close hymn sample catalog"
             className="btn"
             style={{ padding: "6px 8px", background: "transparent", border: "none" }}
           >
@@ -175,7 +197,7 @@ export const SongCatalogModal: React.FC<SongCatalogModalProps> = ({
 
         {/* Search Bar */}
         <div style={{ padding: "16px 20px", borderBottom: "1px solid #1F2937", background: "#131C2E" }}>
-          <form onSubmit={handleSearch} style={{ display: "flex", gap: 10 }}>
+          <form onSubmit={handleSearch} style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
             <div style={{ position: "relative", flex: 1 }}>
               <Search
                 size={18}
@@ -223,11 +245,21 @@ export const SongCatalogModal: React.FC<SongCatalogModalProps> = ({
         </div>
 
         {/* Content Body */}
-        <div style={{ display: "flex", flex: 1, minHeight: 400, overflow: "hidden" }}>
+        <div
+          style={{
+            display: "flex",
+            flex: 1,
+            minHeight: "min(400px, 45vh)",
+            flexShrink: 1,
+            minWidth: 0,
+            overflow: "hidden",
+          }}
+        >
           {/* Results List */}
           <div
             style={{
               width: "48%",
+              minWidth: 0,
               borderRight: "1px solid #1F2937",
               overflowY: "auto",
               padding: 12,
@@ -259,9 +291,11 @@ export const SongCatalogModal: React.FC<SongCatalogModalProps> = ({
                 const isSelected = selectedSong?.songNumber === song.songNumber;
                 const isImported = importedIds.has(song.songNumber);
                 return (
-                  <div
+                  <button
+                    type="button"
                     key={song.songNumber}
                     onClick={() => handleSelect(song)}
+                    aria-pressed={isSelected}
                     style={{
                       padding: "12px 14px",
                       borderRadius: 8,
@@ -269,22 +303,42 @@ export const SongCatalogModal: React.FC<SongCatalogModalProps> = ({
                       border: `1px solid ${isSelected ? "#3B82F6" : "#374151"}`,
                       cursor: "pointer",
                       transition: "all 0.15s ease",
+                      textAlign: "left",
+                      width: "100%",
+                      font: "inherit",
+                      color: "inherit",
                     }}
                   >
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
                       <span style={{ fontWeight: 700, fontSize: 15, color: "#F9FAFB" }}>{song.title}</span>
-                      <span
-                        className="mono"
-                        style={{
-                          fontSize: 11,
-                          padding: "2px 6px",
-                          borderRadius: 4,
-                          backgroundColor: "#111827",
-                          color: "#9CA3AF",
-                        }}
-                      >
-                        SONG LIBRARY #{song.songNumber}
-                      </span>
+                      <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", justifyContent: "flex-end" }}>
+                        <span
+                          className="mono"
+                          style={{
+                            fontSize: 11,
+                            padding: "2px 6px",
+                            borderRadius: 4,
+                            backgroundColor: "#111827",
+                            color: "#9CA3AF",
+                          }}
+                        >
+                          SONG LIBRARY #{song.songNumber}
+                        </span>
+                        <span
+                          style={{
+                            fontSize: 10,
+                            fontWeight: 800,
+                            letterSpacing: "0.06em",
+                            padding: "2px 6px",
+                            borderRadius: 4,
+                            backgroundColor: "rgba(245, 158, 11, 0.9)",
+                            color: "#1F1300",
+                            whiteSpace: "nowrap",
+                          }}
+                        >
+                          BUILT-IN SAMPLE
+                        </span>
+                      </div>
                     </div>
                     <div style={{ fontSize: 13, color: "#D1D5DB", marginTop: 4 }}>{song.author}</div>
                     <div
@@ -304,14 +358,23 @@ export const SongCatalogModal: React.FC<SongCatalogModalProps> = ({
                         </span>
                       )}
                     </div>
-                  </div>
+                  </button>
                 );
               })
             )}
           </div>
 
           {/* Song Preview Details */}
-          <div style={{ flex: 1, padding: 20, overflowY: "auto", display: "flex", flexDirection: "column" }}>
+          <div
+            style={{
+              flex: 1,
+              minWidth: 0,
+              padding: 20,
+              overflowY: "auto",
+              display: "flex",
+              flexDirection: "column",
+            }}
+          >
             {selectedSong ? (
               <>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
@@ -344,7 +407,7 @@ export const SongCatalogModal: React.FC<SongCatalogModalProps> = ({
                       </>
                     ) : (
                       <>
-                        <Download size={16} /> Import to Slides
+                        <Download size={16} /> Import Sample to Slides
                       </>
                     )}
                   </button>
@@ -418,9 +481,15 @@ export const SongCatalogModal: React.FC<SongCatalogModalProps> = ({
         >
           <div style={{ display: "flex", alignItems: "center", gap: 6, color: "#9CA3AF", fontSize: 12 }}>
             <Key size={14} />
-            <span>Reporting complies with SONG LIBRARY Church Copyright License terms.</span>
+            <span>Built-in samples only — review before projecting. No live catalog reporting.</span>
           </div>
-          <button onClick={onClose} className="btn" style={{ height: 36, padding: "0 16px" }}>
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Close hymn sample catalog"
+            className="btn"
+            style={{ height: 36, padding: "0 16px" }}
+          >
             Done
           </button>
         </div>

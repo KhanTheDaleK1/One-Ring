@@ -131,7 +131,7 @@ export const ShowModeView: React.FC<ShowModeViewProps> = ({
   onSlideHttpResource,
   onSlideTcpControl,
   onSlideTcpScreenFlag,
-  onSlideTcpImage,
+  onSlideTcpImage: _onSlideTcpImage,
 }) => {
   const nextCueIndex = Math.min(state.cues.length - 1, state.activeCueIndex + 1);
   const nextCue = state.cues[nextCueIndex];
@@ -139,41 +139,11 @@ export const ShowModeView: React.FC<ShowModeViewProps> = ({
   const lastGoRef = useRef(0);
   const [showPtzDeck, setShowPtzDeck] = useState(false);
   const [pendingMute, setPendingMute] = useState<DcaChannel | null>(null);
+  const [showShortcuts, setShowShortcuts] = useState(false);
   const [stageSeconds, setStageSeconds] = useState(0);
   const [stageRunning, setStageRunning] = useState(false);
   const [messageDraft, setMessageDraft] = useState("");
-  const [clearGroupDraft, setClearGroupDraft] = useState("");
-  const [lookDraft, setLookDraft] = useState("");
-  const [propDraft, setPropDraft] = useState("");
-  const [macroDraft, setMacroDraft] = useState("");
-  const [imageUrl, setImageUrl] = useState<string | null>(null);
   const messageInputRef = useRef<HTMLInputElement>(null);
-  const fetchImageRef = useRef(onSlideTcpImage);
-  fetchImageRef.current = onSlideTcpImage;
-  const imageKey = state.slides.image?.key ?? null;
-
-  useEffect(() => {
-    let cancelled = false;
-    let objectUrl: string | null = null;
-    setImageUrl(null);
-    if (imageKey && fetchImageRef.current) {
-      fetchImageRef.current(imageKey)
-        .then((bytes) => {
-          if (cancelled || !bytes) return;
-          const buffer = bytes.buffer.slice(
-            bytes.byteOffset,
-            bytes.byteOffset + bytes.byteLength
-          ) as ArrayBuffer;
-          objectUrl = URL.createObjectURL(new Blob([buffer], { type: "image/jpeg" }));
-          setImageUrl(objectUrl);
-        })
-        .catch(() => setImageUrl(null));
-    }
-    return () => {
-      cancelled = true;
-      if (objectUrl) URL.revokeObjectURL(objectUrl);
-    };
-  }, [imageKey]);
 
   const slideItems: SlideCue[] = state.slides.slides ?? [];
   const currentSlide =
@@ -214,6 +184,14 @@ export const ShowModeView: React.FC<ShowModeViewProps> = ({
         return;
       }
 
+      if (showShortcuts) {
+        if (e.key === "Escape") {
+          e.preventDefault();
+          setShowShortcuts(false);
+        }
+        return;
+      }
+
       // While the PTZ control deck is open it owns the keyboard. Escape closes
       // it; every other shortcut (Space, arrows, 1-8, M, T) is ignored so it
       // cannot fire a cue/camera change behind the modal.
@@ -230,6 +208,12 @@ export const ShowModeView: React.FC<ShowModeViewProps> = ({
           e.preventDefault();
           setPendingMute(null);
         }
+        return;
+      }
+
+      if (e.key === "?" && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        e.preventDefault();
+        setShowShortcuts((open) => !open);
         return;
       }
 
@@ -265,6 +249,7 @@ export const ShowModeView: React.FC<ShowModeViewProps> = ({
   }, [
     pendingMute,
     showPtzDeck,
+    showShortcuts,
     state.activeCueIndex,
     state.cues.length,
     state.canUndo,
@@ -291,11 +276,11 @@ export const ShowModeView: React.FC<ShowModeViewProps> = ({
     <div
       style={{
         display: "grid",
-        gridTemplateColumns: "minmax(0, 1.05fr) minmax(0, 1fr) minmax(0, 0.92fr)",
+        gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))",
         gap: 16,
         padding: 16,
-        minHeight: "calc(100vh - 64px)",
-        alignItems: "stretch",
+        minHeight: 0,
+        alignItems: "start",
       }}
     >
       {/* LEFT: SERVICE CUE STACK + TRANSACTIONAL VERIFICATION */}
@@ -303,94 +288,139 @@ export const ShowModeView: React.FC<ShowModeViewProps> = ({
         className="card"
         style={{ display: "flex", flexDirection: "column", padding: 16, overflow: "hidden", minHeight: 0 }}
       >
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 10 }}>
           <div style={sectionLabelStyle}>
             SERVICE CUE STACK {state.rehearsalMode ? "(REHEARSAL / DRY-RUN)" : ""}
           </div>
-          <span className="mono" style={{ fontSize: 12, color: "#9CA3AF" }}>
-            Cue {state.activeCueIndex + 1} / {state.cues.length} • Undo {state.undoDepth}
-          </span>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <button
+              type="button"
+              className="btn"
+              onClick={() => setShowShortcuts(true)}
+              title="Keyboard shortcuts"
+              aria-label="Show keyboard shortcuts"
+              style={{ height: 30, padding: "0 10px", fontSize: 12 }}
+            >
+              ?
+            </button>
+            <span className="mono" style={{ fontSize: 12, color: "#9CA3AF" }}>
+              Cue {state.cues.length === 0 ? 0 : state.activeCueIndex + 1} / {state.cues.length} • Undo {state.undoDepth}
+            </span>
+          </div>
         </div>
 
         <div style={{ flex: 1, minHeight: 0, overflowY: "auto", display: "grid", gap: 8, paddingRight: 4 }}>
-          {state.cues.map((cue, idx) => {
-            const isActive = idx === state.activeCueIndex;
-            const isNext = idx === state.activeCueIndex + 1;
-            return (
-              <button
-                key={cue.id}
-                type="button"
-                onClick={() => onTriggerCue(idx)}
-                style={{
-                  textAlign: "left",
-                  padding: "11px 14px",
-                  borderRadius: 10,
-                  cursor: "pointer",
-                  border: isActive
-                    ? "1px solid #3B82F6"
-                    : isNext
-                    ? "1px solid #10B981"
-                    : "1px solid #252C38",
-                  background: isActive
-                    ? "rgba(59,130,246,0.14)"
-                    : isNext
-                    ? "rgba(16,185,129,0.08)"
-                    : "#1C222D",
-                  color: "#F3F4F6",
-                }}
-              >
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                  <span style={{ fontWeight: 700, fontSize: 15 }}>
-                    {cue.index}. {cue.title}
-                  </span>
-                  <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                    {cue.riskTier >= 2 && (
+          {state.cues.length === 0 ? (
+            <div
+              style={{
+                padding: "24px 16px",
+                borderRadius: 10,
+                border: "1px dashed #475569",
+                background: "#121821",
+                color: "#9CA3AF",
+                textAlign: "center",
+                display: "grid",
+                gap: 6,
+                alignContent: "center",
+              }}
+            >
+              <div style={{ fontWeight: 700, color: "#E5E7EB", fontSize: 15 }}>No cues yet</div>
+              <div style={{ fontSize: 12, lineHeight: 1.5 }}>
+                Add service cues in the show builder to run your service from one place.
+              </div>
+            </div>
+          ) : (
+            state.cues.map((cue, idx) => {
+              const isActive = idx === state.activeCueIndex;
+              const isNext = idx === state.activeCueIndex + 1;
+              const highRisk = cue.riskTier >= 2;
+              const cueStyle: React.CSSProperties = {
+                width: "100%",
+                textAlign: "left",
+                padding: "11px 14px",
+                borderRadius: 10,
+                cursor: "pointer",
+                border: isActive
+                  ? "1px solid #3B82F6"
+                  : isNext
+                  ? "1px solid #10B981"
+                  : "1px solid #252C38",
+                background: isActive
+                  ? "rgba(59,130,246,0.14)"
+                  : isNext
+                  ? "rgba(16,185,129,0.08)"
+                  : "#1C222D",
+                color: "#F3F4F6",
+              };
+              if (highRisk) {
+                return (
+                  <HoldConfirmButton
+                    key={cue.id}
+                    label={`Hold to run: ${cue.index}. ${cue.title}`}
+                    holdMs={1200}
+                    danger={false}
+                    onConfirm={() => onTriggerCue(idx)}
+                    style={{
+                      ...cueStyle,
+                      minHeight: 0,
+                      height: "auto",
+                      borderColor: isActive ? "#3B82F6" : isNext ? "#10B981" : "#B45309",
+                      background: isActive
+                        ? "rgba(59,130,246,0.14)"
+                        : isNext
+                        ? "rgba(16,185,129,0.08)"
+                        : "rgba(245,158,11,0.10)",
+                      color: "#F3F4F6",
+                    }}
+                  />
+                );
+              }
+              return (
+                <button
+                  key={cue.id}
+                  type="button"
+                  onClick={() => onTriggerCue(idx)}
+                  style={cueStyle}
+                >
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                    <span style={{ fontWeight: 700, fontSize: 15 }}>
+                      {cue.index}. {cue.title}
+                    </span>
+                    <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                      {isActive && (
+                        <span className="mono" style={{ fontSize: 11, fontWeight: 700, color: "#60A5FA" }}>
+                          ACTIVE
+                        </span>
+                      )}
+                      {isNext && (
+                        <span className="mono" style={{ fontSize: 11, fontWeight: 700, color: "#34D399" }}>
+                          UP NEXT
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 7 }}>
+                    {cue.actions.map((act) => (
                       <span
+                        key={act}
                         className="mono"
                         style={{
-                          fontSize: 10,
-                          padding: "2px 6px",
-                          borderRadius: 4,
-                          background: "rgba(245,158,11,0.18)",
-                          color: "#FBBF24",
+                          fontSize: 11,
+                          padding: "2px 8px",
+                          borderRadius: 6,
+                          background: "#0B0D10",
+                          border: "1px solid #2A3241",
+                          color: "#D1D5DB",
                         }}
                       >
-                        ON-AIR TRANSITION
+                        {act}
                       </span>
-                    )}
-                    {isActive && (
-                      <span className="mono" style={{ fontSize: 11, fontWeight: 700, color: "#60A5FA" }}>
-                        ACTIVE
-                      </span>
-                    )}
-                    {isNext && (
-                      <span className="mono" style={{ fontSize: 11, fontWeight: 700, color: "#34D399" }}>
-                        UP NEXT
-                      </span>
-                    )}
+                    ))}
                   </div>
-                </div>
-                <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 7 }}>
-                  {cue.actions.map((act) => (
-                    <span
-                      key={act}
-                      className="mono"
-                      style={{
-                        fontSize: 11,
-                        padding: "2px 8px",
-                        borderRadius: 6,
-                        background: "#0B0D10",
-                        border: "1px solid #2A3241",
-                        color: "#D1D5DB",
-                      }}
-                    >
-                      {act}
-                    </span>
-                  ))}
-                </div>
-              </button>
-            );
-          })}
+                </button>
+              );
+            })
+          )}
         </div>
 
         {/* POST-CONDITION VERIFICATION REPORT */}
@@ -728,409 +758,18 @@ export const ShowModeView: React.FC<ShowModeViewProps> = ({
             </button>
           </div>
 
-          {state.slides.adapter === "slideHttp" && (
+          {(state.slides.adapter === "slideHttp" || state.slides.adapter === "slideTcp") && (
             <div
+              className="mono"
               style={{
                 marginTop: 10,
-                paddingTop: 8,
+                padding: "8px 10px",
                 borderTop: "1px solid #2A3241",
-                display: "grid",
-                gap: 6,
+                fontSize: 11,
+                color: "#94A3B8",
               }}
             >
-              <div style={{ ...sectionLabelStyle, fontSize: 10 }}>MEDIA &amp; TRANSPORT</div>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 6 }}>
-                <button
-                  type="button"
-                  className="btn"
-                  disabled={!onPlaylistControl}
-                  onClick={() => onPlaylistControl?.("media", "previous")}
-                  style={{ height: 34, fontSize: 11 }}
-                >
-                  ◀ Media
-                </button>
-                <button
-                  type="button"
-                  className="btn"
-                  disabled={!onPlaylistControl}
-                  onClick={() => onPlaylistControl?.("media", "next")}
-                  style={{ height: 34, fontSize: 11 }}
-                >
-                  Media ▶
-                </button>
-                <button
-                  type="button"
-                  className="btn"
-                  disabled={!onPlaylistControl}
-                  onClick={() => onPlaylistControl?.("audio", "previous")}
-                  style={{ height: 34, fontSize: 11 }}
-                >
-                  ◀ Audio
-                </button>
-                <button
-                  type="button"
-                  className="btn"
-                  disabled={!onPlaylistControl}
-                  onClick={() => onPlaylistControl?.("audio", "next")}
-                  style={{ height: 34, fontSize: 11 }}
-                >
-                  Audio ▶
-                </button>
-              </div>
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 6 }}>
-                <button
-                  type="button"
-                  className="btn"
-                  disabled={!onTransportControl}
-                  onClick={() => onTransportControl?.("presentation", "play")}
-                  style={{ height: 34, fontSize: 11, display: "flex", alignItems: "center", justifyContent: "center", gap: 4 }}
-                >
-                  <Play size={12} /> Play
-                </button>
-                <button
-                  type="button"
-                  className="btn"
-                  disabled={!onTransportControl}
-                  onClick={() => onTransportControl?.("presentation", "pause")}
-                  style={{ height: 34, fontSize: 11, display: "flex", alignItems: "center", justifyContent: "center", gap: 4 }}
-                >
-                  <Pause size={12} /> Pause
-                </button>
-                <button
-                  type="button"
-                  className="btn"
-                  disabled={!onTransportSeek}
-                  onClick={() => onTransportSeek?.("presentation", 0)}
-                  style={{ height: 34, fontSize: 11 }}
-                >
-                  Seek 0:00
-                </button>
-              </div>
-              {state.slides.playback && (
-                <div className="mono" style={{ fontSize: 10, color: "#9CA3AF" }}>
-                  {state.slides.playback.name || state.slides.playback.itemId || "No item"} ·{" "}
-                  {Math.floor(state.slides.playback.positionMs / 1000)}s /{" "}
-                  {Math.floor(state.slides.playback.durationMs / 1000)}s ·{" "}
-                  {state.slides.playback.isPlaying ? "PLAYING" : "PAUSED"}
-                </div>
-              )}
-              <div style={{ display: "flex", gap: 6 }}>
-                <input
-                  className="mono"
-                  value={clearGroupDraft}
-                  onChange={(e) => setClearGroupDraft(e.target.value)}
-                  placeholder="Clear group id"
-                  aria-label="Clear group id"
-                  style={{
-                    flex: 1,
-                    minWidth: 0,
-                    height: 32,
-                    padding: "0 8px",
-                    borderRadius: 6,
-                    border: "1px solid #2E3746",
-                    background: "#0F141C",
-                    color: "#E5E7EB",
-                    fontSize: 11,
-                  }}
-                />
-                <button
-                  type="button"
-                  className="btn"
-                  disabled={!onClearGroup || !clearGroupDraft.trim()}
-                  onClick={() => {
-                    onClearGroup?.(clearGroupDraft.trim());
-                    setClearGroupDraft("");
-                  }}
-                  style={{ height: 32, fontSize: 11 }}
-                >
-                  Clear group
-                </button>
-              </div>
-              <div style={{ ...sectionLabelStyle, fontSize: 10 }}>LOOKS / PROPS / MACROS</div>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 6 }}>
-                <button
-                  type="button"
-                  className="btn"
-                  disabled={!onRefreshSlideHttpCatalog}
-                  onClick={() => onRefreshSlideHttpCatalog?.("looks")}
-                  style={{ height: 30, fontSize: 10 }}
-                  title="Refresh /v1/looks; raw JSON is logged (schema undocumented)"
-                >
-                  Refresh looks
-                </button>
-                <button
-                  type="button"
-                  className="btn"
-                  disabled={!onRefreshSlideHttpCatalog}
-                  onClick={() => onRefreshSlideHttpCatalog?.("look_current")}
-                  style={{ height: 30, fontSize: 10 }}
-                >
-                  Current look
-                </button>
-                <button
-                  type="button"
-                  className="btn"
-                  disabled={!onRefreshSlideHttpCatalog}
-                  onClick={() => onRefreshSlideHttpCatalog?.("props")}
-                  style={{ height: 30, fontSize: 10 }}
-                >
-                  Refresh props
-                </button>
-                <button
-                  type="button"
-                  className="btn"
-                  disabled={!onRefreshSlideHttpCatalog}
-                  onClick={() => onRefreshSlideHttpCatalog?.("macros")}
-                  style={{ height: 30, fontSize: 10 }}
-                >
-                  Refresh macros
-                </button>
-              </div>
-              <div style={{ display: "grid", gap: 6 }}>
-                <div style={{ display: "flex", gap: 6 }}>
-                  <input
-                    className="mono"
-                    value={lookDraft}
-                    onChange={(e) => setLookDraft(e.target.value)}
-                    placeholder="Look id / UUID"
-                    aria-label="Look id"
-                    style={{
-                      flex: 1,
-                      minWidth: 0,
-                      height: 30,
-                      padding: "0 8px",
-                      borderRadius: 6,
-                      border: "1px solid #2E3746",
-                      background: "#0F141C",
-                      color: "#E5E7EB",
-                      fontSize: 10,
-                    }}
-                  />
-                  <button
-                    type="button"
-                    className="btn"
-                    disabled={!onSlideHttpResource || !lookDraft.trim()}
-                    onClick={() => {
-                      onSlideHttpResource?.("trigger_look", lookDraft.trim());
-                      setLookDraft("");
-                    }}
-                    style={{ height: 30, fontSize: 10 }}
-                  >
-                    Trigger look
-                  </button>
-                </div>
-                <div style={{ display: "flex", gap: 6 }}>
-                  <input
-                    className="mono"
-                    value={propDraft}
-                    onChange={(e) => setPropDraft(e.target.value)}
-                    placeholder="Prop id / UUID"
-                    aria-label="Prop id"
-                    style={{
-                      flex: 1,
-                      minWidth: 0,
-                      height: 30,
-                      padding: "0 8px",
-                      borderRadius: 6,
-                      border: "1px solid #2E3746",
-                      background: "#0F141C",
-                      color: "#E5E7EB",
-                      fontSize: 10,
-                    }}
-                  />
-                  <button
-                    type="button"
-                    className="btn"
-                    disabled={!onSlideHttpResource || !propDraft.trim()}
-                    onClick={() => onSlideHttpResource?.("trigger_prop", propDraft.trim())}
-                    style={{ height: 30, fontSize: 10 }}
-                  >
-                    Trigger
-                  </button>
-                  <button
-                    type="button"
-                    className="btn"
-                    disabled={!onSlideHttpResource || !propDraft.trim()}
-                    onClick={() => onSlideHttpResource?.("clear_prop", propDraft.trim())}
-                    style={{ height: 30, fontSize: 10 }}
-                  >
-                    Clear
-                  </button>
-                </div>
-                <div style={{ display: "flex", gap: 6 }}>
-                  <input
-                    className="mono"
-                    value={macroDraft}
-                    onChange={(e) => setMacroDraft(e.target.value)}
-                    placeholder="Macro id / UUID"
-                    aria-label="Macro id"
-                    style={{
-                      flex: 1,
-                      minWidth: 0,
-                      height: 30,
-                      padding: "0 8px",
-                      borderRadius: 6,
-                      border: "1px solid #2E3746",
-                      background: "#0F141C",
-                      color: "#E5E7EB",
-                      fontSize: 10,
-                    }}
-                  />
-                  <button
-                    type="button"
-                    className="btn"
-                    disabled={!onSlideHttpResource || !macroDraft.trim()}
-                    onClick={() => {
-                      onSlideHttpResource?.("trigger_macro", macroDraft.trim());
-                      setMacroDraft("");
-                    }}
-                    style={{ height: 30, fontSize: 10 }}
-                  >
-                    Trigger macro
-                  </button>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {state.slides.adapter === "slideTcp" && (
-            <div
-              style={{
-                marginTop: 10,
-                paddingTop: 8,
-                borderTop: "1px solid #2A3241",
-                display: "grid",
-                gap: 6,
-              }}
-            >
-              <div style={{ ...sectionLabelStyle, fontSize: 10 }}>SLIDE TCP TRANSPORT</div>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 6 }}>
-                <button
-                  type="button"
-                  className="btn"
-                  disabled={!onSlideTcpControl}
-                  onClick={() => onSlideTcpControl?.("gotoStartSlide")}
-                  style={{ height: 34, fontSize: 11 }}
-                >
-                  Start slide
-                </button>
-                <button
-                  type="button"
-                  className="btn"
-                  disabled={!onSlideTcpControl}
-                  onClick={() => onSlideTcpControl?.("gotoStartPresentation")}
-                  style={{ height: 34, fontSize: 11 }}
-                >
-                  Start pres
-                </button>
-                <button
-                  type="button"
-                  className="btn"
-                  disabled={!onSlideTcpControl}
-                  onClick={() => onSlideTcpControl?.("Toggle")}
-                  style={{ height: 34, fontSize: 11 }}
-                >
-                  Toggle media
-                </button>
-              </div>
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
-                <button
-                  type="button"
-                  className="btn"
-                  disabled={!onSlideTcpControl}
-                  onClick={() => onSlideTcpControl?.("Play")}
-                  style={{ height: 34, fontSize: 11, display: "flex", alignItems: "center", justifyContent: "center", gap: 4 }}
-                >
-                  <Play size={12} /> Play
-                </button>
-                <button
-                  type="button"
-                  className="btn"
-                  disabled={!onSlideTcpControl}
-                  onClick={() => onSlideTcpControl?.("Pause")}
-                  style={{ height: 34, fontSize: 11, display: "flex", alignItems: "center", justifyContent: "center", gap: 4 }}
-                >
-                  <Pause size={12} /> Pause
-                </button>
-              </div>
-              <div style={{ ...sectionLabelStyle, fontSize: 10 }}>OUTPUT FLAGS</div>
-              <div className="mono" style={{ fontSize: 10, color: "#9CA3AF" }}>
-                Reported: black {state.slides.screen.black ? "ON" : "off"} · clear{" "}
-                {state.slides.screen.clear ? "ON" : "off"} · logo{" "}
-                {state.slides.screen.logo ? "ON" : "off"}
-              </div>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 6 }}>
-                {(["black", "clear", "logo"] as const).map((flag) => (
-                  <button
-                    key={flag}
-                    type="button"
-                    className="btn"
-                    disabled={!onSlideTcpScreenFlag}
-                    onClick={() => onSlideTcpScreenFlag?.(flag, !state.slides.screen[flag])}
-                    style={{
-                      height: 30,
-                      fontSize: 10,
-                      borderColor: state.slides.screen[flag] ? "#F59E0B" : "#2E3746",
-                      color: state.slides.screen[flag] ? "#FBBF24" : undefined,
-                    }}
-                    title="Local display override only — no remote TCP toggle is documented; the next status report overwrites it"
-                  >
-                    {flag.toUpperCase()} {state.slides.screen[flag] ? "ON" : "OFF"}
-                  </button>
-                ))}
-              </div>
-              <div style={{ ...sectionLabelStyle, fontSize: 10 }}>JPEG PREVIEW</div>
-              {state.slides.image ? (
-                <div style={{ display: "grid", gap: 6 }}>
-                  {imageUrl ? (
-                    <img
-                      src={imageUrl}
-                      alt="SlideTcp live preview"
-                      style={{
-                        width: "100%",
-                        maxHeight: 180,
-                        objectFit: "contain",
-                        borderRadius: 6,
-                        border: "1px solid #2A3241",
-                        background: "#000",
-                      }}
-                    />
-                  ) : (
-                    <div className="mono" style={{ fontSize: 10, color: "#9CA3AF" }}>
-                      Metadata only — raw JPEG unavailable in simulator mode
-                    </div>
-                  )}
-                  <div className="mono" style={{ fontSize: 10, color: "#9CA3AF" }}>
-                    {state.slides.image.source} · {state.slides.image.size} bytes ·{" "}
-                    {state.slides.image.imagehash || "no hash"}
-                  </div>
-                </div>
-              ) : (
-                <div className="mono" style={{ fontSize: 10, color: "#9CA3AF" }}>
-                  No JPEG received yet
-                </div>
-              )}
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
-                <button
-                  type="button"
-                  className="btn"
-                  disabled={!onSlideTcpControl}
-                  onClick={() => onSlideTcpControl?.("GetCurrentImage")}
-                  style={{ height: 30, fontSize: 10 }}
-                >
-                  Request live image
-                </button>
-                <button
-                  type="button"
-                  className="btn"
-                  disabled={!onSlideTcpControl}
-                  onClick={() => onSlideTcpControl?.("Refresh")}
-                  style={{ height: 30, fontSize: 10 }}
-                  title="Request a fresh status report; slide/image follow-ups fire on revision changes"
-                >
-                  Refresh status
-                </button>
-              </div>
+              Slides connected
             </div>
           )}
 
@@ -1705,40 +1344,78 @@ export const ShowModeView: React.FC<ShowModeViewProps> = ({
           </div>
 
           <div style={{ marginTop: "auto", display: "grid", gap: 9 }}>
-            <button
-              type="button"
-              className="btn"
-              onClick={() => onBroadcastToggle("all", true)}
-              disabled={anyLive}
-              style={{
-                height: 48,
-                background: anyLive ? "#1C222D" : "#059669",
-                borderColor: anyLive ? "#2E3746" : "#10B981",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                gap: 7,
-              }}
-            >
-              <Radio size={16} />
-              {anyLive ? "All Targets Live" : "Go Live (YT + FB + MKV)"}
-            </button>
-            <HoldConfirmButton
-              label="Hold 1.5s to Stop All Streams"
-              disabled={!anyLive}
-              onConfirm={() => onBroadcastToggle("all", false)}
-            />
+            {!anyLive ? (
+              <HoldConfirmButton
+                label="Hold 1.5s to Go Live"
+                danger={false}
+                onConfirm={() => onBroadcastToggle("all", true)}
+                style={{
+                  height: 48,
+                  borderColor: "#10B981",
+                  background: "#065F46",
+                  color: "#ECFDF5",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                }}
+              />
+            ) : (
+              <HoldConfirmButton
+                label="Hold 1.5s to Stop All Streams"
+                onConfirm={() => onBroadcastToggle("all", false)}
+                style={{ height: 48 }}
+              />
+            )}
             <div
               className="mono"
-              style={{ fontSize: 9, color: "#636E7E", display: "flex", alignItems: "center", gap: 4 }}
+              style={{ fontSize: 9, color: "#94A3B8", display: "flex", alignItems: "center", gap: 4 }}
             >
-              <AlertTriangle size={10} /> Tier 3 action: release early to cancel safely.
+              <AlertTriangle size={10} /> Hold to confirm. Release early to cancel safely.
             </div>
           </div>
         </div>
       </div>
 
       {/* TIER 2: TWO-STEP CONFIRMATION FOR MUTING AN ACTIVE PASTOR MIC */}
+      {showShortcuts && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="show-shortcuts-title"
+          style={{
+            position: "fixed",
+            inset: 0,
+            zIndex: 1000,
+            background: "rgba(2,4,8,0.72)",
+            display: "grid",
+            placeItems: "center",
+            padding: 24,
+            backdropFilter: "blur(2px)",
+          }}
+          onClick={(event) => {
+            if (event.target === event.currentTarget) setShowShortcuts(false);
+          }}
+        >
+          <div className="card" style={{ width: "min(520px, 100%)", padding: 18, display: "grid", gap: 12 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+              <h2 id="show-shortcuts-title" style={{ margin: 0, fontSize: 18 }}>Keyboard shortcuts</h2>
+              <button type="button" className="btn" onClick={() => setShowShortcuts(false)} style={{ height: 34, padding: "0 10px" }}>
+                Close
+              </button>
+            </div>
+            <div style={{ display: "grid", gap: 8, fontSize: 13, color: "#D1D5DB" }}>
+              <div><strong>Space</strong> — Go to next cue</div>
+              <div><strong>← / →</strong> or <strong>Page Up / Page Down</strong> — Previous / next slide</div>
+              <div><strong>1–8</strong> — Recall camera preset</div>
+              <div><strong>M</strong> — Focus stage message</div>
+              <div><strong>T</strong> — Start / stop live timer</div>
+              <div><strong>Ctrl/Cmd + Z</strong> — Undo</div>
+              <div><strong>?</strong> — Toggle this shortcuts list</div>
+              <div><strong>Esc</strong> — Close dialogs</div>
+            </div>
+          </div>
+        </div>
+      )}
       {pendingMute && (
         <div
           role="presentation"

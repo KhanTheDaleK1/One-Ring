@@ -194,7 +194,7 @@ export const EngineerView: React.FC<EngineerViewProps> = ({
                 padding: "0 10px",
                 fontSize: 11,
                 background: state.beltpackFaultSimulated ? "#7F1D1D" : "#1C222D",
-                borderColor: state.beltpackFaultSimulated ? "#EF4444" : "#334155",
+                borderColor: state.beltpackFaultSimulated ? "#EF4444" : "#475569",
               }}
             >
               {state.beltpackFaultSimulated ? "Clear Pastor Fault" : "Test Beltpack Fault (0xFE)"}

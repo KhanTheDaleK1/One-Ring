@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { Sliders, Activity, Power, X, RefreshCw, Volume2, Waves } from "lucide-react";
 
 export type FxType =
@@ -142,6 +142,17 @@ export const ConsoleFxRackModal: React.FC<ConsoleFxRackModalProps> = ({
     },
   ]);
 
+  useEffect(() => {
+    if (!isOpen) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      e.stopPropagation();
+      onClose();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [isOpen, onClose]);
+
   if (!isOpen) return null;
 
   const currentSlot = slots.find((s) => s.slotId === selectedSlot) || slots[0];
@@ -191,6 +202,9 @@ export const ConsoleFxRackModal: React.FC<ConsoleFxRackModalProps> = ({
     >
       <div
         className="card"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Console 8-slot effects rack"
         style={{
           width: "980px",
           maxHeight: "88vh",

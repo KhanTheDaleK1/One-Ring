@@ -29,15 +29,22 @@ interface SourceSettingsModalProps {
   onSave: (id: string, updatedSettings: Record<string, unknown>, newName: string) => void;
 }
 
+function initialDraftSettings(source: SceneSourceItem | null): Record<string, any> {
+  return {
+    ...(source?.type === "window_capture" || source?.type === "display_capture"
+      ? { captureMethod: "native", fps: 5 }
+      : {}),
+    ...(source?.settings || {}),
+  };
+}
+
 export const SourceSettingsModal: React.FC<SourceSettingsModalProps> = ({
   source,
   isOpen,
   onClose,
   onSave,
 }) => {
-  if (!isOpen || !source) return null;
-
-  const [name, setName] = useState(source.name);
+  const [name, setName] = useState(source?.name || "");
   const [capturableWindows, setCapturableWindows] = useState<CapturableWindow[]>([]);
   const [capturableDisplays, setCapturableDisplays] = useState<CapturableDisplay[]>([]);
   const [loadingWindows, setLoadingWindows] = useState(false);
@@ -80,12 +87,25 @@ export const SourceSettingsModal: React.FC<SourceSettingsModalProps> = ({
     if (isOpen && source?.type === "display_capture") void refreshDisplays();
   }, [isOpen, source?.type, refreshDisplays]);
 
-  const [settings, setSettings] = useState<Record<string, any>>(() => ({
-    ...(source.type === "window_capture" || source.type === "display_capture"
-      ? { captureMethod: "native", fps: 5 }
-      : {}),
-    ...source.settings,
-  }));
+  const [settings, setSettings] = useState<Record<string, any>>(() => initialDraftSettings(source));
+
+  // H2: a different source (or a reopened modal) must never show another source's draft.
+  useEffect(() => {
+    if (!isOpen || !source) return;
+    setName(source.name);
+    setSettings(initialDraftSettings(source));
+  }, [isOpen, source?.id]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [isOpen, onClose]);
+
+  if (!isOpen || !source) return null;
 
   const patchSetting = (key: string, val: any) => {
     setSettings((prev) => ({ ...prev, [key]: val }));
@@ -139,7 +159,7 @@ export const SourceSettingsModal: React.FC<SourceSettingsModalProps> = ({
                 ))}
               </select>
             </div>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(0, 1fr))", gap: 10 }}>
               <div>
                 <label style={labelStyle}>Resolution</label>
                 <select
@@ -181,7 +201,7 @@ export const SourceSettingsModal: React.FC<SourceSettingsModalProps> = ({
                 placeholder="https://your-worship-overlay-or-chat.com"
               />
             </div>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(0, 1fr))", gap: 10 }}>
               <div>
                 <label style={labelStyle}>Width</label>
                 <input
@@ -343,7 +363,7 @@ export const SourceSettingsModal: React.FC<SourceSettingsModalProps> = ({
                 placeholder="/path/to/video.mp4 or praise_pad.wav"
               />
             </div>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginTop: 4 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(0, 1fr))", gap: 10, marginTop: 4 }}>
               <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, color: "#E2E8F0", cursor: "pointer" }}>
                 <input
                   type="checkbox"
@@ -392,7 +412,7 @@ export const SourceSettingsModal: React.FC<SourceSettingsModalProps> = ({
                 placeholder="Enter sermon title, scripture reference, or announcement"
               />
             </div>
-            <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: 10 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 2fr) minmax(0, 1fr)", gap: 10 }}>
               <div>
                 <label style={labelStyle}>Font Family</label>
                 <input
@@ -418,7 +438,7 @@ export const SourceSettingsModal: React.FC<SourceSettingsModalProps> = ({
       case "color":
         return (
           <>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(0, 1fr))", gap: 10 }}>
               <div>
                 <label style={labelStyle}>Color Hex</label>
                 <input
@@ -482,6 +502,9 @@ export const SourceSettingsModal: React.FC<SourceSettingsModalProps> = ({
 
   return (
     <div
+      role="dialog"
+      aria-modal="true"
+      aria-label="Source Properties"
       style={{
         position: "fixed",
         top: 0,

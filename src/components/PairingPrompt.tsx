@@ -1,6 +1,5 @@
-import React, { useState } from "react";
-import { Network, Link2, Check, X, Shield, ArrowRight } from "lucide-react";
-import type { ConnectedStation } from "../types";
+import React, { useEffect } from "react";
+import { Network, Link2, X } from "lucide-react";
 
 export interface DiscoveredPeerInfo {
   instanceId: string;
@@ -22,8 +21,22 @@ export const PairingPrompt: React.FC<PairingPromptProps> = ({
   onPair,
   onDismiss,
 }) => {
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        onDismiss();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [onDismiss]);
+
   return (
     <div
+      role="dialog"
+      aria-modal="false"
+      aria-labelledby="pairing-prompt-title"
       style={{
         position: "fixed",
         bottom: 24,
@@ -60,7 +73,10 @@ export const PairingPrompt: React.FC<PairingPromptProps> = ({
             <Network size={20} color="#60A5FA" />
           </div>
           <div>
-            <div style={{ fontSize: 14, fontWeight: 700, color: "#FFFFFF", display: "flex", alignItems: "center", gap: 6 }}>
+            <div
+              id="pairing-prompt-title"
+              style={{ fontSize: 14, fontWeight: 700, color: "#FFFFFF", display: "flex", alignItems: "center", gap: 6 }}
+            >
               Nearby Station Discovered
             </div>
             <div style={{ fontSize: 12, color: "#94A3B8" }}>
@@ -71,7 +87,8 @@ export const PairingPrompt: React.FC<PairingPromptProps> = ({
         <button
           type="button"
           onClick={onDismiss}
-          style={{ background: "transparent", border: "none", color: "#64748B", cursor: "pointer", padding: 2 }}
+          aria-label="Dismiss pairing prompt"
+          style={{ background: "transparent", border: "none", color: "#94A3B8", cursor: "pointer", padding: 2 }}
         >
           <X size={16} />
         </button>
@@ -90,15 +107,15 @@ export const PairingPrompt: React.FC<PairingPromptProps> = ({
         }}
       >
         <div style={{ display: "flex", justifyContent: "space-between" }}>
-          <span style={{ color: "#64748B" }}>Station Name:</span>
+          <span style={{ color: "#94A3B8" }}>Station Name:</span>
           <strong style={{ color: "#FFFFFF" }}>{peer.stationName || "Production Node"}</strong>
         </div>
         <div style={{ display: "flex", justifyContent: "space-between" }}>
-          <span style={{ color: "#64748B" }}>Venue Canvas:</span>
+          <span style={{ color: "#94A3B8" }}>Venue Canvas:</span>
           <span style={{ color: "#93C5FD" }}>{peer.canvasTitle || "Main Sanctuary"}</span>
         </div>
         <div style={{ display: "flex", justifyContent: "space-between" }}>
-          <span style={{ color: "#64748B" }}>IP Address:</span>
+          <span style={{ color: "#94A3B8" }}>IP Address:</span>
           <span className="mono" style={{ color: "#34D399" }}>{peer.ipAddress}:{peer.wsSyncPort}</span>
         </div>
       </div>

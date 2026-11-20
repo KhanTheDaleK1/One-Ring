@@ -506,7 +506,6 @@ export const SecondaryOutputWindow: React.FC = () => {
                     display: "flex",
                     flexDirection: "column",
                     overflow: "hidden",
-                    opacity: 0.65,
                   }}
                 >
                   <div
@@ -515,7 +514,7 @@ export const SecondaryOutputWindow: React.FC = () => {
                       display: "flex",
                       alignItems: "center",
                       justifyContent: "center",
-                      color: "#334155",
+                      color: "#94A3B8",
                       fontSize: 11,
                       fontWeight: 700,
                       letterSpacing: "0.08em",
@@ -529,7 +528,7 @@ export const SecondaryOutputWindow: React.FC = () => {
                       background: "#0F141D",
                       borderTop: "1px solid #1E293B",
                       fontSize: 11,
-                      color: "#475569",
+                      color: "#64748B",
                       fontWeight: 600,
                     }}
                   >
@@ -547,7 +546,16 @@ export const SecondaryOutputWindow: React.FC = () => {
             return (
               <div
                 key={scene.id}
+                role="button"
+                tabIndex={0}
+                aria-label={`Select scene ${String(idx + 1).padStart(2, "0")}`}
                 onClick={() => handleSelectSceneTile(scene.id)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    handleSelectSceneTile(scene.id);
+                  }
+                }}
                 style={{
                   background: "#000000",
                   border: `2px solid ${borderColor}`,
@@ -692,7 +700,7 @@ export const SecondaryOutputWindow: React.FC = () => {
             fontFamily: "Inter, system-ui, sans-serif",
           }}
         >
-          <div style={{ opacity: 0.2, display: "flex", alignItems: "center", gap: 8, color: "#FFFFFF", fontSize: 13 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, color: "#64748B", fontSize: 13 }}>
             <Monitor size={16} /> <Radio size={14} />
             <span>
               Source Projector Standby {sourceIdParam ? `• ${sourceIdParam}` : ""}
@@ -1084,7 +1092,7 @@ export const SecondaryOutputWindow: React.FC = () => {
           {fohText}
         </div>
       ) : (
-        <div style={{ position: "relative", opacity: 0.12, display: "flex", alignItems: "center", gap: 8, color: "#FFFFFF", fontSize: 13 }}>
+        <div style={{ position: "relative", display: "flex", alignItems: "center", gap: 8, color: "#64748B", fontSize: 13 }}>
           <Monitor size={16} /> <Radio size={14} /> FOH Output Standby
         </div>
       )}

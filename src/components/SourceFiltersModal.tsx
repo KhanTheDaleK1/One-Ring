@@ -168,6 +168,17 @@ export const SourceFiltersModal: React.FC<SourceFiltersModalProps> = ({
     }
   }, [isOpen, source?.id]);
 
+  useEffect(() => {
+    if (!isOpen) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      e.stopPropagation();
+      onClose();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [isOpen, onClose]);
+
   if (!isOpen || !source) return null;
 
   const selectedFilter = filters.find((f) => f.id === selectedFilterId) || null;
@@ -219,6 +230,9 @@ export const SourceFiltersModal: React.FC<SourceFiltersModalProps> = ({
       }}
     >
       <div
+        role="dialog"
+        aria-modal="true"
+        aria-label={`Filters and plugins for ${source.name}`}
         style={{
           width: "100%",
           maxWidth: 760,

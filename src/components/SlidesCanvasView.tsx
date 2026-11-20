@@ -493,17 +493,32 @@ export const SlidesCanvasView: React.FC<SlidesCanvasViewProps> = ({
     setImportNotice(`Applied ${editedSlides.length} slide(s) to "${title}"`);
   };
 
-  // Keyboard arrow navigation when in Slides view (Left/Right or Up/Down)
+  // Keyboard slide navigation: ignore modal state and anything the operator is typing in.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (
-        e.target instanceof HTMLInputElement ||
-        e.target instanceof HTMLTextAreaElement ||
-        e.target instanceof HTMLSelectElement
+        showImportModal ||
+        showSongCatalogModal ||
+        showThemeEditor ||
+        showBibleModal ||
+        showTimersModal ||
+        showSlideEditor
       ) {
         return;
       }
-      if (e.key === "ArrowRight" || e.key === "ArrowDown") {
+      const target = e.target;
+      if (
+        target instanceof HTMLInputElement ||
+        target instanceof HTMLTextAreaElement ||
+        target instanceof HTMLSelectElement ||
+        target instanceof HTMLButtonElement ||
+        target instanceof HTMLAnchorElement ||
+        (target instanceof HTMLElement &&
+          (target.isContentEditable || target.getAttribute("role") === "button"))
+      ) {
+        return;
+      }
+      if (e.key === "ArrowRight" || e.key === "ArrowDown" || e.key === " ") {
         e.preventDefault();
         onSlideAction("next");
       } else if (e.key === "ArrowLeft" || e.key === "ArrowUp") {
@@ -513,7 +528,15 @@ export const SlidesCanvasView: React.FC<SlidesCanvasViewProps> = ({
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [onSlideAction]);
+  }, [
+    onSlideAction,
+    showImportModal,
+    showSongCatalogModal,
+    showThemeEditor,
+    showBibleModal,
+    showTimersModal,
+    showSlideEditor,
+  ]);
 
   const fohBackgroundStyle =
     theme.backgroundType === "image" && theme.backgroundImage
@@ -635,6 +658,8 @@ export const SlidesCanvasView: React.FC<SlidesCanvasViewProps> = ({
           <button
             type="button"
             onClick={() => setShowBibleModal(true)}
+            aria-haspopup="dialog"
+            aria-expanded={showBibleModal}
             style={{
               height: 34,
               padding: "0 12px",
@@ -656,6 +681,8 @@ export const SlidesCanvasView: React.FC<SlidesCanvasViewProps> = ({
           <button
             type="button"
             onClick={() => setShowTimersModal(true)}
+            aria-haspopup="dialog"
+            aria-expanded={showTimersModal}
             style={{
               height: 34,
               padding: "0 12px",
@@ -677,6 +704,7 @@ export const SlidesCanvasView: React.FC<SlidesCanvasViewProps> = ({
           <button
             type="button"
             onClick={() => setShowThemeEditor(!showThemeEditor)}
+            aria-expanded={showThemeEditor}
             style={{
               height: 34,
               padding: "0 12px",
@@ -698,6 +726,8 @@ export const SlidesCanvasView: React.FC<SlidesCanvasViewProps> = ({
           <button
             type="button"
             onClick={() => openSlideEditor()}
+            aria-haspopup="dialog"
+            aria-expanded={showSlideEditor}
             title="Open the WYSIWYG slide and theme editor"
             style={{
               height: 34,
@@ -765,6 +795,8 @@ export const SlidesCanvasView: React.FC<SlidesCanvasViewProps> = ({
           <button
             type="button"
             onClick={() => setShowImportModal(true)}
+            aria-haspopup="dialog"
+            aria-expanded={showImportModal}
             style={{
               height: 34,
               padding: "0 14px",
@@ -895,10 +927,20 @@ export const SlidesCanvasView: React.FC<SlidesCanvasViewProps> = ({
       )}
 
       {/* Main Presentation Surface (3-Column: Service Songs | Slide Deck | 3-Screen Outputs) */}
-      <div style={{ display: "grid", gridTemplateColumns: "230px 1fr 360px", gap: 14, flex: 1 }}>
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "minmax(180px, 230px) minmax(0, 1fr) minmax(260px, 360px)",
+          gap: 14,
+          flex: 1,
+          minWidth: 0,
+          overflowX: "auto",
+        }}
+      >
         {/* Left Sidebar: Service Songs / Playlist */}
         <div
           style={{
+            minWidth: 0,
             background: "#0D1117",
             border: "1px solid #1E2533",
             borderRadius: 10,
@@ -943,6 +985,8 @@ export const SlidesCanvasView: React.FC<SlidesCanvasViewProps> = ({
               <button
                 type="button"
                 onClick={() => setShowSongCatalogModal(true)}
+                aria-haspopup="dialog"
+                aria-expanded={showSongCatalogModal}
                 title="Search Public Domain / Song Library catalog"
                 style={{
                   background: "#1E293B",
@@ -960,6 +1004,8 @@ export const SlidesCanvasView: React.FC<SlidesCanvasViewProps> = ({
               <button
                 type="button"
                 onClick={() => setShowImportModal(true)}
+                aria-haspopup="dialog"
+                aria-expanded={showImportModal}
               title="Add another song to this service"
               style={{
                 background: "#1E293B",
@@ -996,7 +1042,16 @@ export const SlidesCanvasView: React.FC<SlidesCanvasViewProps> = ({
                 return (
                   <div
                     key={song.id}
+                    role="button"
+                    tabIndex={0}
+                    aria-label={`Select song ${idx + 1}: ${song.title}`}
                     onClick={() => onSelectSong(song.id)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        onSelectSong(song.id);
+                      }
+                    }}
                     style={{
                       display: "flex",
                       alignItems: "center",
@@ -1023,6 +1078,7 @@ export const SlidesCanvasView: React.FC<SlidesCanvasViewProps> = ({
                         e.stopPropagation();
                         onRemoveSong(song.id);
                       }}
+                      onKeyDown={(e) => e.stopPropagation()}
                       style={{
                         background: "transparent",
                         border: "none",
@@ -1042,6 +1098,7 @@ export const SlidesCanvasView: React.FC<SlidesCanvasViewProps> = ({
         {/* Left: Slide Grid / Deck */}
         <div
           style={{
+            minWidth: 0,
             background: "#0D1117",
             border: "1px solid #1E2533",
             borderRadius: 10,
@@ -1056,7 +1113,14 @@ export const SlidesCanvasView: React.FC<SlidesCanvasViewProps> = ({
               Active Slide Deck (Click any slide or use ← / → keys)
             </span>
             <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-              <button type="button" onClick={() => openSlideEditor()} style={navBtnStyle} title="Edit this deck in the WYSIWYG editor">
+              <button
+                type="button"
+                onClick={() => openSlideEditor()}
+                aria-haspopup="dialog"
+                aria-expanded={showSlideEditor}
+                style={navBtnStyle}
+                title="Edit this deck in the WYSIWYG editor"
+              >
                 <PenLine size={13} /> Edit Deck
               </button>
               <button
@@ -1098,7 +1162,16 @@ export const SlidesCanvasView: React.FC<SlidesCanvasViewProps> = ({
                 return (
                   <div
                     key={s.id}
+                    role="button"
+                    tabIndex={0}
+                    aria-label={`Select slide ${s.number}: ${s.section}`}
                     onClick={() => onSelectSlide(s.number)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        onSelectSlide(s.number);
+                      }
+                    }}
                     style={{
                       background: isSelected ? "#1E3A8A" : fohBackgroundStyle,
                       border: isSelected ? "2px solid #60A5FA" : "1px solid #283344",
@@ -1150,7 +1223,7 @@ export const SlidesCanvasView: React.FC<SlidesCanvasViewProps> = ({
         </div>
 
         {/* Right: 3-Screen Outputs Column (FOH Audience, Broadcast Lower Thirds, Stage Confidence) */}
-        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: 12, minWidth: 0 }}>
           {/* 1. FOH Audience Screen Preview */}
           <div style={previewCardStyle}>
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>

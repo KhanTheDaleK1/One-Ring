@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import {
   Sparkles,
   ArrowRight,
@@ -6,12 +6,9 @@ import {
   Tv,
   Mic2,
   Radio,
-  Camera,
   Layers,
-  Settings,
   CheckCircle2,
   X,
-  Volume2,
 } from "lucide-react";
 
 interface WelcomeTourProps {
@@ -115,6 +112,18 @@ export const WelcomeTour: React.FC<WelcomeTourProps> = ({
 }) => {
   const [stepIndex, setStepIndex] = useState(0);
 
+  useEffect(() => {
+    if (!isOpen) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        onComplete();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [isOpen, onComplete]);
+
   if (!isOpen) return null;
 
   const currentStep = TOUR_STEPS[stepIndex];
@@ -159,8 +168,14 @@ export const WelcomeTour: React.FC<WelcomeTourProps> = ({
         padding: 24,
         animation: "fadeIn 0.3s ease-out",
       }}
+      onClick={(event) => {
+        if (event.target === event.currentTarget) onComplete();
+      }}
     >
       <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="welcome-tour-title"
         style={{
           width: "100%",
           maxWidth: 680,
@@ -182,7 +197,8 @@ export const WelcomeTour: React.FC<WelcomeTourProps> = ({
         <button
           type="button"
           onClick={onComplete}
-          title="Skip Tour"
+          title="Skip tour"
+          aria-label="Skip tour"
           style={{
             position: "absolute",
             top: 20,
@@ -203,25 +219,30 @@ export const WelcomeTour: React.FC<WelcomeTourProps> = ({
           <X size={16} />
         </button>
 
-        {/* Step Progression Indicators (Arc/Zen Pill Style) */}
+        {/* Step Progression Indicators */}
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           {TOUR_STEPS.map((step, idx) => (
-            <div
+            <button
               key={step.title}
+              type="button"
+              aria-label={`Go to step ${idx + 1}: ${step.title}`}
+              aria-current={idx === stepIndex ? "step" : undefined}
               onClick={() => {
                 setStepIndex(idx);
                 if (step.tabKey) onNavigateTab(step.tabKey);
               }}
               style={{
                 flex: idx === stepIndex ? 2 : 1,
-                height: 5,
+                height: 8,
+                padding: 0,
+                border: "none",
                 borderRadius: 4,
                 backgroundColor:
                   idx === stepIndex
                     ? step.accentColor
                     : idx < stepIndex
-                    ? "#4B5563"
-                    : "#1F2937",
+                    ? "#64748B"
+                    : "#334155",
                 transition: "all 0.35s cubic-bezier(0.4, 0, 0.2, 1)",
                 cursor: "pointer",
               }}
@@ -271,6 +292,7 @@ export const WelcomeTour: React.FC<WelcomeTourProps> = ({
               {currentStep.badge}
             </div>
             <h2
+              id="welcome-tour-title"
               style={{
                 margin: 0,
                 fontSize: 24,
@@ -336,7 +358,7 @@ export const WelcomeTour: React.FC<WelcomeTourProps> = ({
             marginTop: 8,
           }}
         >
-          <div style={{ fontSize: 12, color: "#64748B" }}>
+          <div style={{ fontSize: 12, color: "#94A3B8" }}>
             Step {stepIndex + 1} of {TOUR_STEPS.length}
           </div>
 

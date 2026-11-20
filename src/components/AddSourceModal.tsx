@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import {
   Plus,
   X,
@@ -171,6 +171,15 @@ export const AddSourceModal: React.FC<AddSourceModalProps> = ({
   const [sourceName, setSourceName] = useState("");
   const [categoryFilter, setCategoryFilter] = useState<string>("all");
 
+  useEffect(() => {
+    if (!isOpen) return;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [isOpen, onClose]);
+
   if (!isOpen) return null;
 
   const currentDef = BROADCAST_SOURCE_DEFINITIONS.find((d) => d.type === selectedType)!;
@@ -198,6 +207,9 @@ export const AddSourceModal: React.FC<AddSourceModalProps> = ({
 
   return (
     <div
+      role="dialog"
+      aria-modal="true"
+      aria-label="Add Broadcast Source"
       style={{
         position: "fixed",
         top: 0,
@@ -266,7 +278,7 @@ export const AddSourceModal: React.FC<AddSourceModalProps> = ({
         </div>
 
         {/* Category Filter Pills */}
-        <div style={{ display: "flex", gap: 8 }}>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
           {[
             { id: "all", label: "All Sources (15)" },
             { id: "video", label: "Video & Cameras" },
@@ -296,10 +308,11 @@ export const AddSourceModal: React.FC<AddSourceModalProps> = ({
         </div>
 
         {/* Source Grid & Details View */}
-        <div style={{ display: "grid", gridTemplateColumns: "1.4fr 1fr", gap: 14, flex: 1, minHeight: 0, overflow: "hidden" }}>
+        <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1.4fr) minmax(0, 1fr)", gap: 14, flex: 1, minHeight: 0, overflow: "hidden" }}>
           {/* Source List */}
           <div
             style={{
+              minWidth: 0,
               minHeight: 0,
               overflowY: "auto",
               background: "#0B0E14",
@@ -313,12 +326,22 @@ export const AddSourceModal: React.FC<AddSourceModalProps> = ({
           >
             {filtered.map((def) => {
               const isSelected = def.type === selectedType;
+              const selectSource = () => {
+                setSelectedType(def.type);
+                if (!sourceName) setSourceName(def.label);
+              };
               return (
                 <div
                   key={def.type}
-                  onClick={() => {
-                    setSelectedType(def.type);
-                    if (!sourceName) setSourceName(def.label);
+                  role="button"
+                  tabIndex={0}
+                  aria-label={`Select ${def.label} (${def.type})`}
+                  onClick={selectSource}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      selectSource();
+                    }
                   }}
                   style={{
                     display: "flex",
@@ -349,6 +372,7 @@ export const AddSourceModal: React.FC<AddSourceModalProps> = ({
           {/* Source Naming & Config Pane */}
           <div
             style={{
+              minWidth: 0,
               background: "#0B0E14",
               border: "1px solid #1E2533",
               borderRadius: 8,

@@ -1,4 +1,5 @@
 import { ConsoleFxRackModal } from "./ConsoleFxRackModal";
+import { HoldConfirmButton } from "./HoldConfirmButton";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import {
@@ -332,13 +333,13 @@ export const ConsoleFullMixerModal: React.FC<ConsoleFullMixerModalProps> = ({
   }, [channels]);
 
   useEffect(() => {
-    if (!isOpen || embedded) return;
+    if (!isOpen || embedded || fxRackOpen) return;
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [isOpen, embedded, onClose]);
+  }, [isOpen, embedded, fxRackOpen, onClose]);
 
   useEffect(() => {
     const active = embedded || isOpen;
@@ -561,6 +562,9 @@ export const ConsoleFullMixerModal: React.FC<ConsoleFullMixerModalProps> = ({
 
   const consoleFrame = (
     <div
+      role="dialog"
+      aria-modal={embedded ? undefined : true}
+      aria-label="Console full mixer"
       style={{
         width: "100%",
         height: embedded ? "calc(100vh - 156px)" : "94vh",
@@ -633,6 +637,29 @@ export const ConsoleFullMixerModal: React.FC<ConsoleFullMixerModalProps> = ({
         </div>
 
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <button
+            type="button"
+            onClick={() => setFxRackOpen(true)}
+            title="Open the 8-slot effects rack"
+            style={{
+              height: 28,
+              padding: "0 10px",
+              borderRadius: 4,
+              background: "#1E242D",
+              border: "1px solid #334155",
+              color: "#CBD5E1",
+              cursor: "pointer",
+              display: "flex",
+              alignItems: "center",
+              gap: 5,
+              fontSize: 11,
+              fontWeight: 700,
+            }}
+          >
+            <Zap size={12} color="#38BDF8" />
+            FX Rack
+          </button>
+
           {sendsOnFader && (
             <button
               type="button"
@@ -767,28 +794,44 @@ export const ConsoleFullMixerModal: React.FC<ConsoleFullMixerModalProps> = ({
             ["REC", 4],
           ] as Array<[string, number]>).map(([label, state]) => {
             const active = recorderState === state;
-            const danger = state === 4;
+            const danger = state === 4 || (state === 0 && recorderState === 4);
+            const transportStyle: React.CSSProperties = {
+              height: 24,
+              minHeight: 24,
+              minWidth: 48,
+              padding: "0 8px",
+              borderRadius: 4,
+              fontSize: 10,
+              fontWeight: 800,
+              cursor: "pointer",
+              background: active ? (danger ? "#991B1B" : "#1E3A4C") : "#161B24",
+              border: `1px solid ${active ? (danger ? "#EF4444" : "#22D3EE") : "#283344"}`,
+              color: active ? "#FFFFFF" : "#94A3B8",
+            };
+            const startRecorder = () => {
+              setRecorderState(state);
+              emitOsc(TAPE_STATE_ADDRESS, state);
+            };
+            if (state === 0 || state === 4) {
+              return (
+                <HoldConfirmButton
+                  key={label}
+                  label={label}
+                  ariaLabel={`${label} USB recorder. Hold to confirm.`}
+                  holdMs={900}
+                  danger={danger}
+                  onConfirm={startRecorder}
+                  style={transportStyle}
+                />
+              );
+            }
             return (
               <button
                 key={label}
                 type="button"
                 title={`Set recorder to ${usbRecorderLabel(state)}`}
-                onClick={() => {
-                  setRecorderState(state);
-                  emitOsc(TAPE_STATE_ADDRESS, state);
-                }}
-                style={{
-                  height: 24,
-                  minWidth: 48,
-                  padding: "0 8px",
-                  borderRadius: 4,
-                  fontSize: 10,
-                  fontWeight: 800,
-                  cursor: "pointer",
-                  background: active ? (danger ? "#991B1B" : "#1E3A4C") : "#161B24",
-                  border: `1px solid ${active ? (danger ? "#EF4444" : "#22D3EE") : "#283344"}`,
-                  color: active ? "#FFFFFF" : "#94A3B8",
-                }}
+                onClick={startRecorder}
+                style={transportStyle}
               >
                 {label}
               </button>
@@ -1021,6 +1064,7 @@ export const ConsoleFullMixerModal: React.FC<ConsoleFullMixerModalProps> = ({
             }));
             setLastOsc(`Pasted EQ/Dyn/Sends onto ${selectedChannel.shortLabel}`);
           }}
+          onOpenFxRack={() => setFxRackOpen(true)}
         />
       )}
 
@@ -1484,17 +1528,17 @@ export const ConsoleFullMixerModal: React.FC<ConsoleFullMixerModalProps> = ({
                   />
                 </label>
                 <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                  <button
-                    type="button"
-                    onClick={() => {
+                  <HoldConfirmButton
+                    label={`+48V Phantom ${selectedChannel.phantom48v ? "ON" : "OFF"}`}
+                    ariaLabel={`${selectedChannel.name} +48V phantom power ${selectedChannel.phantom48v ? "on" : "off"}. Hold to confirm.`}
+                    holdMs={1200}
+                    onConfirm={() => {
                       const next = !selectedChannel.phantom48v;
                       patchChannel(selectedChannel.id, (p) => ({ ...p, phantom48v: next }));
                       emitOsc(selectedChannel.headampIndex !== null ? `/headamp/${String(selectedChannel.headampIndex).padStart(3, "0")}/phantom` : `${selectedChannel.oscPrefix}/preamp/phantom`, next ? 1 : 0);
                     }}
-                    style={{ padding: "6px 12px", borderRadius: 6, background: selectedChannel.phantom48v ? "#991B1B" : "#1D222B", border: `1px solid ${selectedChannel.phantom48v ? "#EF4444" : "#334155"}`, color: "#FFF", fontWeight: 700, cursor: "pointer" }}
-                  >
-                    +48V Phantom {selectedChannel.phantom48v ? "ON" : "OFF"}
-                  </button>
+                    style={{ minHeight: 34, padding: "6px 12px", borderRadius: 6, background: selectedChannel.phantom48v ? "#991B1B" : "#1D222B", border: `1px solid ${selectedChannel.phantom48v ? "#EF4444" : "#334155"}`, color: "#FFF", fontWeight: 700, cursor: "pointer" }}
+                  />
                   <button
                     type="button"
                     onClick={() => {

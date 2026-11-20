@@ -1,4 +1,5 @@
 import React, { useCallback, useMemo, useRef, useState } from "react";
+import { HoldConfirmButton } from "./HoldConfirmButton";
 import {
   COLOR_MAP,
   type ConsoleBankId,
@@ -69,6 +70,7 @@ export interface ConsoleMixerOverviewProps {
   onLoadScn: () => void;
   onCopyChannel: () => void;
   onPasteChannel: () => void;
+  onOpenFxRack?: () => void;
 }
 
 const DCA_BADGE_COLORS = [
@@ -180,6 +182,7 @@ interface HardwareFaderTrackProps {
   muted: boolean;
   notchColor: string;
   stereoMeter?: boolean;
+  ariaLabel?: string;
   onChange: (db: number) => void;
 }
 
@@ -189,6 +192,7 @@ const HardwareFaderTrack: React.FC<HardwareFaderTrackProps> = ({
   muted,
   notchColor,
   stereoMeter = false,
+  ariaLabel = "Fader level",
   onChange,
 }) => {
   const railRef = useRef<HTMLDivElement | null>(null);
@@ -202,6 +206,38 @@ const HardwareFaderTrack: React.FC<HardwareFaderTrackProps> = ({
       onChange(fractionToFaderDb(frac));
     },
     [onChange]
+  );
+
+  const handleKeyDown = useCallback(
+    (e: React.KeyboardEvent<HTMLDivElement>) => {
+      let nextDb: number | null = null;
+      switch (e.key) {
+        case "ArrowUp":
+          nextDb = valueDb + 0.5;
+          break;
+        case "ArrowDown":
+          nextDb = valueDb - 0.5;
+          break;
+        case "PageUp":
+          nextDb = valueDb + 3;
+          break;
+        case "PageDown":
+          nextDb = valueDb - 3;
+          break;
+        case "Home":
+          nextDb = -90;
+          break;
+        case "End":
+          nextDb = 10;
+          break;
+        default:
+          return;
+      }
+      e.preventDefault();
+      e.stopPropagation();
+      onChange(Math.round(Math.max(-90, Math.min(10, nextDb)) * 10) / 10);
+    },
+    [onChange, valueDb]
   );
 
   const frac = faderDbToFraction(valueDb);
@@ -250,10 +286,15 @@ const HardwareFaderTrack: React.FC<HardwareFaderTrackProps> = ({
       <div
         ref={railRef}
         role="slider"
+        tabIndex={0}
+        aria-label={ariaLabel}
+        aria-orientation="vertical"
         aria-valuemin={-90}
         aria-valuemax={10}
         aria-valuenow={valueDb}
-        title="Drag fader (-90 to +10 dB). Double-click for 0.0 dB Unity."
+        aria-valuetext={`${valueDb.toFixed(1)} dB`}
+        title="Drag fader (-90 to +10 dB). Arrow keys trim 0.5 dB, Page Up/Down 3 dB, Home/End to limits. Double-click for 0.0 dB Unity."
+        onKeyDown={handleKeyDown}
         onDoubleClick={(e) => {
           e.stopPropagation();
           onChange(0);
@@ -439,6 +480,7 @@ export const ConsoleMixerOverview: React.FC<ConsoleMixerOverviewProps> = ({
   onLoadScn,
   onCopyChannel,
   onPasteChannel,
+  onOpenFxRack,
 }) => {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingName, setEditingName] = useState<string>("");
@@ -619,6 +661,19 @@ export const ConsoleMixerOverview: React.FC<ConsoleMixerOverviewProps> = ({
               Edit
             </button>
           </div>
+          {onOpenFxRack && (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                onOpenFxRack();
+              }}
+              style={utilBtnStyle(false)}
+              title="Open the 8-slot effects rack"
+            >
+              FX Rack
+            </button>
+          )}
         </div>
 
         {/* Layer Bank Stack */}
@@ -768,26 +823,29 @@ export const ConsoleMixerOverview: React.FC<ConsoleMixerOverviewProps> = ({
                   >
                     ø
                   </button>
-                  <button
-                    type="button"
-                    title="Toggle +48V Phantom Power"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onTogglePhantom(ch.id);
-                    }}
-                    style={{
-                      border: "none",
-                      padding: "0 2px",
-                      fontSize: 7,
-                      fontWeight: 800,
-                      borderRadius: 1.5,
-                      background: ch.phantom48v ? "#991B1B" : "#22262E",
-                      color: ch.phantom48v ? "#FCA5A5" : "#6B7280",
-                      cursor: "pointer",
-                    }}
+                  <div
+                    onPointerDown={(e) => e.stopPropagation()}
+                    onClick={(e) => e.stopPropagation()}
+                    style={{ display: "flex" }}
                   >
-                    48
-                  </button>
+                    <HoldConfirmButton
+                      label="48"
+                      ariaLabel={`${ch.name} ${ch.phantom48v ? "turn off" : "turn on"} +48V phantom power. Hold to confirm.`}
+                      holdMs={700}
+                      onConfirm={() => onTogglePhantom(ch.id)}
+                      style={{
+                        minHeight: 18,
+                        height: 18,
+                        padding: "0 2px",
+                        fontSize: 7,
+                        fontWeight: 800,
+                        borderRadius: 1.5,
+                        border: "none",
+                        background: ch.phantom48v ? "#991B1B" : "#22262E",
+                        color: ch.phantom48v ? "#FCA5A5" : "#6B7280",
+                      }}
+                    />
+                  </div>
                 </div>
               </div>
 
@@ -1049,6 +1107,7 @@ export const ConsoleMixerOverview: React.FC<ConsoleMixerOverviewProps> = ({
                 meterLevel={ch.meterLevel}
                 muted={ch.mute}
                 notchColor={sendsOnFader ? "#38BDF8" : colDef.notch}
+                ariaLabel={`${sendsOnFader ? `${ch.shortLabel} send` : ch.name} fader`}
                 onChange={(nextDb) => onChangeFader(ch.id, nextDb)}
               />
 
@@ -1281,25 +1340,28 @@ export const ConsoleMixerOverview: React.FC<ConsoleMixerOverviewProps> = ({
           {/* Left Matrix: Clear Solo, Talkback, Main LR, Bus 1-16, Mute Groups 1-6 */}
           <div style={{ flex: 1, display: "flex", flexDirection: "column", justifyContent: "space-between", gap: 3 }}>
             <div style={{ display: "grid", gridTemplateColumns: "1.4fr 0.7fr 0.7fr", gap: 2, alignItems: "center" }}>
-              <button type="button" onClick={onClearAllSolos} style={utilBtnStyle(false)}>
-                Clear Solo
-              </button>
-              <button
-                type="button"
-                onClick={() => onToggleTalkback("A")}
-                style={utilBtnStyle(talkbackA)}
-                title="Talkback A"
-              >
-                A
-              </button>
-              <button
-                type="button"
-                onClick={() => onToggleTalkback("B")}
-                style={utilBtnStyle(talkbackB)}
-                title="Talkback B"
-              >
-                B
-              </button>
+              <HoldConfirmButton
+                label="Clear Solo"
+                ariaLabel={`Clear all solos. ${talkbackA || talkbackB ? "Talkback is active." : ""} Hold to confirm.`}
+                holdMs={700}
+                danger={false}
+                onConfirm={onClearAllSolos}
+                style={{ ...utilBtnStyle(false), minHeight: 22, width: "100%" }}
+              />
+              <HoldConfirmButton
+                label={talkbackA ? "A ON" : "A"}
+                ariaLabel={`Talkback A ${talkbackA ? "off" : "on"}. Hold to confirm.`}
+                holdMs={700}
+                onConfirm={() => onToggleTalkback("A")}
+                style={{ ...utilBtnStyle(talkbackA), minHeight: 22, width: "100%" }}
+              />
+              <HoldConfirmButton
+                label={talkbackB ? "B ON" : "B"}
+                ariaLabel={`Talkback B ${talkbackB ? "off" : "on"}. Hold to confirm.`}
+                holdMs={700}
+                onConfirm={() => onToggleTalkback("B")}
+                style={{ ...utilBtnStyle(talkbackB), minHeight: 22, width: "100%" }}
+              />
             </div>
 
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 2 }}>
@@ -1437,6 +1499,7 @@ export const ConsoleMixerOverview: React.FC<ConsoleMixerOverviewProps> = ({
               muted={activeBusChannel ? activeBusChannel.mute : mainLrMute}
               notchColor={sendsOnFader ? "#38BDF8" : "#F8FAFC"}
               stereoMeter={!activeBusChannel}
+              ariaLabel={activeBusChannel ? `${activeBusChannel.name} send fader` : "Main LR master fader"}
               onChange={(db) => {
                 if (activeBusChannel) onChangeFader(activeBusChannel.id, db);
                 else onChangeMainLrDb(db);

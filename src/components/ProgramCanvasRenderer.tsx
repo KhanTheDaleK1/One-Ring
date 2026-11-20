@@ -562,13 +562,13 @@ const ImageSlideShowLayer: React.FC<{ source: SceneSourceItem }> = ({ source }) 
     rawFiles.length > 0
       ? rawFiles.map((item, idx) => {
           if (typeof item === "string") {
-            return { kind: "image" as const, src: item, key: `${idx}_${item}` };
+            return { kind: "image" as const, src: item, key: `${idx}_${item}`, sample: false };
           }
           if (item && typeof item === "object") {
             const obj = item as Record<string, unknown>;
             const fileUrl = String(obj.file || obj.src || obj.url || "");
             if (fileUrl) {
-              return { kind: "image" as const, src: fileUrl, key: `${idx}_${fileUrl}` };
+              return { kind: "image" as const, src: fileUrl, key: `${idx}_${fileUrl}`, sample: false };
             }
             return {
               kind: "card" as const,
@@ -577,18 +577,21 @@ const ImageSlideShowLayer: React.FC<{ source: SceneSourceItem }> = ({ source }) 
               gradient: String(obj.bg || DEFAULT_SLIDESHOW_CARDS[idx % DEFAULT_SLIDESHOW_CARDS.length].gradient),
               accent: "#60A5FA",
               key: `${idx}_card`,
+              sample: !obj.bg,
             };
           }
           return {
             kind: "card" as const,
             ...DEFAULT_SLIDESHOW_CARDS[idx % DEFAULT_SLIDESHOW_CARDS.length],
             key: `${idx}_default`,
+            sample: true,
           };
         })
       : DEFAULT_SLIDESHOW_CARDS.map((card, idx) => ({
           kind: "card" as const,
           ...card,
           key: `default_${idx}`,
+          sample: true,
         }));
 
   const intervalMs = Math.max(500, Number(source.settings?.slideTimeMs || 4000));
@@ -655,6 +658,26 @@ const ImageSlideShowLayer: React.FC<{ source: SceneSourceItem }> = ({ source }) 
               boxSizing: "border-box",
             }}
           >
+            {slide.sample && (
+              <div
+                style={{
+                  position: "absolute",
+                  top: 16,
+                  right: 16,
+                  padding: "6px 10px",
+                  borderRadius: 6,
+                  background: "rgba(245, 158, 11, 0.9)",
+                  color: "#1F1300",
+                  fontSize: 12,
+                  fontWeight: 800,
+                  letterSpacing: "0.1em",
+                  textTransform: "uppercase",
+                  zIndex: 2,
+                }}
+              >
+                BUILT-IN SAMPLE
+              </div>
+            )}
             <div
               style={{
                 fontSize: 12,

@@ -171,6 +171,7 @@ function loadOutputConfig(profile?: BroadcastProfileSettings): OutputModeConfig 
 }
 
 function saveOutputConfig(config: OutputModeConfig) {
+  // A5: encoder settings only — ingest secrets never enter browser storage.
   try {
     localStorage.setItem(OUTPUT_CONFIG_STORAGE_KEY, JSON.stringify(config));
   } catch {
@@ -355,6 +356,27 @@ function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
 }
 
+function parseResolution(value: string): { width: number; height: number } | null {
+  const match = /^(\d{3,5})x(\d{3,5})$/i.exec(value.trim());
+  if (!match) return null;
+  return { width: Number(match[1]), height: Number(match[2]) };
+}
+
+function isValidIngestUrl(raw: string, service: StreamServiceName): boolean {
+  const value = raw.trim();
+  if (!value || value.length > 2048 || /\s/.test(value)) return false;
+  if (service === "WebRTC WHIP") {
+    return /^https:\/\/[a-z0-9.-]+(?::\d+)?(?:\/[^\s]*)?$/i.test(value);
+  }
+  return /^(?:rtmp|rtmps|srt):\/\/[a-z0-9.-]+(?::\d+)?(?:\/[^\s]*)?$/i.test(value);
+}
+
+function bitrateError(value: number, label: string): string {
+  return Number.isInteger(value) && value >= 500 && value <= 100000
+    ? ""
+    : `${label} bitrate must be a whole number between 500 and 100000 kbps.`;
+}
+
 export const BroadcastSettingsModal: React.FC<BroadcastSettingsModalProps> = ({
   isOpen,
   onClose,
@@ -383,29 +405,60 @@ export const BroadcastSettingsModal: React.FC<BroadcastSettingsModalProps> = ({
     ...hotkeys,
   });
   const [capturingAction, setCapturingAction] = useState<string | null>(null);
+  const [showDiscardConfirm, setShowDiscardConfirm] = useState(false);
+
+  const signature = (
+    p: BroadcastProfileSettings,
+    url: string,
+    key: string,
+    hk: Record<string, string>,
+    out: OutputModeConfig
+  ) => JSON.stringify([p, url, key, hk, out]);
+  const savedSignatureRef = React.useRef("");
 
   useEffect(() => {
     if (!isOpen) return;
+    const savedOutput = loadOutputConfig(profile);
+    const savedHotkeys = { ...DEFAULT_BROADCAST_HOTKEYS, ...hotkeys };
     setDraftProfile({ ...profile });
-    setOutputConfig(loadOutputConfig(profile));
+    setOutputConfig(savedOutput);
     setService(inferServiceFromUrl(rtmpUrl));
     setDraftRtmpUrl(rtmpUrl);
     setDraftStreamKey(streamKey);
     setShowStreamKey(false);
-    setDraftHotkeys({ ...DEFAULT_BROADCAST_HOTKEYS, ...hotkeys });
+    setDraftHotkeys(savedHotkeys);
     setCapturingAction(null);
+    setShowDiscardConfirm(false);
+    savedSignatureRef.current = signature(profile, rtmpUrl, streamKey, savedHotkeys, savedOutput);
   }, [isOpen, profile, rtmpUrl, streamKey, hotkeys]);
+
+  const isDirty =
+    signature(draftProfile, draftRtmpUrl, draftStreamKey, draftHotkeys, outputConfig) !==
+    savedSignatureRef.current;
+
+  const requestClose = () => {
+    if (capturingAction) return;
+    if (showDiscardConfirm) return;
+    if (isDirty) {
+      setShowDiscardConfirm(true);
+      return;
+    }
+    onClose();
+  };
 
   useEffect(() => {
     if (!isOpen) return;
     const onWindowKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && !capturingAction) {
-        onClose();
+      if (e.key !== "Escape" || capturingAction) return;
+      if (showDiscardConfirm) {
+        setShowDiscardConfirm(false);
+        return;
       }
+      requestClose();
     };
     window.addEventListener("keydown", onWindowKeyDown);
     return () => window.removeEventListener("keydown", onWindowKeyDown);
-  }, [isOpen, capturingAction, onClose]);
+  }, [isOpen, capturingAction, showDiscardConfirm, requestClose, onClose]);
 
   if (!isOpen) return null;
 
@@ -442,17 +495,72 @@ export const BroadcastSettingsModal: React.FC<BroadcastSettingsModalProps> = ({
 
   const handleServiceChange = (nextService: StreamServiceName) => {
     setService(nextService);
+    // B8: a key belongs to one service only — never carry it across presets.
+    setDraftStreamKey("");
     const preset = STREAM_SERVICES.find((s) => s.service === nextService);
     if (preset && preset.defaultUrl) {
       setDraftRtmpUrl(preset.defaultUrl);
     }
   };
 
+  // B1/B13: validate before anything reaches the live encoder configuration.
+  const urlError = isValidIngestUrl(draftRtmpUrl, service)
+    ? ""
+    : service === "WebRTC WHIP"
+    ? "Enter a valid https:// WHIP endpoint with no spaces."
+    : "Enter a valid rtmp://, rtmps://, or srt:// ingest URL with no spaces.";
+  const baseRes = parseResolution(draftProfile.baseResolution);
+  const outputRes = parseResolution(draftProfile.outputResolution);
+  const baseResError =
+    baseRes && baseRes.width >= 320 && baseRes.height >= 240 && baseRes.width <= 8192 && baseRes.height <= 8192
+      ? ""
+      : "Canvas resolution must be WIDTHxHEIGHT (width 320-8192, height 240-8192).";
+  const outputResError = !outputRes
+    ? "Output resolution must be WIDTHxHEIGHT."
+    : outputRes.width < 320 ||
+      outputRes.height < 240 ||
+      outputRes.width > 8192 ||
+      outputRes.height > 8192
+    ? "Output resolution must be width 320-8192 and height 240-8192."
+    : baseRes && (outputRes.width > baseRes.width || outputRes.height > baseRes.height)
+    ? "Output resolution cannot be larger than the canvas resolution."
+    : "";
+  const profileBitrateError = bitrateError(draftProfile.bitrateKbps, "Profile");
+  const encoderBitrateErrors = (["stream", "record", "replay"] as const)
+    .map((target) => bitrateError(outputConfig[target].bitrateKbps, target))
+    .filter(Boolean);
+
+  const duplicateHotkeyOwners = new Map<string, string[]>();
+  Object.entries(draftHotkeys).forEach(([actionId, combo]) => {
+    const normalized = combo.trim().toLowerCase();
+    if (!normalized) return;
+    const owners = duplicateHotkeyOwners.get(normalized) || [];
+    owners.push(HOTKEY_ACTION_DEFS.find((def) => def.id === actionId)?.label || actionId);
+    duplicateHotkeyOwners.set(normalized, owners);
+  });
+  const duplicateHotkeyGroups = Array.from(duplicateHotkeyOwners.entries()).filter(
+    ([, owners]) => owners.length > 1
+  );
+  const isDuplicateHotkey = (combo: string) =>
+    Boolean(combo.trim()) && (duplicateHotkeyOwners.get(combo.trim().toLowerCase())?.length || 0) > 1;
+
+  const validationErrors = [
+    urlError,
+    baseResError,
+    outputResError,
+    profileBitrateError,
+    ...encoderBitrateErrors,
+    ...duplicateHotkeyGroups.map(
+      ([combo, owners]) => `Hotkey "${combo}" is assigned to ${owners.join(" and ")}.`
+    ),
+  ].filter(Boolean);
+
   const handleSaveAll = () => {
+    if (validationErrors.length > 0) return;
     const sanitizedProfile: BroadcastProfileSettings = {
       ...draftProfile,
       name: draftProfile.name.trim() || "One Ring Broadcast Profile",
-      bitrateKbps: clamp(Math.round(draftProfile.bitrateKbps), 2500, 25000),
+      bitrateKbps: draftProfile.bitrateKbps,
       keyframeIntervalSec: clamp(Math.round(draftProfile.keyframeIntervalSec), 0, 10),
     };
     onSaveProfile(sanitizedProfile);
@@ -509,7 +617,7 @@ export const BroadcastSettingsModal: React.FC<BroadcastSettingsModalProps> = ({
       aria-modal="true"
       aria-label="Broadcast Settings"
       onClick={(e) => {
-        if (e.target === e.currentTarget) onClose();
+        if (e.target === e.currentTarget) requestClose();
       }}
       style={{
         position: "fixed",
@@ -564,7 +672,7 @@ export const BroadcastSettingsModal: React.FC<BroadcastSettingsModalProps> = ({
           <button
             type="button"
             aria-label="Close Broadcast Settings"
-            onClick={onClose}
+            onClick={requestClose}
             style={{
               background: "transparent",
               border: "none",
@@ -586,7 +694,7 @@ export const BroadcastSettingsModal: React.FC<BroadcastSettingsModalProps> = ({
             role="tablist"
             aria-label="Broadcast Settings Sections"
             style={{
-              width: 170,
+              width: "clamp(128px, 20vw, 170px)",
               flexShrink: 0,
               background: "#0B0E14",
               borderRight: "1px solid #1E2533",
@@ -631,6 +739,7 @@ export const BroadcastSettingsModal: React.FC<BroadcastSettingsModalProps> = ({
           <div
             style={{
               flex: 1,
+              minWidth: 0,
               minHeight: 0,
               overflowY: "auto",
               padding: 20,
@@ -780,7 +889,17 @@ export const BroadcastSettingsModal: React.FC<BroadcastSettingsModalProps> = ({
                     value={draftRtmpUrl}
                     onChange={(e) => setDraftRtmpUrl(e.target.value)}
                     placeholder="rtmps://ingest.example.com/live2"
+                    aria-invalid={Boolean(urlError)}
+                    aria-describedby={urlError ? "broadcast-url-error" : undefined}
                   />
+                  {urlError && (
+                    <div id="broadcast-url-error" role="alert" style={fieldErrorStyle}>
+                      {urlError}
+                    </div>
+                  )}
+                  <div style={{ fontSize: 11, color: "#64748B", marginTop: 4 }}>
+                    The stream key is kept for this session only and is never stored in browser storage.
+                  </div>
                 </div>
 
                 <div>
@@ -871,7 +990,7 @@ export const BroadcastSettingsModal: React.FC<BroadcastSettingsModalProps> = ({
                       <div style={{ fontSize: 13, fontWeight: 700, color: "#FFFFFF", marginBottom: 8 }}>
                         Shared Output Profile (applied to Stream, Record, Replay)
                       </div>
-                      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+                      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 12 }}>
                         <div>
                           <label htmlFor="simple-codec" style={labelStyle}>Codec</label>
                           <select
@@ -909,11 +1028,14 @@ export const BroadcastSettingsModal: React.FC<BroadcastSettingsModalProps> = ({
                           </select>
                         </div>
                       </div>
-                      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12, marginTop: 10 }}>
+                      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 12, marginTop: 10 }}>
                         <div>
                           <label style={labelStyle}>Bitrate (kbps)</label>
                           <input
                             type="number"
+                            min={500}
+                            max={100000}
+                            aria-invalid={Boolean(bitrateError(outputConfig.stream.bitrateKbps, "Stream"))}
                             style={inputStyle}
                             value={outputConfig.stream.bitrateKbps}
                             onChange={(e) => {
@@ -923,6 +1045,9 @@ export const BroadcastSettingsModal: React.FC<BroadcastSettingsModalProps> = ({
                               patchEncoder("replay", { bitrateKbps: Math.max(2000, Math.round(bitrateKbps * 0.8)) });
                             }}
                           />
+                          {bitrateError(outputConfig.stream.bitrateKbps, "Stream") && (
+                            <div style={fieldErrorStyle}>{bitrateError(outputConfig.stream.bitrateKbps, "Stream")}</div>
+                          )}
                         </div>
                         <div>
                           <label style={labelStyle}>Keyframe Interval (sec)</label>
@@ -977,7 +1102,7 @@ export const BroadcastSettingsModal: React.FC<BroadcastSettingsModalProps> = ({
                           <div style={{ fontSize: 13, fontWeight: 700, color: "#FFFFFF", marginBottom: 8 }}>
                             {section.title}
                           </div>
-                          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>
+                          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 10 }}>
                             <div>
                               <label style={labelStyle}>Codec</label>
                               <select
@@ -1010,12 +1135,18 @@ export const BroadcastSettingsModal: React.FC<BroadcastSettingsModalProps> = ({
                               <label style={labelStyle}>Bitrate (kbps)</label>
                               <input
                                 type="number"
+                                min={500}
+                                max={100000}
+                                aria-invalid={Boolean(bitrateError(enc.bitrateKbps, section.title))}
                                 style={inputStyle}
                                 value={enc.bitrateKbps}
                                 onChange={(e) =>
                                   patchEncoder(section.key, { bitrateKbps: Number(e.target.value) || 0 })
                                 }
                               />
+                              {bitrateError(enc.bitrateKbps, section.title) && (
+                                <div style={fieldErrorStyle}>{bitrateError(enc.bitrateKbps, section.title)}</div>
+                              )}
                             </div>
                             <div>
                               <label style={labelStyle}>Keyframe Interval (sec)</label>
@@ -1131,7 +1262,7 @@ export const BroadcastSettingsModal: React.FC<BroadcastSettingsModalProps> = ({
                   <div style={{ fontSize: 13, fontWeight: 700, color: "#FFFFFF" }}>
                     Base Profile (shared defaults)
                   </div>
-                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 12 }}>
                     <div>
                       <label htmlFor="broadcast-video-encoder" style={labelStyle}>
                         Video Encoder
@@ -1175,7 +1306,7 @@ export const BroadcastSettingsModal: React.FC<BroadcastSettingsModalProps> = ({
                       </select>
                     </div>
                   </div>
-                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 12 }}>
                     <div>
                       <label htmlFor="broadcast-audio-bitrate" style={labelStyle}>
                         Audio Bitrate
@@ -1280,6 +1411,7 @@ export const BroadcastSettingsModal: React.FC<BroadcastSettingsModalProps> = ({
                     style={inputStyle}
                     value={draftProfile.baseResolution}
                     onChange={(e) => patchProfile("baseResolution", e.target.value)}
+                    aria-invalid={Boolean(baseResError)}
                   >
                     {baseOptions.map((res) => (
                       <option key={res} value={res}>
@@ -1287,6 +1419,7 @@ export const BroadcastSettingsModal: React.FC<BroadcastSettingsModalProps> = ({
                       </option>
                     ))}
                   </select>
+                  {baseResError && <div style={fieldErrorStyle}>{baseResError}</div>}
                 </div>
 
                 <div>
@@ -1298,6 +1431,7 @@ export const BroadcastSettingsModal: React.FC<BroadcastSettingsModalProps> = ({
                     style={inputStyle}
                     value={draftProfile.outputResolution}
                     onChange={(e) => patchProfile("outputResolution", e.target.value)}
+                    aria-invalid={Boolean(outputResError)}
                   >
                     {outputOptions.map((res) => (
                       <option key={res} value={res}>
@@ -1305,6 +1439,7 @@ export const BroadcastSettingsModal: React.FC<BroadcastSettingsModalProps> = ({
                       </option>
                     ))}
                   </select>
+                  {outputResError && <div style={fieldErrorStyle}>{outputResError}</div>}
                 </div>
 
                 <div>
@@ -1393,6 +1528,7 @@ export const BroadcastSettingsModal: React.FC<BroadcastSettingsModalProps> = ({
                           display: "flex",
                           alignItems: "center",
                           justifyContent: "space-between",
+                          flexWrap: "wrap",
                           gap: 12,
                           padding: "10px 12px",
                           background: "#0B0E14",
@@ -1414,6 +1550,7 @@ export const BroadcastSettingsModal: React.FC<BroadcastSettingsModalProps> = ({
                             type="text"
                             readOnly
                             aria-label={`${action.label} Hotkey`}
+                            aria-invalid={isDuplicateHotkey(currentCombo)}
                             value={isCapturing ? "Press keys..." : currentCombo || "Unassigned"}
                             onFocus={() => setCapturingAction(action.id)}
                             onClick={() => setCapturingAction(action.id)}
@@ -1424,11 +1561,17 @@ export const BroadcastSettingsModal: React.FC<BroadcastSettingsModalProps> = ({
                             }}
                             onKeyDown={(e) => handleHotkeyKeyDown(action.id, e)}
                             style={{
-                              width: 170,
+                              width: "min(170px, 100%)",
                               height: 34,
                               padding: "0 10px",
                               background: isCapturing ? "#1E3A8A" : "#161B24",
-                              border: `1px solid ${isCapturing ? "#60A5FA" : "#2B3545"}`,
+                              border: `1px solid ${
+                                isDuplicateHotkey(currentCombo)
+                                  ? "#EF4444"
+                                  : isCapturing
+                                  ? "#60A5FA"
+                                  : "#2B3545"
+                              }`,
                               borderRadius: 6,
                               color: isCapturing
                                 ? "#FFFFFF"
@@ -1470,6 +1613,15 @@ export const BroadcastSettingsModal: React.FC<BroadcastSettingsModalProps> = ({
                     );
                   })}
                 </div>
+                {duplicateHotkeyGroups.length > 0 && (
+                  <div role="alert" style={{ ...fieldErrorStyle, marginTop: 0 }}>
+                    Duplicate hotkey bindings:{" "}
+                    {duplicateHotkeyGroups
+                      .map(([combo, owners]) => `${owners.join(" / ")} → ${combo}`)
+                      .join("; ")}
+                    . Change one binding before saving.
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -1488,9 +1640,14 @@ export const BroadcastSettingsModal: React.FC<BroadcastSettingsModalProps> = ({
             flexShrink: 0,
           }}
         >
+          {validationErrors.length > 0 && (
+            <div role="alert" aria-live="polite" style={{ marginRight: "auto", maxWidth: "58%", color: "#FCA5A5", fontSize: 11, lineHeight: 1.4 }}>
+              {validationErrors.length} setting{validationErrors.length === 1 ? "" : "s"} need attention: {validationErrors[0]}
+            </div>
+          )}
           <button
             type="button"
-            onClick={onClose}
+            onClick={requestClose}
             style={{
               padding: "8px 16px",
               background: "#1E2533",
@@ -1525,6 +1682,81 @@ export const BroadcastSettingsModal: React.FC<BroadcastSettingsModalProps> = ({
           </button>
         </div>
       </div>
+
+      {showDiscardConfirm && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="Discard unsaved settings"
+          style={{
+            position: "absolute",
+            inset: 0,
+            background: "rgba(5, 7, 11, 0.78)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 2,
+            padding: 20,
+          }}
+        >
+          <div
+            style={{
+              width: "100%",
+              maxWidth: 410,
+              background: "#121721",
+              border: "1px solid #F59E0B",
+              borderRadius: 12,
+              padding: 20,
+              color: "#E2E8F0",
+              boxShadow: "0 20px 50px rgba(0,0,0,0.7)",
+            }}
+          >
+            <h3 style={{ margin: "0 0 8px", fontSize: 16, color: "#FCD34D" }}>
+              Discard unsaved changes?
+            </h3>
+            <p style={{ margin: "0 0 18px", fontSize: 13, lineHeight: 1.5, color: "#CBD5E1" }}>
+              You edited settings in this window. Close without saving those changes?
+            </p>
+            <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", flexWrap: "wrap" }}>
+              <button
+                type="button"
+                onClick={() => setShowDiscardConfirm(false)}
+                style={{
+                  padding: "8px 14px",
+                  background: "#1C222D",
+                  border: "1px solid #334155",
+                  color: "#E2E8F0",
+                  borderRadius: 6,
+                  cursor: "pointer",
+                  fontSize: 13,
+                  fontWeight: 600,
+                }}
+              >
+                Keep Editing
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowDiscardConfirm(false);
+                  onClose();
+                }}
+                style={{
+                  padding: "8px 14px",
+                  background: "#7F1D1D",
+                  border: "1px solid #EF4444",
+                  color: "#FFFFFF",
+                  borderRadius: 6,
+                  cursor: "pointer",
+                  fontSize: 13,
+                  fontWeight: 700,
+                }}
+              >
+                Discard Changes
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
@@ -1549,6 +1781,13 @@ const inputStyle: React.CSSProperties = {
   color: "#FFFFFF",
   fontSize: 13,
   boxSizing: "border-box",
+};
+
+const fieldErrorStyle: React.CSSProperties = {
+  marginTop: 4,
+  color: "#FCA5A5",
+  fontSize: 11,
+  lineHeight: 1.4,
 };
 
 const sectionTitleStyle: React.CSSProperties = {

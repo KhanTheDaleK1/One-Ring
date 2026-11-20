@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import {
   BookOpen,
   Search,
@@ -1188,12 +1188,11 @@ function resolveLookupQuery(
 } {
   const q = rawQuery.trim();
   if (!q) {
-    const fallback = SCRIPTURE_DATASET[0];
     return {
-      passage: fallback,
-      matchedVerses: fallback.verses,
-      resolvedRef: `${fallback.book} ${fallback.chapter}`,
-      suggestions: SCRIPTURE_DATASET,
+      passage: null,
+      matchedVerses: [],
+      resolvedRef: q,
+      suggestions: [],
     };
   }
 
@@ -1269,13 +1268,11 @@ export const BibleLookupModal: React.FC<BibleLookupModalProps> = ({
 }) => {
   const [translation, setTranslation] = useState<BibleTranslation>("KJV");
   const [mode, setMode] = useState<"lookup" | "paste">("lookup");
-  const [searchQuery, setSearchQuery] = useState("John 3:16");
-  const [customRef, setCustomRef] = useState("Colossians 3:12-15");
-  const [pastedText, setPastedText] = useState(
-    "12 Put on therefore, as the elect of God, holy and beloved, bowels of mercies, kindness, humbleness of mind, meekness, longsuffering;\n13 Forbearing one another, and forgiving one another, if any man have a quarrel against any: even as Christ forgave you, so also do ye.\n14 And above all these things put on charity, which is the bond of perfectness.\n15 And let the peace of God rule in your hearts, to the which also ye are called in one body; and be ye thankful."
-  );
+  const [searchQuery, setSearchQuery] = useState("");
+  const [customRef, setCustomRef] = useState("");
+  const [pastedText, setPastedText] = useState("");
   const [manualVerseInput, setManualVerseInput] = useState("");
-  const [manualVerseNum, setManualVerseNum] = useState("16");
+  const [manualVerseNum, setManualVerseNum] = useState("1");
   const [versesPerSlide, setVersesPerSlide] = useState<1 | 2 | 3>(2);
   const [maxLinesPerSlide, setMaxLinesPerSlide] = useState<number>(3);
   const [includeVerseNumbers, setIncludeVerseNumbers] = useState(true);
@@ -1321,6 +1318,18 @@ export const BibleLookupModal: React.FC<BibleLookupModalProps> = ({
     includeWatermark,
   ]);
 
+  useEffect(() => {
+    if (!isOpen) return;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        onClose();
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [isOpen, onClose]);
+
   if (!isOpen) return null;
 
   const safePreviewIndex =
@@ -1360,6 +1369,9 @@ export const BibleLookupModal: React.FC<BibleLookupModalProps> = ({
 
   return (
     <div
+      role="dialog"
+      aria-modal="true"
+      aria-label="Bible Lookup and Scripture Slide Engine"
       style={{
         position: "fixed",
         inset: 0,
@@ -1421,6 +1433,9 @@ export const BibleLookupModal: React.FC<BibleLookupModalProps> = ({
               </h3>
               <p style={{ margin: "2px 0 0", fontSize: 12, color: "#94A3B8" }}>
                 Reference lookup, multi-verse reflow, and watermarked projection slides.
+              </p>
+              <p style={{ margin: "2px 0 0", fontSize: 11, color: "#FBBF24" }}>
+                Offline passages are built-in samples — review before projecting.
               </p>
             </div>
           </div>
@@ -1601,7 +1616,7 @@ export const BibleLookupModal: React.FC<BibleLookupModalProps> = ({
         <div
           style={{
             display: "grid",
-            gridTemplateColumns: "1.05fr 1fr",
+            gridTemplateColumns: "minmax(0, 1.05fr) minmax(0, 1fr)",
             gap: 16,
             flex: 1,
             minHeight: 0,
@@ -1614,6 +1629,7 @@ export const BibleLookupModal: React.FC<BibleLookupModalProps> = ({
               display: "flex",
               flexDirection: "column",
               gap: 10,
+              minWidth: 0,
               minHeight: 0,
               overflow: "hidden",
               background: "#0D1117",
@@ -1665,7 +1681,9 @@ export const BibleLookupModal: React.FC<BibleLookupModalProps> = ({
 
                 {/* Popular Quick-Pick Chips */}
                 <div style={{ flexShrink: 0 }}>
-                  <div style={{ ...labelStyle, marginBottom: 6 }}>Quick Worship & Sermon Passages</div>
+                  <div style={{ ...labelStyle, marginBottom: 6 }}>
+                    Quick Worship & Sermon Passages (built-in samples)
+                  </div>
                   <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
                     {QUICK_REFS.map((ref) => {
                       const active =
@@ -1783,7 +1801,7 @@ export const BibleLookupModal: React.FC<BibleLookupModalProps> = ({
                       {lookupResult.suggestions.length > 1 && (
                         <div style={{ marginTop: 4 }}>
                           <div style={{ ...labelStyle, marginBottom: 6 }}>
-                            All Indexed Passages ({lookupResult.suggestions.length})
+                            Built-in Sample Index: All Indexed Passages ({lookupResult.suggestions.length})
                           </div>
                           <div style={{ display: "grid", gap: 5 }}>
                             {lookupResult.suggestions.map((p) => (
@@ -1993,6 +2011,7 @@ export const BibleLookupModal: React.FC<BibleLookupModalProps> = ({
               display: "flex",
               flexDirection: "column",
               gap: 10,
+              minWidth: 0,
               minHeight: 0,
               overflow: "hidden",
               background: "#0D1117",

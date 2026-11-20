@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { Move, X, Check, RotateCw } from "lucide-react";
 import type { SceneSourceItem, SourceTransform } from "../types";
 
@@ -28,12 +28,28 @@ export const SourceTransformModal: React.FC<SourceTransformModalProps> = ({
   onClose,
   onSaveTransform,
 }) => {
-  if (!isOpen || !source) return null;
-
   const [transform, setTransform] = useState<SourceTransform>({
     ...DEFAULT_TRANSFORM,
-    ...(source.transform || {}),
+    ...(source?.transform || {}),
   });
+
+  useEffect(() => {
+    if (!isOpen || !source) return;
+    setTransform({ ...DEFAULT_TRANSFORM, ...(source.transform || {}) });
+  }, [isOpen, source?.id]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      e.stopPropagation();
+      onClose();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [isOpen, onClose]);
+
+  if (!isOpen || !source) return null;
 
   const patch = <K extends keyof SourceTransform>(key: K, val: SourceTransform[K]) => {
     setTransform((prev) => ({ ...prev, [key]: val }));
@@ -57,6 +73,9 @@ export const SourceTransformModal: React.FC<SourceTransformModalProps> = ({
       }}
     >
       <div
+        role="dialog"
+        aria-modal="true"
+        aria-label={`Scene item transform for ${source.name}`}
         style={{
           width: "100%",
           maxWidth: 500,

@@ -48,6 +48,15 @@ interface ViewerEventPayload {
   peakViewers?: number;
 }
 
+/** An operator action that affects the live stream and needs one explicit confirmation. */
+interface PendingLiveAction {
+  kind: "pin" | "unpin" | "announcement";
+  id?: string;
+  text?: string;
+  author?: string;
+  isPinned?: boolean;
+}
+
 interface StreamAudienceDockProps {
   /** `docked` renders the full panel; `compact` renders a pill with a pop-out drawer. */
   variant?: "docked" | "compact";
@@ -210,6 +219,7 @@ export const StreamAudienceDock: React.FC<StreamAudienceDockProps> = ({
   const [modalOpen, setModalOpen] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [pendingLiveAction, setPendingLiveAction] = useState<PendingLiveAction | null>(null);
 
   const channelRef = useRef<BroadcastChannel | null>(null);
   const liveRef = useRef<boolean>(Boolean(liveHint));
@@ -364,13 +374,18 @@ export const StreamAudienceDock: React.FC<StreamAudienceDockProps> = ({
   }, [messages]);
 
   useEffect(() => {
-    if (!modalOpen) return;
+    if (!modalOpen && !pendingLiveAction) return;
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setModalOpen(false);
+      if (event.key !== "Escape") return;
+      if (pendingLiveAction) {
+        setPendingLiveAction(null);
+        return;
+      }
+      if (modalOpen) setModalOpen(false);
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [modalOpen]);
+  }, [modalOpen, pendingLiveAction]);
 
   const publishOverlay = useCallback((message: AudienceChatMessage | null) => {
     const payload = stampSyncPayload({ type: "AUDIENCE_OVERLAY", message });
@@ -431,6 +446,27 @@ export const StreamAudienceDock: React.FC<StreamAudienceDockProps> = ({
     },
     [busy, draft, sendToCaption, upsertMessage]
   );
+
+  const confirmPendingLiveAction = useCallback(() => {
+    const action = pendingLiveAction;
+    if (!action || busy) return;
+    setPendingLiveAction(null);
+    if (action.kind === "announcement") {
+      void handleSend(action.text ?? "");
+      return;
+    }
+    const message = messages.find((item) => item.id === action.id);
+    if (!message) {
+      setStatus("That message is no longer available");
+      return;
+    }
+    const currentlyPinned = pinnedId === message.id || message.pinnedOnAir;
+    if (currentlyPinned !== (action.kind === "unpin")) {
+      setStatus("The lower-third changed — review the action again");
+      return;
+    }
+    void handleTogglePin(message);
+  }, [busy, handleSend, handleTogglePin, messages, pendingLiveAction, pinnedId]);
 
   const handleSaveRelay = useCallback(async () => {
     setBusy(true);
@@ -697,7 +733,15 @@ export const StreamAudienceDock: React.FC<StreamAudienceDockProps> = ({
               <button
                 type="button"
                 disabled={busy}
-                onClick={() => void handleTogglePin(message)}
+                onClick={() =>
+                  setPendingLiveAction({
+                    kind: isPinned ? "unpin" : "pin",
+                    id: message.id,
+                    text: message.text,
+                    author: message.author,
+                    isPinned,
+                  })
+                }
                 style={{
                   marginTop: 6,
                   height: 24,
@@ -798,7 +842,9 @@ export const StreamAudienceDock: React.FC<StreamAudienceDockProps> = ({
               key={announcement}
               type="button"
               disabled={busy}
-              onClick={() => void handleSend(announcement)}
+              onClick={() =>
+                setPendingLiveAction({ kind: "announcement", text: announcement })
+              }
               title={announcement}
               style={{
                 minHeight: 25,
@@ -988,7 +1034,15 @@ export const StreamAudienceDock: React.FC<StreamAudienceDockProps> = ({
           <button
             type="button"
             disabled={busy}
-            onClick={() => void handleTogglePin(pinnedMessage)}
+            onClick={() =>
+              setPendingLiveAction({
+                kind: "unpin",
+                id: pinnedMessage.id,
+                text: pinnedMessage.text,
+                author: pinnedMessage.author,
+                isPinned: true,
+              })
+            }
             style={{
               height: 27,
               borderRadius: 5,
@@ -1048,6 +1102,85 @@ export const StreamAudienceDock: React.FC<StreamAudienceDockProps> = ({
           {collapsed ? "Expand" : "Collapse"}
         </button>
       </div>
+
+      {pendingLiveAction && (
+        <div
+          role="alertdialog"
+          aria-label="Confirm live action"
+          style={{
+            display: "grid",
+            gap: 7,
+            padding: "10px 12px",
+            borderRadius: 8,
+            border: "1px solid #F59E0B",
+            background: "rgba(245,158,11,0.10)",
+          }}
+        >
+          <strong style={{ fontSize: 11.5, color: "#FCD34D" }}>
+            {pendingLiveAction.kind === "announcement"
+              ? "Send this announcement to the audience?"
+              : pendingLiveAction.kind === "pin"
+              ? "Show this message on the live lower-third?"
+              : "Hide the live lower-third?"}
+          </strong>
+          <div
+            style={{ fontSize: 11.5, color: "#F3F4F6", lineHeight: 1.45, whiteSpace: "pre-wrap" }}
+          >
+            {pendingLiveAction.kind === "announcement"
+              ? `Message: ${pendingLiveAction.text ?? ""}`
+              : pendingLiveAction.kind === "pin"
+              ? `${pendingLiveAction.author ?? "Message"}: ${pendingLiveAction.text ?? ""}`
+              : "Nothing will appear on the lower-third once this is confirmed."}
+          </div>
+          {pendingLiveAction.kind === "announcement" && (
+            <div style={{ fontSize: 10, color: "#94A3B8" }}>
+              Delivery: audience message{sendToCaption ? " and closed caption" : ""}
+            </div>
+          )}
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+            <button
+              type="button"
+              onClick={() => setPendingLiveAction(null)}
+              style={{
+                height: 26,
+                padding: "0 10px",
+                borderRadius: 5,
+                border: "1px solid #334155",
+                background: "#161B24",
+                color: "#CBD5E1",
+                fontSize: 10.5,
+                fontWeight: 700,
+                cursor: "pointer",
+              }}
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              disabled={busy}
+              onClick={confirmPendingLiveAction}
+              style={{
+                height: 26,
+                padding: "0 10px",
+                borderRadius: 5,
+                border: "1px solid #F59E0B",
+                background: "#B45309",
+                color: "#FFFFFF",
+                fontSize: 10.5,
+                fontWeight: 800,
+                cursor: busy ? "not-allowed" : "pointer",
+                opacity: busy ? 0.6 : 1,
+              }}
+            >
+              {pendingLiveAction.kind === "announcement"
+                ? "Confirm Send"
+                : pendingLiveAction.kind === "pin"
+                ? "Confirm Show"
+                : "Confirm Hide"}
+            </button>
+          </div>
+        </div>
+      )}
 
       {!collapsed && (
         <>
@@ -1133,6 +1266,8 @@ export const StreamAudienceDock: React.FC<StreamAudienceDockProps> = ({
           <button
             type="button"
             onClick={() => setModalOpen(true)}
+            aria-haspopup="dialog"
+            aria-expanded={modalOpen}
             style={{
               marginLeft: "auto",
               height: 27,
@@ -1158,6 +1293,7 @@ export const StreamAudienceDock: React.FC<StreamAudienceDockProps> = ({
             role="dialog"
             aria-modal="true"
             aria-label="Audience Chat and Stream Stats"
+            tabIndex={-1}
             onClick={(event) => {
               if (event.target === event.currentTarget) setModalOpen(false);
             }}

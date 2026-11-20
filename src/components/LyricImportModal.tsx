@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { FileText, X, Plus } from "lucide-react";
 import type { SlideCue } from "../types";
 
@@ -17,6 +17,17 @@ export const LyricImportModal: React.FC<LyricImportModalProps> = ({
   const [rawText, setRawText] = useState("");
   const [linesPerSlide, setLinesPerSlide] = useState(2);
   const [sectionTag, setSectionTag] = useState("Verse 1");
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      e.stopPropagation();
+      onClose();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [isOpen, onClose]);
 
   if (!isOpen) return null;
 
@@ -111,6 +122,9 @@ export const LyricImportModal: React.FC<LyricImportModalProps> = ({
       }}
     >
       <div
+        role="dialog"
+        aria-modal="true"
+        aria-label="Import lyrics and reflow slides"
         style={{
           width: "100%",
           maxWidth: 900,

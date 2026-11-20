@@ -271,6 +271,15 @@ export const BroadcastAudioMixerPanel: React.FC<BroadcastAudioMixerPanelProps> =
   const [localMonitoring, setLocalMonitoring] = useState<Record<string, AudioMonitoringMode>>({});
 
   useEffect(() => {
+    if (!showAdvancedModal) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setShowAdvancedModal(false);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [showAdvancedModal]);
+
+  useEffect(() => {
     const id = window.setInterval(() => {
       setTick((t) => (t + 1) % 10000);
     }, 90);
@@ -625,6 +634,7 @@ export const BroadcastAudioMixerPanel: React.FC<BroadcastAudioMixerPanelProps> =
         flexDirection: "column",
         gap: 12,
         minHeight: 0,
+        minWidth: 0,
         color: "#E2E8F0",
       }}
     >
@@ -1132,7 +1142,7 @@ export const BroadcastAudioMixerPanel: React.FC<BroadcastAudioMixerPanelProps> =
                 </div>
 
                 {/* Row 2: Peak Meter + dB Fader */}
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, alignItems: "center" }}>
+                <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1fr)", gap: 12, alignItems: "center" }}>
                   <PeakMeterBar
                     active={source.enabled}
                     muted={muted}
@@ -1357,6 +1367,9 @@ export const BroadcastAudioMixerPanel: React.FC<BroadcastAudioMixerPanelProps> =
       {/* Broadcast Advanced Audio Properties Modal */}
       {showAdvancedModal && (
         <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="Advanced Audio Properties"
           style={{
             position: "fixed",
             inset: 0,

@@ -179,6 +179,17 @@ export const TimersAndAlertsModal: React.FC<TimersAndAlertsModalProps> = ({
     }
   }, [liveStageLabel]);
 
+  useEffect(() => {
+    if (!isOpen) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      e.stopPropagation();
+      onClose();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [isOpen, onClose]);
+
   if (!isOpen) return null;
 
   const markSyncedAndEmit = (overrideLabel?: string) => {
@@ -253,6 +264,9 @@ export const TimersAndAlertsModal: React.FC<TimersAndAlertsModalProps> = ({
       }}
     >
       <div
+        role="dialog"
+        aria-modal="true"
+        aria-label="Stage timers and alerts"
         style={{
           width: "100%",
           maxWidth: 960,
