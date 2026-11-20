@@ -1206,7 +1206,7 @@ export async function checkForUpdate(): Promise<UpdateInfo | null> {
       const releases = await resp.json();
       if (!releases || releases.length === 0) return null;
       const latest = releases[0];
-      const currentVersion = "0.3.5";
+      const currentVersion = "0.3.6";
       const latestTag: string = latest.tag_name || "";
       const updateAvailable = latestTag.replace(/^v/, "") !== currentVersion.replace(/^v/, "");
       return {
@@ -1325,7 +1325,7 @@ export async function recordFrontendCrash(
   const report: CrashReportSummary = {
     id: `frontend-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
     timestampUtc: new Date().toISOString(),
-    appVersion: "0.3.5",
+    appVersion: "0.3.6",
     os: "preview",
     arch: "preview",
     kind: "frontend",

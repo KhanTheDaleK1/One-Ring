@@ -456,7 +456,7 @@ export const ShowModeView: React.FC<ShowModeViewProps> = ({
           </div>
         )}
 
-        <div style={{ display: "flex", gap: 10, marginTop: 12 }}>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 10, marginTop: 12, minWidth: 0 }}>
           <button
             type="button"
             className="btn"
@@ -474,21 +474,26 @@ export const ShowModeView: React.FC<ShowModeViewProps> = ({
             disabled={state.activeCueIndex >= state.cues.length - 1}
             onClick={goNextCue}
             style={{
-              flex: 1,
-              height: 72,
+              flex: "1 1 180px",
+              minWidth: 0,
+              minHeight: 64,
+              padding: "10px 14px",
               background: state.rehearsalMode ? "#D97706" : "#2563EB",
               borderColor: state.rehearsalMode ? "#F59E0B" : "#3B82F6",
-              fontSize: 17,
+              fontSize: 16,
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
-              gap: 10,
+              gap: 8,
+              overflow: "hidden",
             }}
           >
-            <Play size={20} fill="currentColor" />
-            {state.activeCueIndex >= state.cues.length - 1
-              ? "END OF SERVICE"
-              : `${state.rehearsalMode ? "DRY-RUN NEXT" : "GO NEXT"}: ${nextCue.title} (Space)`}
+            <Play size={18} fill="currentColor" style={{ flexShrink: 0 }} />
+            <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+              {state.activeCueIndex >= state.cues.length - 1
+                ? "END OF SERVICE"
+                : `${state.rehearsalMode ? "DRY-RUN NEXT" : "GO NEXT"}: ${nextCue.title} (Space)`}
+            </span>
           </button>
         </div>
       </div>

@@ -1,4 +1,4 @@
-# One Ring — Unified Production Suite (`v0.3.5-alpha`)
+# One Ring — Unified Production Suite (`v0.3.6-alpha`)
 
 A clean-slate, cross-platform (**Windows, macOS & Linux**) desktop production suite built with **Tauri v2, Rust, React, and TypeScript**. One Ring unifies church and live-production workflows — slides, broadcast compositing, live stream telemetry & audience chat, zero-popup native window/display capture, multi-camera PTZ switching, audio mixing, AoIP routing, and IP video routing — inside one customizable interface.
 
@@ -43,6 +43,8 @@ Customize your active canvas title (e.g., `"Main Sanctuary"`) and re-order, show
 ## Security, Networking & Native App Features
 
 - **Authenticated LAN Sync & Discovery (`UDP :47888` / `WS :47800`)**: Opt-in peer discovery and shared-secret authenticated WebSocket pub/sub hub with message-kind allowlists, frame/client caps, and sender echo suppression.
+- **In-App Song & Lyric Search**: Search by title, artist, or lyric phrase across live online lyrics (`lrclib.net`), a local offline church song folder (`.txt`, `.cho`/`.chordpro`, OpenLyrics `.xml`), and an expanded built-in Public-Domain Hymnal.
+- **Sanitized Crash Reporter & Silent Windows Launch**: Automatic Rust panic + React `ErrorBoundary` capture with path/secret scrubbing, opt-in Cloudflare Worker → GitHub Issues relay (`workers/crash-relay/`), and console-free Windows background subprocess execution (`CREATE_NO_WINDOW`).
 - **Hardened Desktop Architecture**: Restrictive non-null Tauri CSP, `http(s)`-only sandboxed browser sources, `0600`/`0700` local settings permissions, zero secrets in `localStorage`, and bounded protocol parsers.
 - **Portable Show Files (`.ring.json`)**: Export and import validated cue stacks, scenes, sources, audio routes, and slide decks.
 - **Built-In Update Check**: Native `About One Ring` / `Check for Updates...` panel that checks release metadata over HTTPS. **Alpha builds are unsigned**: installers must be verified and promoted manually; Tauri signed-updater integration is planned for beta/GA.
