@@ -73,7 +73,7 @@ type SettingsTab =
 type RelayMode = "disabled" | AudienceRelayConfig["mode"];
 type HealthLevel = "ok" | "warn" | "error" | "none";
 
-const APP_VERSION = "0.3.7";
+const APP_VERSION = "0.3.8";
 const RELAY_STORAGE_KEY = "onering_audience_relay_config";
 const CAMERA_ROSTER_KEY = "onering_ptz_camera_roster";
 
