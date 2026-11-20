@@ -1374,11 +1374,7 @@ fn engineer_is_unlocked(managed: &ManagedState) -> Result<bool, String> {
 }
 
 #[tauri::command]
-fn unlock_engineer_mode(
-    pin: String,
-    app: tauri::AppHandle,
-    state: State<ManagedState>,
-) -> Result<bool, String> {
+fn unlock_engineer_mode(pin: String, state: State<ManagedState>) -> Result<bool, String> {
     let was_empty = state
         .inner
         .lock()
@@ -1386,8 +1382,12 @@ fn unlock_engineer_mode(
         .unwrap_or(false);
     let ok = unlock_engineer_with_state(&pin, &state)?;
     if ok && was_empty {
-        if let Ok(settings) = state.inner.lock().map(|s| s.settings.clone()) {
-            write_settings_to_disk(&app, &settings);
+        if let Err(err) = state.save_settings() {
+            if let Ok(mut inner) = state.inner.lock() {
+                inner.push_event_log(format!(
+                    "[security] WARNING: failed to persist initial Engineer PIN: {err}"
+                ));
+            }
         }
     }
     Ok(ok)
