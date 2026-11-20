@@ -30,6 +30,7 @@ interface SongCatalogModalProps {
   onClose: () => void;
   onImportSong: (song: SongLibraryResult) => void;
   licenseNumber?: string;
+  serviceSongTitles?: string[];
 }
 
 type SourceFilter = "all" | "online" | "local" | "public-domain";
@@ -875,8 +876,15 @@ export const SongCatalogModal: React.FC<SongCatalogModalProps> = ({
   onClose,
   onImportSong,
   licenseNumber = "Not Configured",
+  serviceSongTitles = [],
 }) => {
   const [searchTerm, setSearchTerm] = useState("");
+  const [artistFilter, setArtistFilter] = useState("");
+  const activeSetListTitles = React.useMemo(
+    () => new Set(serviceSongTitles.map((t) => t.trim().toLowerCase())),
+    [serviceSongTitles]
+  );
+  const isEntryInSetList = (title: string) => activeSetListTitles.has(title.trim().toLowerCase());
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<SourceFilter>("all");
   const [entries, setEntries] = useState<CatalogEntry[]>([]);
@@ -1069,6 +1077,23 @@ export const SongCatalogModal: React.FC<SongCatalogModalProps> = ({
                   outline: "none",
                 }}
               />
+          <input
+            type="text"
+            value={artistFilter}
+            onChange={(e) => setArtistFilter(e.target.value)}
+            placeholder="Artist (optional)"
+            aria-label="Filter by artist (optional)"
+            style={{
+              width: 190,
+              flexShrink: 0,
+              padding: "9px 12px",
+              borderRadius: 8,
+              border: "1px solid #334155",
+              background: "#0F172A",
+              color: "#F8FAFC",
+              fontSize: 13,
+            }}
+          />
             </div>
             <button
               type="submit"
@@ -1351,27 +1376,26 @@ export const SongCatalogModal: React.FC<SongCatalogModalProps> = ({
                   <button
                     type="button"
                     onClick={() => handleImport(selectedEntry)}
-                    disabled={importedKeys.has(selectedEntry.key)}
                     className="btn"
                     style={{
                       height: 40,
                       padding: "0 16px",
                       flexShrink: 0,
-                      backgroundColor: importedKeys.has(selectedEntry.key) ? "#065F46" : "#0284C7",
-                      borderColor: importedKeys.has(selectedEntry.key) ? "#059669" : "#0369A1",
+                      backgroundColor: isEntryInSetList(selectedEntry.song.title) ? "#065F46" : "#0284C7",
+                      borderColor: isEntryInSetList(selectedEntry.song.title) ? "#059669" : "#0369A1",
                       color: "#FFFFFF",
                       display: "flex",
                       alignItems: "center",
                       gap: 8,
                     }}
                   >
-                    {importedKeys.has(selectedEntry.key) ? (
+                    {isEntryInSetList(selectedEntry.song.title) ? (
                       <>
-                        <CheckCircle size={16} /> Added to Library
+                        <CheckCircle size={16} /> In Set List · Add Again
                       </>
                     ) : (
                       <>
-                        <Download size={16} /> Import to Service
+                        <Download size={16} /> Add to Set List
                       </>
                     )}
                   </button>

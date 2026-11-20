@@ -1248,22 +1248,30 @@ fn update_settings(
 #[tauri::command]
 async fn search_song_lyrics(
     query: String,
+    artist: Option<String>,
     local_folder: Option<String>,
     include_online: Option<bool>,
 ) -> Result<Vec<runtime::lyrics_search::LyricSearchResult>, String> {
-    use runtime::lyrics_search::{search_local_song_folder, search_online_lyrics};
+    use runtime::lyrics_search::{search_local_song_folder, search_online_lyrics_with_artist};
 
     let query = query.trim().to_string();
+    let artist_clean = artist
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
     let folder = local_folder
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_string);
-    let online_requested = include_online.unwrap_or(true) && !query.is_empty();
+    let online_requested =
+        include_online.unwrap_or(true) && (!query.is_empty() || artist_clean.is_some());
 
     let folder_for_task = folder.clone();
     let query_for_local = query.clone();
     let query_for_online = query.clone();
+    let artist_for_online = artist_clean.clone();
     let (local, online) = tokio::join!(
         tokio::task::spawn_blocking(move || match folder_for_task {
             Some(path) => search_local_song_folder(&path, &query_for_local),
@@ -1271,7 +1279,7 @@ async fn search_song_lyrics(
         }),
         tokio::task::spawn_blocking(move || {
             if online_requested {
-                search_online_lyrics(&query_for_online)
+                search_online_lyrics_with_artist(&query_for_online, artist_for_online.as_deref())
             } else {
                 Ok(Vec::new())
             }

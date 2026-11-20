@@ -12,7 +12,7 @@ const MAX_FILE_BYTES: usize = 256 * 1024;
 const MAX_FILES: usize = 500;
 const MAX_DIR_ENTRIES: usize = 1000;
 const MAX_DEPTH: u32 = 3;
-const MAX_ONLINE_RESULTS: usize = 15;
+const MAX_ONLINE_RESULTS: usize = 30;
 const MAX_LOCAL_RESULTS: usize = 30;
 const SEARCH_URL: &str = "https://lrclib.net/api/search";
 
@@ -235,9 +235,147 @@ fn fetch_search_response(url: &str) -> Result<Vec<u8>, String> {
 }
 
 /// Query the public lyric index. Roughly eight seconds is the worst-case network wait.
-pub fn search_online_lyrics(query: &str) -> Result<Vec<LyricSearchResult>, String> {
+fn normalize_key(s: &str) -> String {
+    s.chars()
+        .filter(|c| c.is_alphanumeric() || c.is_whitespace())
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_ascii_lowercase()
+}
+
+fn levenshtein(a: &str, b: &str) -> usize {
+    let av: Vec<char> = a.chars().collect();
+    let bv: Vec<char> = b.chars().collect();
+    if av.is_empty() {
+        return bv.len();
+    }
+    if bv.is_empty() {
+        return av.len();
+    }
+    let mut prev: Vec<usize> = (0..=bv.len()).collect();
+    let mut curr = vec![0usize; bv.len() + 1];
+    for (i, &ca) in av.iter().enumerate() {
+        curr[0] = i + 1;
+        for (j, &cb) in bv.iter().enumerate() {
+            let cost = usize::from(ca != cb);
+            curr[j + 1] = (prev[j + 1] + 1).min(curr[j] + 1).min(prev[j] + cost);
+        }
+        std::mem::swap(&mut prev, &mut curr);
+    }
+    prev[bv.len()]
+}
+
+fn fuzzy_token_score(token: &str, candidate_words: &[String]) -> i32 {
+    if token.is_empty() {
+        return 0;
+    }
+    let mut best = 0i32;
+    for w in candidate_words {
+        if w == token {
+            return 100;
+        }
+        if w.contains(token) || token.contains(w.as_str()) {
+            best = best.max(75);
+            continue;
+        }
+        let max_len = w.len().max(token.len());
+        if max_len >= 4 {
+            let dist = levenshtein(token, w);
+            if dist <= 2 || (dist * 3 <= max_len) {
+                let sim = 85i32.saturating_sub((dist as i32) * 18);
+                best = best.max(sim);
+            }
+        }
+    }
+    best
+}
+
+pub(crate) fn rank_and_dedupe_results(
+    items: Vec<LyricSearchResult>,
+    query: &str,
+    artist_hint: Option<&str>,
+) -> Vec<LyricSearchResult> {
+    let mut deduped: std::collections::HashMap<(String, String), LyricSearchResult> =
+        std::collections::HashMap::new();
+    for item in items {
+        let key = (normalize_key(&item.title), normalize_key(&item.artist));
+        match deduped.get(&key) {
+            Some(existing) if existing.lyrics.len() >= item.lyrics.len() => {}
+            _ => {
+                deduped.insert(key, item);
+            }
+        }
+    }
+
+    let q_norm = normalize_key(query);
+    let q_tokens: Vec<String> = q_norm.split_whitespace().map(str::to_string).collect();
+    let a_norm = artist_hint.map(normalize_key).unwrap_or_default();
+
+    let mut scored: Vec<(i32, LyricSearchResult)> = deduped
+        .into_values()
+        .map(|item| {
+            let title_norm = normalize_key(&item.title);
+            let artist_norm = normalize_key(&item.artist);
+            let title_words: Vec<String> = title_norm.split_whitespace().map(str::to_string).collect();
+            let artist_words: Vec<String> = artist_norm.split_whitespace().map(str::to_string).collect();
+
+            let mut score = 0i32;
+            if !q_norm.is_empty() && title_norm == q_norm {
+                score += 220;
+            } else if !q_norm.is_empty() && title_norm.contains(&q_norm) {
+                score += 120;
+            }
+            if !a_norm.is_empty() {
+                if artist_norm == a_norm {
+                    score += 200;
+                } else if artist_norm.contains(&a_norm) {
+                    score += 130;
+                }
+            }
+            for tok in &q_tokens {
+                let ts = fuzzy_token_score(tok, &title_words);
+                let as_ = fuzzy_token_score(tok, &artist_words);
+                score += ts.max(as_);
+                if ts >= 60 && as_ >= 60 {
+                    score += 20;
+                }
+            }
+            score += ((item.lyrics.lines().count()).min(40) as i32) * 2;
+            (score, item)
+        })
+        .collect();
+
+    scored.sort_by(|a, b| {
+        b.0.cmp(&a.0)
+            .then_with(|| b.1.lyrics.len().cmp(&a.1.lyrics.len()))
+            .then_with(|| a.1.title.cmp(&b.1.title))
+    });
+    scored
+        .into_iter()
+        .take(MAX_ONLINE_RESULTS)
+        .map(|(_, item)| item)
+        .collect()
+}
+
+fn fetch_lrclib_url(url: &str) -> Result<Vec<LyricSearchResult>, String> {
+    let response = fetch_search_response(url)?;
+    let bounded = if response.len() > MAX_ONLINE_BYTES {
+        &response[..MAX_ONLINE_BYTES]
+    } else {
+        &response
+    };
+    parse_lrclib_json(bounded)
+}
+
+pub fn search_online_lyrics_with_artist(
+    query: &str,
+    artist: Option<&str>,
+) -> Result<Vec<LyricSearchResult>, String> {
     let query = query.trim();
-    if query.is_empty() {
+    let artist_clean = artist.map(str::trim).filter(|a| !a.is_empty());
+    if query.is_empty() && artist_clean.is_none() {
         return Err("Search query must not be empty".to_string());
     }
     if query.chars().count() > MAX_QUERY_CHARS {
@@ -245,14 +383,81 @@ pub fn search_online_lyrics(query: &str) -> Result<Vec<LyricSearchResult>, Strin
             "Search query must be at most {MAX_QUERY_CHARS} characters"
         ));
     }
-    let url = format!("{SEARCH_URL}?q={}", percent_encode_query(query));
-    let response = fetch_search_response(&url)?;
-    let bounded = if response.len() > MAX_ONLINE_BYTES {
-        &response[..MAX_ONLINE_BYTES]
-    } else {
-        &response
+
+    let mut collected = Vec::new();
+    let mut last_err: Option<String> = None;
+
+    if !query.is_empty() {
+        if let Some(a) = artist_clean {
+            let url = format!(
+                "{SEARCH_URL}?track_name={}&artist_name={}",
+                percent_encode_query(query),
+                percent_encode_query(a)
+            );
+            match fetch_lrclib_url(&url) {
+                Ok(mut rows) => collected.append(&mut rows),
+                Err(e) => last_err = Some(e),
+            }
+        }
+    }
+
+    let primary_q = match (query.is_empty(), artist_clean) {
+        (false, Some(a)) => format!("{query} {a}"),
+        (false, None) => query.to_string(),
+        (true, Some(a)) => a.to_string(),
+        (true, None) => String::new(),
     };
-    parse_lrclib_json(bounded)
+    if collected.len() < 5 && !primary_q.is_empty() {
+        let url = format!("{SEARCH_URL}?q={}", percent_encode_query(&primary_q));
+        match fetch_lrclib_url(&url) {
+            Ok(mut rows) => collected.append(&mut rows),
+            Err(e) => last_err = Some(e),
+        }
+    }
+
+    if collected.is_empty() {
+        let words: Vec<&str> = query.split_whitespace().filter(|w| w.len() >= 3).collect();
+        let mut fallback_queries: Vec<String> = Vec::new();
+        if let Some(a) = artist_clean {
+            fallback_queries.push(a.to_string());
+        }
+        if words.len() >= 2 {
+            let tail = words[words.len().saturating_sub(2)..].join(" ");
+            let head = words[..2.min(words.len())].join(" ");
+            if tail != primary_q {
+                fallback_queries.push(tail);
+            }
+            if head != primary_q && !fallback_queries.contains(&head) {
+                fallback_queries.push(head);
+            }
+            if let Some(last) = words.last() {
+                if last.len() >= 4 && !fallback_queries.iter().any(|q| q == last) {
+                    fallback_queries.push((*last).to_string());
+                }
+            }
+        }
+        for fq in fallback_queries.into_iter().take(3) {
+            let url = format!("{SEARCH_URL}?q={}", percent_encode_query(&fq));
+            if let Ok(mut rows) = fetch_lrclib_url(&url) {
+                collected.append(&mut rows);
+                if collected.len() >= 15 {
+                    break;
+                }
+            }
+        }
+    }
+
+    if collected.is_empty() {
+        if let Some(err) = last_err {
+            return Err(err);
+        }
+    }
+
+    Ok(rank_and_dedupe_results(collected, query, artist_clean))
+}
+
+pub fn search_online_lyrics(query: &str) -> Result<Vec<LyricSearchResult>, String> {
+    search_online_lyrics_with_artist(query, None)
 }
 
 fn is_supported_song_file(path: &Path) -> bool {
@@ -741,6 +946,49 @@ mod tests {
     }
 
     #[test]
+    fn rank_and_dedupe_handles_typos_and_artist_match() {
+        let items = vec![
+            LyricSearchResult {
+                id: "1".into(),
+                title: "Gratitude".into(),
+                artist: "Other Artist".into(),
+                source: "online".into(),
+                copyright: "Online".into(),
+                key: "".into(),
+                lyrics: "Short line".into(),
+                themes: vec![],
+                file_path: None,
+            },
+            LyricSearchResult {
+                id: "2".into(),
+                title: "Gratitude".into(),
+                artist: "Brandon Lake".into(),
+                source: "online".into(),
+                copyright: "Online".into(),
+                key: "".into(),
+                lyrics: "All my words fall short\nI got nothing new\nSo I throw up my hands\nAnd praise You again and again".into(),
+                themes: vec![],
+                file_path: None,
+            },
+            LyricSearchResult {
+                id: "3".into(),
+                title: "Gratitude".into(),
+                artist: "Brandon Lake".into(),
+                source: "online".into(),
+                copyright: "Online".into(),
+                key: "".into(),
+                lyrics: "Short dup".into(),
+                themes: vec![],
+                file_path: None,
+            },
+        ];
+        let ranked = rank_and_dedupe_results(items, "gratutitude brandon lake", None);
+        assert_eq!(ranked.len(), 2, "duplicate Brandon Lake Gratitude should dedupe");
+        assert_eq!(ranked[0].artist, "Brandon Lake");
+        assert!(ranked[0].lyrics.contains("All my words fall short"));
+    }
+
+    #[test]
     fn percent_encode_query_keeps_unreserved_bytes_and_encodes_utf8() {
         assert_eq!(percent_encode_query(""), "");
         assert_eq!(
@@ -767,14 +1015,14 @@ mod tests {
             r#"{"id":900,"trackName":"Silent","artistName":"Artist","plainLyrics":"","syncedLyrics":"","instrumental":true}"#.into(),
             r#"{"id":901,"trackName":"Empty","artistName":"Artist","plainLyrics":"   ","instrumental":false}"#.into(),
         ];
-        for index in 0..17 {
+        for index in 0..35 {
             entries.push(format!(
                 r#"{{"id":{index},"trackName":"Song {index}","artistName":"Artist {index}","plainLyrics":"body {index}","instrumental":false}}"#
             ));
         }
         let raw = format!("[{}]", entries.join(","));
         let parsed = parse_lrclib_json(raw.as_bytes()).unwrap();
-        assert_eq!(parsed.len(), 15);
+        assert_eq!(parsed.len(), MAX_ONLINE_RESULTS);
         assert_eq!(parsed[0].id, "0");
         assert_eq!(parsed[0].title, "Song 0");
         assert_eq!(parsed[0].source, "online");

@@ -2173,7 +2173,8 @@ function normalizeIndexedLyrics(raw: string): string {
 export async function searchSongLyrics(
   query: string,
   localFolder?: string,
-  includeOnline?: boolean
+  includeOnline?: boolean,
+  artist?: string
 ): Promise<LyricSearchResultItem[]> {
   const wantsOnline = includeOnline ?? true;
 

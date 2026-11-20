@@ -507,23 +507,28 @@ export const SlidesCanvasView: React.FC<SlidesCanvasViewProps> = ({
         return;
       }
       const target = e.target;
-      if (
+      const isTextInput =
         target instanceof HTMLInputElement ||
         target instanceof HTMLTextAreaElement ||
         target instanceof HTMLSelectElement ||
-        target instanceof HTMLButtonElement ||
-        target instanceof HTMLAnchorElement ||
-        (target instanceof HTMLElement &&
-          (target.isContentEditable || target.getAttribute("role") === "button"))
-      ) {
+        (target instanceof HTMLElement && target.isContentEditable);
+      if (isTextInput) {
         return;
       }
-      if (e.key === "ArrowRight" || e.key === "ArrowDown" || e.key === " ") {
+      const isInteractiveButton =
+        target instanceof HTMLButtonElement ||
+        target instanceof HTMLAnchorElement ||
+        (target instanceof HTMLElement && target.getAttribute("role") === "button");
+
+      if (e.key === "ArrowRight" || e.key === "ArrowDown" || e.key === "PageDown") {
         e.preventDefault();
         onSlideAction("next");
-      } else if (e.key === "ArrowLeft" || e.key === "ArrowUp") {
+      } else if (e.key === "ArrowLeft" || e.key === "ArrowUp" || e.key === "PageUp") {
         e.preventDefault();
         onSlideAction("prev");
+      } else if (e.key === " " && !isInteractiveButton) {
+        e.preventDefault();
+        onSlideAction("next");
       }
     };
     window.addEventListener("keydown", onKey);
@@ -1484,6 +1489,7 @@ export const SlidesCanvasView: React.FC<SlidesCanvasViewProps> = ({
         isOpen={showSongCatalogModal}
         onClose={() => setShowSongCatalogModal(false)}
         licenseNumber={state.settings?.slides?.songLibraryClientId || "Public Domain"}
+        serviceSongTitles={(state.slides.songs || []).map((s) => s.title)}
         onImportSong={(song: SongLibraryResult) => {
           const lines = song.lyricsPreview.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
           const importedSlides: SlideCue[] = [];

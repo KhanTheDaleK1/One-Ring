@@ -220,10 +220,10 @@ export const ShowModeView: React.FC<ShowModeViewProps> = ({
       if (e.code === "Space" && !e.repeat && !e.metaKey && !e.ctrlKey && !e.altKey) {
         e.preventDefault();
         goNextCue();
-      } else if (e.code === "ArrowRight" || e.code === "PageDown") {
+      } else if (e.code === "ArrowRight" || e.code === "ArrowDown" || e.code === "PageDown") {
         e.preventDefault();
         onSlideAction("next");
-      } else if (e.code === "ArrowLeft" || e.code === "PageUp") {
+      } else if (e.code === "ArrowLeft" || e.code === "ArrowUp" || e.code === "PageUp") {
         e.preventDefault();
         onSlideAction("prev");
       } else if ((e.metaKey || e.ctrlKey) && e.code === "KeyZ") {
