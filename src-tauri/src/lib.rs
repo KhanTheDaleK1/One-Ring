@@ -22,6 +22,8 @@ use runtime::slide_http_adapter::SlideHttpCommand;
 use runtime::dual_stream_adapter::DualStreamCommand;
 use runtime::console_adapter::ConsoleCommand;
 use runtime::{AdapterCommand, AdapterRegistry, RuntimeConfig};
+use runtime::ip_video_bridge::{IpVideoBridgeManager, IpVideoBridgeStatus};
+use runtime::video_switcher_adapter::{SwitcherAction, VideoSwitcherManager};
 use runtime::native_capture::{
     CapturableDisplay, CapturableWindow, NativeCaptureFrame, NativeCaptureManager,
     NativeCaptureSessionInfo,
@@ -3439,6 +3441,96 @@ fn stop_native_capture_stream(
     manager.stop_stream(&source_id)
 }
 
+
+#[tauri::command]
+fn switcher_connect(
+    app: tauri::AppHandle,
+    manager: State<'_, VideoSwitcherManager>,
+    host: String,
+    port: Option<u16>,
+) -> Result<protocols::video_switcher::SwitcherState, String> {
+    manager.connect(app, host, port)
+}
+
+#[tauri::command]
+fn switcher_disconnect(
+    manager: State<'_, VideoSwitcherManager>,
+) -> protocols::video_switcher::SwitcherState {
+    manager.disconnect()
+}
+
+#[tauri::command]
+fn switcher_get_state(
+    manager: State<'_, VideoSwitcherManager>,
+) -> protocols::video_switcher::SwitcherState {
+    manager.snapshot()
+}
+
+#[tauri::command]
+fn switcher_command(
+    manager: State<'_, VideoSwitcherManager>,
+    action: SwitcherAction,
+) -> Result<(), String> {
+    manager.send_action(action)
+}
+
+#[tauri::command]
+async fn ip_video_bridge_status(
+    manager: State<'_, IpVideoBridgeManager>,
+) -> Result<IpVideoBridgeStatus, String> {
+    let mgr = manager.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || mgr.status())
+        .await
+        .map_err(|e| format!("IP video status task failed: {e}"))
+}
+
+#[tauri::command]
+async fn ip_video_discover_sources(
+    manager: State<'_, IpVideoBridgeManager>,
+    timeout_ms: Option<u32>,
+) -> Result<Vec<String>, String> {
+    let mgr = manager.inner().clone();
+    let t = timeout_ms.unwrap_or(1000);
+    tauri::async_runtime::spawn_blocking(move || mgr.discover_sources(t))
+        .await
+        .map_err(|e| format!("IP video discovery task failed: {e}"))?
+}
+
+#[tauri::command]
+async fn ip_video_start_output(
+    manager: State<'_, IpVideoBridgeManager>,
+    stream_name: String,
+) -> Result<IpVideoBridgeStatus, String> {
+    let mgr = manager.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || mgr.start_output(&stream_name))
+        .await
+        .map_err(|e| format!("IP video output task failed: {e}"))?
+}
+
+#[tauri::command]
+async fn ip_video_stop_output(
+    manager: State<'_, IpVideoBridgeManager>,
+) -> Result<IpVideoBridgeStatus, String> {
+    let mgr = manager.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || mgr.stop_output())
+        .await
+        .map_err(|e| format!("IP video stop task failed: {e}"))
+}
+
+#[tauri::command]
+async fn ip_video_send_test_frame(
+    manager: State<'_, IpVideoBridgeManager>,
+    width: Option<u32>,
+    height: Option<u32>,
+) -> Result<u64, String> {
+    let mgr = manager.inner().clone();
+    let w = width.unwrap_or(1280);
+    let h = height.unwrap_or(720);
+    tauri::async_runtime::spawn_blocking(move || mgr.send_test_frame(w, h))
+        .await
+        .map_err(|e| format!("IP video test frame failed: {e}"))?
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -3449,6 +3541,8 @@ pub fn run() {
         .manage(runtime::broadcast_worker_ipc::BroadcastWorkerSupervisor::default())
         .manage(runtime::audience_relay::AudienceState::default())
         .manage(NativeCaptureManager::default())
+        .manage(VideoSwitcherManager::default())
+        .manage(IpVideoBridgeManager::default())
         .setup(|app| {
             let managed = app.state::<ManagedState>();
 
@@ -3679,7 +3773,16 @@ pub fn run() {
             list_pending_crash_reports,
             record_frontend_crash,
             upload_crash_report,
-            dismiss_crash_report
+            dismiss_crash_report,
+            switcher_connect,
+            switcher_disconnect,
+            switcher_get_state,
+            switcher_command,
+            ip_video_bridge_status,
+            ip_video_discover_sources,
+            ip_video_start_output,
+            ip_video_stop_output,
+            ip_video_send_test_frame
         ])
         .build(tauri::generate_context!())
         .expect("error while building One Ring")

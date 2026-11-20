@@ -2230,3 +2230,122 @@ export async function searchSongLyrics(
     clearTimeout(timeout);
   }
 }
+
+export interface SwitcherInputItem {
+  id: number;
+  longName: string;
+  shortName: string;
+  isExternal: boolean;
+  isBusSource: boolean;
+  isAuxSource: boolean;
+}
+
+export interface SwitcherStateSnapshot {
+  host: string;
+  port: number;
+  link: "idle" | "connecting" | "online" | "offline" | string;
+  detail: string;
+  product: string;
+  version: string;
+  inputs: SwitcherInputItem[];
+  program: Record<string, number>;
+  preview: Record<string, number>;
+  position: Record<string, number>;
+  inTransition: Record<string, boolean>;
+  keyOnAir: Record<string, Record<string, boolean>>;
+  dskOnAir: Record<string, boolean>;
+  ftbBlack: Record<string, boolean>;
+  aux: Record<string, number>;
+  macros: Record<string, string>;
+  macroRunning: number | null;
+  streaming: boolean;
+  recording: boolean;
+  tally: Record<string, number>;
+}
+
+export interface IpVideoBridgeStatusInfo {
+  available: boolean;
+  libraryPath: string | null;
+  sending: boolean;
+  senderName: string;
+  framesSent: number;
+  discoveredSources: string[];
+  detail: string;
+}
+
+const DEFAULT_SWITCHER_STATE: SwitcherStateSnapshot = {
+  host: "",
+  port: 9910,
+  link: "idle",
+  detail: "Not connected",
+  product: "",
+  version: "",
+  inputs: [],
+  program: {},
+  preview: {},
+  position: {},
+  inTransition: {},
+  keyOnAir: {},
+  dskOnAir: {},
+  ftbBlack: {},
+  aux: {},
+  macros: {},
+  macroRunning: null,
+  streaming: false,
+  recording: false,
+  tally: {},
+};
+
+export async function switcherConnect(host: string, port = 9910): Promise<SwitcherStateSnapshot> {
+  if (!isTauriRuntime()) {
+    return { ...DEFAULT_SWITCHER_STATE, host, port, link: "offline", detail: "Requires desktop app runtime" };
+  }
+  return invokeTauri<SwitcherStateSnapshot>("switcher_connect", { host, port });
+}
+
+export async function switcherDisconnect(): Promise<SwitcherStateSnapshot> {
+  if (!isTauriRuntime()) return DEFAULT_SWITCHER_STATE;
+  return invokeTauri<SwitcherStateSnapshot>("switcher_disconnect");
+}
+
+export async function switcherGetState(): Promise<SwitcherStateSnapshot> {
+  if (!isTauriRuntime()) return DEFAULT_SWITCHER_STATE;
+  return invokeTauri<SwitcherStateSnapshot>("switcher_get_state");
+}
+
+export async function switcherSendCommand(action: Record<string, unknown>): Promise<void> {
+  if (!isTauriRuntime()) return;
+  await invokeTauri<void>("switcher_command", { action });
+}
+
+export async function getIpVideoBridgeStatus(): Promise<IpVideoBridgeStatusInfo> {
+  if (!isTauriRuntime()) {
+    return {
+      available: false,
+      libraryPath: null,
+      sending: false,
+      senderName: "",
+      framesSent: 0,
+      discoveredSources: [],
+      detail: "Available in desktop app runtime",
+    };
+  }
+  return invokeTauri<IpVideoBridgeStatusInfo>("ip_video_bridge_status");
+}
+
+export async function discoverIpVideoBridgeSources(timeoutMs = 1000): Promise<string[]> {
+  if (!isTauriRuntime()) return [];
+  return invokeTauri<string[]>("ip_video_discover_sources", { timeoutMs });
+}
+
+export async function startIpVideoBridgeOutput(streamName: string): Promise<IpVideoBridgeStatusInfo> {
+  return invokeTauri<IpVideoBridgeStatusInfo>("ip_video_start_output", { streamName });
+}
+
+export async function stopIpVideoBridgeOutput(): Promise<IpVideoBridgeStatusInfo> {
+  return invokeTauri<IpVideoBridgeStatusInfo>("ip_video_stop_output");
+}
+
+export async function sendIpVideoBridgeTestFrame(width = 1280, height = 720): Promise<number> {
+  return invokeTauri<number>("ip_video_send_test_frame", { width, height });
+}

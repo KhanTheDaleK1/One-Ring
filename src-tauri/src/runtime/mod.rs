@@ -502,3 +502,5 @@ mod tests {
         assert!(!device.capabilities.meters);
     }
 }
+pub mod video_switcher_adapter;
+pub mod ip_video_bridge;

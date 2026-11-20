@@ -13,6 +13,7 @@ import {
 } from "lucide-react";
 import type { AppStateSnapshot } from "../types";
 import { IpVideoTools } from "./IpVideoTools";
+import { VideoSwitcherDeck } from "./VideoSwitcherDeck";
 import { CameraPreview, PtzControlDeckModal, PTZ_CAMERAS_STORAGE_KEY } from "./PtzControlDeckModal";
 import type { PtzRosterCamera } from "./PtzControlDeckModal";
 import { ptzDriveCamera, ptzRecallPreset, ptzStorePreset, triggerIpVideoPtz } from "../bridge";
@@ -440,6 +441,7 @@ export const VideoCanvasView: React.FC<VideoCanvasViewProps> = ({
           </div>
         </div>
       </div>
+      <VideoSwitcherDeck />
       <IpVideoTools
         sources={state.ipVideoSources}
         receivers={state.ipVideoReceivers}

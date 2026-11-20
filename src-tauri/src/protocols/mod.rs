@@ -567,3 +567,4 @@ pub mod console_scene;
 pub mod midi;
 
 pub mod ptz_ip;
+pub mod video_switcher;
