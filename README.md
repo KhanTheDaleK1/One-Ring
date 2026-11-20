@@ -1,4 +1,4 @@
-# One Ring — Unified Production Suite (`v0.3.4-alpha`)
+# One Ring — Unified Production Suite (`v0.3.5-alpha`)
 
 A clean-slate, cross-platform (**Windows, macOS & Linux**) desktop production suite built with **Tauri v2, Rust, React, and TypeScript**. One Ring unifies church and live-production workflows — slides, broadcast compositing, live stream telemetry & audience chat, zero-popup native window/display capture, multi-camera PTZ switching, audio mixing, AoIP routing, and IP video routing — inside one customizable interface.
 
