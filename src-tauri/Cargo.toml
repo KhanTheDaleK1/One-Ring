@@ -1,6 +1,6 @@
 [package]
 name = "one-ring"
-version = "0.3.9"
+version = "0.3.10"
 description = "Unified cross-platform church production controller (FOH Slides, Multi-Broadcast, Console, Aoip, IP_VIDEO, PTZ)"
 authors = ["One Ring Contributors"]
 edition = "2021"
