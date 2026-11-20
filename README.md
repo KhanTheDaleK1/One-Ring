@@ -1,4 +1,4 @@
-# One Ring — Unified Production Suite (`v0.3.6-alpha`)
+# One Ring — Unified Production Suite (`v0.3.7-alpha`)
 
 A clean-slate, cross-platform (**Windows, macOS & Linux**) desktop production suite built with **Tauri v2, Rust, React, and TypeScript**. One Ring unifies church and live-production workflows — slides, broadcast compositing, live stream telemetry & audience chat, zero-popup native window/display capture, multi-camera PTZ switching, audio mixing, AoIP routing, and IP video routing — inside one customizable interface.
 
@@ -43,6 +43,9 @@ Customize your active canvas title (e.g., `"Main Sanctuary"`) and re-order, show
 ## Security, Networking & Native App Features
 
 - **Authenticated LAN Sync & Discovery (`UDP :47888` / `WS :47800`)**: Opt-in peer discovery and shared-secret authenticated WebSocket pub/sub hub with message-kind allowlists, frame/client caps, and sender echo suppression.
+- **Built-In AI Production Assistant**: Slide-over AI chatbot powered by **OpenCode CLI (free local models)**, **Ollama**, or any **HTTPS OpenAI-compatible API** to draft announcement slides, worship sets, slide themes, and stage alerts with operator-confirmed one-click Apply cards.
+- **Hardware Video Switcher (`UDP :9910`) & Dynamic-Load LAN IP Video Bridge**: Two-way hardware video switcher control (Preview/Program tallies, Cut, Auto/Fade, guarded FTB, USK/DSK, Macros) plus dynamic runtime LAN IP video discovery & broadcast output with zero bundled proprietary SDKs.
+- **15-Translation English Bible Lookup**: Full dropdown of 15 Public-Domain and Open-License English Bible translations.
 - **In-App Song & Lyric Search**: Search by title, artist, or lyric phrase across live online lyrics (`lrclib.net`), a local offline church song folder (`.txt`, `.cho`/`.chordpro`, OpenLyrics `.xml`), and an expanded built-in Public-Domain Hymnal.
 - **Sanitized Crash Reporter & Silent Windows Launch**: Automatic Rust panic + React `ErrorBoundary` capture with path/secret scrubbing, opt-in Cloudflare Worker → GitHub Issues relay (`workers/crash-relay/`), and console-free Windows background subprocess execution (`CREATE_NO_WINDOW`).
 - **Hardened Desktop Architecture**: Restrictive non-null Tauri CSP, `http(s)`-only sandboxed browser sources, `0600`/`0700` local settings permissions, zero secrets in `localStorage`, and bounded protocol parsers.
@@ -58,3 +61,4 @@ Customize your active canvas title (e.g., `"Main Sanctuary"`) and re-order, show
 - [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md) — Rust workspace, Tauri IPC, event bus, & live `DeviceAdapter` architecture
 - [docs/ROADMAP_TO_100.md](./docs/ROADMAP_TO_100.md) — Phased parity tracking across all production domains
 - [docs/UX_DESIGN.md](./docs/UX_DESIGN.md) — Canvas UX & operator guardrails
+- [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md) — Apache 2.0 upstream open-source attributions

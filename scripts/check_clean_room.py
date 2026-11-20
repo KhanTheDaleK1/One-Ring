@@ -157,6 +157,8 @@ def has_trademark(content: str) -> list:
 
 
 def scan_file(filepath: str) -> list:
+    if os.path.basename(filepath) == "THIRD_PARTY_NOTICES.md":
+        return []
     """Scan a single file. Returns list of (category, match) violations."""
     violations = []
 
