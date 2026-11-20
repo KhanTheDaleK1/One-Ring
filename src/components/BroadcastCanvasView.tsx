@@ -34,6 +34,7 @@ import { AddSourceModal } from "./AddSourceModal";
 import { BroadcastAudioMixerPanel } from "./BroadcastAudioMixerPanel";
 import {
   getMediaEngineStatus,
+  installFfmpegRuntime,
   probeHardwareEncoders,
   remuxRecordingToMp4,
   saveReplayBuffer,
@@ -282,6 +283,7 @@ export const BroadcastCanvasView: React.FC<BroadcastCanvasViewProps> = ({
   const [transitionType, setTransitionType] = useState<"Cut" | "Fade" | "Slide" | "Stinger">("Fade");
   const [stingerPath, setStingerPath] = useState("");
   const [mediaEngine, setMediaEngine] = useState<MediaEngineStatus | null>(null);
+  const [installingFfmpeg, setInstallingFfmpeg] = useState(false);
   const [virtualCamActive, setVirtualCamActive] = useState(false);
   const [dualCanvasEnabled, setDualCanvasEnabled] = useState(false);
   const [transportProtocol, setTransportProtocol] = useState<"RTMPS" | "WebRTC WHIP" | "SRT">(
@@ -1269,6 +1271,36 @@ export const BroadcastCanvasView: React.FC<BroadcastCanvasViewProps> = ({
           >
             {mediaEngine?.daemonRunning ? "● Media Engine Active" : "Start Media Engine"}
           </button>
+          {mediaEngine && !mediaEngine.ffmpegBinaryPath && (
+            <button
+              type="button"
+              disabled={installingFfmpeg}
+              onClick={() => {
+                setInstallingFfmpeg(true);
+                notify("Downloading standalone FFmpeg engine (may take ~30 seconds)...");
+                installFfmpegRuntime()
+                  .then((st) => {
+                    setMediaEngine(st);
+                    notify("FFmpeg engine installed and ready!");
+                    void refreshHardwareEncoders();
+                  })
+                  .catch((err) => notify(String(err)))
+                  .finally(() => setInstallingFfmpeg(false));
+              }}
+              style={{
+                background: "#065F46",
+                border: "1px solid #10B981",
+                color: "#ECFDF5",
+                borderRadius: 6,
+                padding: "6px 10px",
+                fontSize: 11.5,
+                fontWeight: 700,
+                cursor: installingFfmpeg ? "wait" : "pointer",
+              }}
+            >
+              {installingFfmpeg ? "Installing FFmpeg..." : "Install FFmpeg"}
+            </button>
+          )}
 
           <button
             type="button"

@@ -724,13 +724,18 @@ const PUBLIC_DOMAIN_HYMNS: SongLibraryResult[] = [
 ];
 
 function matchesTerm(song: SongLibraryResult, term: string): boolean {
-  return (
-    song.title.toLowerCase().includes(term) ||
-    song.author.toLowerCase().includes(term) ||
-    song.songNumber.toLowerCase().includes(term) ||
-    song.themes.some((theme) => theme.toLowerCase().includes(term)) ||
-    song.lyricsPreview.toLowerCase().includes(term)
-  );
+  const tokens = term.toLowerCase().split(/\s+/).filter(Boolean);
+  if (tokens.length === 0) return true;
+  const haystack = [
+    song.title,
+    song.author,
+    song.songNumber,
+    ...song.themes,
+    song.lyricsPreview,
+  ]
+    .join(" ")
+    .toLowerCase();
+  return tokens.every((tok) => haystack.includes(tok));
 }
 
 function cleanLyrics(raw: unknown): string {
@@ -822,7 +827,7 @@ async function collectEntries(
         const remote = await searchSongLyrics(term, undefined, true);
         for (const item of remote) {
           const entry = entryFromLyricItem(item, "online");
-          if (entry && matchesTerm(entry.song, term)) entries.push(entry);
+          if (entry) entries.push(entry);
         }
         if (remote.length === 0) {
           notices.push({
@@ -879,7 +884,6 @@ export const SongCatalogModal: React.FC<SongCatalogModalProps> = ({
   serviceSongTitles = [],
 }) => {
   const [searchTerm, setSearchTerm] = useState("");
-  const [artistFilter, setArtistFilter] = useState("");
   const activeSetListTitles = React.useMemo(
     () => new Set(serviceSongTitles.map((t) => t.trim().toLowerCase())),
     [serviceSongTitles]
@@ -1061,7 +1065,8 @@ export const SongCatalogModal: React.FC<SongCatalogModalProps> = ({
               />
               <input
                 type="text"
-                placeholder="Search song title, author, or any lyric phrase..."
+                placeholder="Search song title, artist/author, or any lyric phrase..."
+                aria-label="Search song title, artist, or lyrics"
                 value={searchTerm}
                 onChange={(event) => setSearchTerm(event.target.value)}
                 style={{
@@ -1075,25 +1080,9 @@ export const SongCatalogModal: React.FC<SongCatalogModalProps> = ({
                   color: "#F9FAFB",
                   fontSize: 14,
                   outline: "none",
+                  boxSizing: "border-box",
                 }}
               />
-          <input
-            type="text"
-            value={artistFilter}
-            onChange={(e) => setArtistFilter(e.target.value)}
-            placeholder="Artist (optional)"
-            aria-label="Filter by artist (optional)"
-            style={{
-              width: 190,
-              flexShrink: 0,
-              padding: "9px 12px",
-              borderRadius: 8,
-              border: "1px solid #334155",
-              background: "#0F172A",
-              color: "#F8FAFC",
-              fontSize: 13,
-            }}
-          />
             </div>
             <button
               type="submit"

@@ -2417,3 +2417,11 @@ export async function aiAssistantChat(
     context,
   });
 }
+
+
+export async function installFfmpegRuntime(): Promise<MediaEngineStatus> {
+  if (!isTauriRuntime()) {
+    throw new Error("One-click FFmpeg installation requires the One Ring desktop app.");
+  }
+  return invokeTauri<MediaEngineStatus>("install_ffmpeg_runtime");
+}

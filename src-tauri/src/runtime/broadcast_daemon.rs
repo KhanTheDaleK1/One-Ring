@@ -111,7 +111,28 @@ pub fn validate_media_path(path: &str) -> Result<PathBuf, String> {
     Ok(candidate.to_path_buf())
 }
 
+fn onering_bin_dir() -> Option<PathBuf> {
+    #[cfg(target_os = "windows")]
+    let base = std::env::var_os("USERPROFILE").map(PathBuf::from)?;
+    #[cfg(not(target_os = "windows"))]
+    let base = std::env::var_os("HOME").map(PathBuf::from)?;
+    Some(base.join(".onering").join("bin"))
+}
+
 fn find_in_path(names: &[&str]) -> Option<String> {
+    if let Some(local_bin) = onering_bin_dir() {
+        for name in names {
+            let candidate = local_bin.join(name);
+            if let Ok(meta) = std::fs::metadata(&candidate) {
+                if meta.is_file() {
+                    if let Ok(canon) = candidate.canonicalize() {
+                        return Some(canon.to_string_lossy().into_owned());
+                    }
+                    return Some(candidate.to_string_lossy().into_owned());
+                }
+            }
+        }
+    }
     let path_var = std::env::var_os("PATH")?;
     for dir in std::env::split_paths(&path_var) {
         for name in names {
@@ -202,9 +223,15 @@ impl BroadcastDaemonSupervisor {
         if self.is_running() {
             return Ok("Headless media_engine daemon already running".into());
         }
-        let bin = find_broadcast_binary().ok_or_else(|| {
-            "BROADCAST binary not found on system. Install Broadcast Studio or place ffmpeg in PATH for headless mode.".to_string()
-        })?;
+        let bin = match find_broadcast_binary() {
+            Some(b) => b,
+            None => {
+                if let Some(ff) = find_ffmpeg_binary() {
+                    return Ok(format!("Built-in headless FFmpeg engine ready ({ff})"));
+                }
+                return Err("No broadcast engine found yet. Click 'Install FFmpeg' to set up the built-in headless streaming engine automatically.".to_string());
+            }
+        };
         let child = background_command(&bin)
             .args(["--minimize-to-tray", "--disable-shutdown-check"])
             .spawn()
@@ -1237,6 +1264,50 @@ pub fn remux_mkv_to_mp4(input_path: &str) -> Result<String, String> {
         format!("Failed to finalize remuxed recording: {e}")
     })?;
     Ok(format!("Remuxed cleanly to {}", final_out.display()))
+}
+
+
+/// Downloads and installs a standalone FFmpeg binary into `~/.onering/bin` (`%USERPROFILE%\.onering\bin`
+/// on Windows) with zero admin privileges required.
+pub fn install_ffmpeg_runtime() -> Result<(), String> {
+    if find_ffmpeg_binary().is_some() {
+        return Ok(());
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let script = r#"$ErrorActionPreference = 'Stop'; $dest = Join-Path $env:USERPROFILE '.onering\bin'; New-Item -ItemType Directory -Force -Path $dest | Out-Null; $zip = Join-Path $env:TEMP "onering-ffmpeg-$PID.zip"; $stage = Join-Path $env:TEMP "onering-ffmpeg-stage-$PID"; Invoke-WebRequest -UseBasicParsing -Uri 'https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip' -OutFile $zip -TimeoutSec 180; Expand-Archive -Force -Path $zip -DestinationPath $stage; $exe = Get-ChildItem -Path $stage -Recurse -Filter 'ffmpeg.exe' | Select-Object -First 1; if (-not $exe) { throw 'ffmpeg.exe not found in downloaded archive' }; Copy-Item -Force $exe.FullName (Join-Path $dest 'ffmpeg.exe'); Remove-Item -Force -ErrorAction SilentlyContinue $zip; Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $stage"#;
+        let out = background_command("powershell")
+            .args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script])
+            .output()
+            .map_err(|e| format!("Failed to launch FFmpeg installer: {e}"))?;
+        if !out.status.success() {
+            let err = String::from_utf8_lossy(&out.stderr);
+            return Err(format!("FFmpeg installation failed: {}", err.trim()));
+        }
+        if find_ffmpeg_binary().is_some() {
+            return Ok(());
+        }
+        return Err("FFmpeg installer completed, but ffmpeg was not detected yet. Restart One Ring and retry.".into());
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let out = background_command("brew")
+            .args(["install", "ffmpeg"])
+            .output()
+            .map_err(|e| format!("Homebrew is required for one-click macOS FFmpeg install (or install ffmpeg manually): {e}"))?;
+        if !out.status.success() {
+            let err = String::from_utf8_lossy(&out.stderr);
+            return Err(format!("Homebrew FFmpeg install failed: {}", err.trim()));
+        }
+        if find_ffmpeg_binary().is_some() {
+            return Ok(());
+        }
+        return Err("FFmpeg installer completed, but ffmpeg was not detected yet. Restart One Ring and retry.".into());
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    {
+        Err("Install ffmpeg via your Linux package manager (e.g. sudo apt install ffmpeg)".into())
+    }
 }
 
 #[cfg(test)]

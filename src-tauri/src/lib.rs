@@ -3590,6 +3590,17 @@ async fn ai_assistant_chat(
     .map_err(|e| format!("AI assistant task failed: {e}"))?
 }
 
+
+#[tauri::command]
+async fn install_ffmpeg_runtime(
+    supervisor: tauri::State<'_, runtime::broadcast_daemon::BroadcastDaemonSupervisor>,
+) -> Result<runtime::broadcast_daemon::MediaEngineStatus, String> {
+    tauri::async_runtime::spawn_blocking(runtime::broadcast_daemon::install_ffmpeg_runtime)
+        .await
+        .map_err(|e| format!("FFmpeg install task failed: {e}"))??;
+    Ok(runtime::broadcast_daemon::probe_media_engine_status(&supervisor))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -3844,7 +3855,8 @@ pub fn run() {
             ip_video_send_test_frame,
             ai_assistant_status,
             ai_assistant_chat,
-            install_opencode_cli
+            install_opencode_cli,
+            install_ffmpeg_runtime
         ])
         .build(tauri::generate_context!())
         .expect("error while building One Ring")
