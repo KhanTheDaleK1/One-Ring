@@ -11,25 +11,20 @@ import {
   Check,
   Trash2,
   Globe,
+  Key,
+  Upload,
 } from "lucide-react";
 import type { SlideCue } from "../types";
+import {
+  bibleImportLocalFile,
+  bibleListTranslations,
+  bibleLookupPassage,
+  bibleSaveKeys,
+  isTauriRuntime,
+  type BibleTranslationInfo,
+} from "../bridge";
 
-export type BibleTranslation =
-  | "BSB"
-  | "WEB"
-  | "KJV"
-  | "ASV"
-  | "BBE"
-  | "YLT"
-  | "DARBY"
-  | "DRA"
-  | "OEB-US"
-  | "OEB-CW"
-  | "WEBBE"
-  | "WMB"
-  | "LSV"
-  | "GNV"
-  | "AKJV";
+export type BibleTranslation = string;
 
 export interface BibleLookupModalProps {
   isOpen: boolean;
@@ -41,6 +36,8 @@ interface LivePassage {
   reference: string;
   chapter: number;
   verses: VerseEntry[];
+  source?: string;
+  copyrightNotice?: string;
 }
 
 interface VerseEntry {
@@ -1306,6 +1303,62 @@ export const BibleLookupModal: React.FC<BibleLookupModalProps> = ({
   onAddSlides,
 }) => {
   const [translation, setTranslation] = useState<BibleTranslation>("KJV");
+  const [catalog, setCatalog] = useState<BibleTranslationInfo[]>([]);
+  const [setupKeyInput, setSetupKeyInput] = useState("");
+  const [localFileInput, setLocalFileInput] = useState("");
+  const [setupBusy, setSetupBusy] = useState(false);
+  const [setupMessage, setSetupMessage] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    let cancelled = false;
+    if (isTauriRuntime()) {
+      bibleListTranslations()
+        .then((list) => {
+          if (!cancelled && Array.isArray(list) && list.length > 0) {
+            setCatalog(list);
+          }
+        })
+        .catch(() => {});
+    }
+    return () => {
+      cancelled = true;
+    };
+  }, [isOpen]);
+
+  const effectiveCatalog: BibleTranslationInfo[] = useMemo(() => {
+    if (catalog.length > 0) return catalog;
+    return TRANSLATIONS.map((t) => ({
+      id: t.id,
+      name: t.name,
+      year: "Open",
+      category: "open",
+      categoryLabel: "Built-In Public Domain / Open",
+      description: t.name,
+      status: "ready",
+      provider: "open_online",
+      localFilePath: null,
+    }));
+  }, [catalog]);
+
+  const groupedCatalog = useMemo(() => {
+    const groups: { label: string; items: BibleTranslationInfo[] }[] = [];
+    const byLabel = new Map<string, BibleTranslationInfo[]>();
+    for (const item of effectiveCatalog) {
+      const arr = byLabel.get(item.categoryLabel) || [];
+      arr.push(item);
+      byLabel.set(item.categoryLabel, arr);
+    }
+    for (const [label, items] of byLabel.entries()) {
+      groups.push({ label, items });
+    }
+    return groups;
+  }, [effectiveCatalog]);
+
+  const activeCatalogEntry = useMemo(
+    () => effectiveCatalog.find((t) => t.id === translation) || effectiveCatalog[0],
+    [effectiveCatalog, translation]
+  );
   const [mode, setMode] = useState<"lookup" | "paste">("lookup");
   const [searchQuery, setSearchQuery] = useState("");
   const [customRef, setCustomRef] = useState("");
@@ -1406,12 +1459,45 @@ export const BibleLookupModal: React.FC<BibleLookupModalProps> = ({
       ? `${livePassage && livePassage.verses.length > 0 ? livePassage.reference : lookupResult.resolvedRef} (${translation})`
       : `${customRef.trim() || "Scripture"} (${translation})`;
 
-  const handleLookupOnline = async () => {
+  const handleLookupOnline = async (overrideTranslation?: string) => {
     const ref = searchQuery.trim();
+    const targetTr = overrideTranslation || translation;
     if (!ref || isOnlineLoading) return;
     setLivePassage(null);
     setIsOnlineLoading(true);
     setOnlineError(null);
+
+    if (isTauriRuntime()) {
+      try {
+        const res = await bibleLookupPassage(ref, targetTr);
+        const verses: VerseEntry[] = (res.verses || [])
+          .filter((v) => v && typeof v.text === "string" && v.text.trim().length > 0)
+          .map((v) => ({
+            verse: v.verse,
+            text: { KJV: v.text, WEB: v.text, ASV: v.text, [targetTr]: v.text },
+          }));
+        if (verses.length === 0) {
+          throw new Error("No verses returned for that reference.");
+        }
+        const chapterNum = Number(ref.split(":").shift()?.split(" ").pop()) || 0;
+        setLivePassage({
+          reference: res.reference || ref,
+          chapter: chapterNum,
+          verses,
+          source: res.source,
+          copyrightNotice: res.copyrightNotice,
+        });
+        setSelectedPreviewIndex(0);
+      } catch (err) {
+        setOnlineError(
+          err instanceof Error ? err.message : String(err || "Scripture lookup failed.")
+        );
+      } finally {
+        setIsOnlineLoading(false);
+      }
+      return;
+    }
+
     const controller = new AbortController();
     if (onlineAbortRef.current) {
       onlineAbortRef.current.abort();
@@ -1447,7 +1533,7 @@ export const BibleLookupModal: React.FC<BibleLookupModalProps> = ({
         typeof payload?.reference === "string" && payload.reference.trim().length > 0
           ? payload.reference.trim()
           : ref;
-      setLivePassage({ reference, chapter: chapterNum, verses });
+      setLivePassage({ reference, chapter: chapterNum, verses, source: "bible-api.com" });
       setSelectedPreviewIndex(0);
     } catch (err) {
       const aborted = err instanceof Error && err.name === "AbortError";
@@ -1462,6 +1548,49 @@ export const BibleLookupModal: React.FC<BibleLookupModalProps> = ({
         onlineAbortRef.current = null;
       }
       setIsOnlineLoading(false);
+    }
+  };
+
+  const handleSaveProviderKey = async (kind: "esv" | "api_bible") => {
+    const val = setupKeyInput.trim();
+    if (!val) return;
+    setSetupBusy(true);
+    setSetupMessage(null);
+    try {
+      const updated = await bibleSaveKeys(
+        kind === "esv" ? { esvApiKey: val } : { apiBibleKey: val }
+      );
+      if (updated.length > 0) setCatalog(updated);
+      setSetupKeyInput("");
+      setSetupMessage(
+        kind === "esv"
+          ? "Crossway ESV API key saved! Loading passage..."
+          : "API.Bible key saved! Loading passage..."
+      );
+      void handleLookupOnline(translation);
+    } catch (err) {
+      setSetupMessage(String(err));
+    } finally {
+      setSetupBusy(false);
+    }
+  };
+
+  const handleImportLocalBible = async () => {
+    const path = localFileInput.trim();
+    if (!path) return;
+    setSetupBusy(true);
+    setSetupMessage(null);
+    try {
+      const imported = await bibleImportLocalFile(path, translation);
+      const updated = await bibleListTranslations();
+      if (updated.length > 0) setCatalog(updated);
+      setLocalFileInput("");
+      setSetupMessage(`Imported ${imported.name} for offline use!`);
+      void handleLookupOnline(imported.id);
+    } catch (err) {
+      setSetupMessage(String(err));
+    } finally {
+      setSetupBusy(false);
     }
   };
 
@@ -1577,7 +1706,11 @@ export const BibleLookupModal: React.FC<BibleLookupModalProps> = ({
               aria-label="English Bible translation"
               value={translation}
               onChange={(e) => {
-                setTranslation(e.target.value as BibleTranslation);
+                const next = e.target.value as BibleTranslation;
+                setTranslation(next);
+                setLivePassage(null);
+                setOnlineError(null);
+                setSetupMessage(null);
                 setSelectedPreviewIndex(0);
               }}
               style={{
@@ -1589,13 +1722,30 @@ export const BibleLookupModal: React.FC<BibleLookupModalProps> = ({
                 fontSize: 12,
                 fontWeight: 700,
                 cursor: "pointer",
-                maxWidth: 310,
+                maxWidth: 340,
               }}
             >
-              {TRANSLATIONS.map((tr) => (
-                <option key={tr.id} value={tr.id}>
-                  {tr.id} — {tr.name}
-                </option>
+              {groupedCatalog.map((grp) => (
+                <optgroup key={grp.label} label={grp.label}>
+                  {grp.items.map((tr) => {
+                    const tag =
+                      tr.provider === "local"
+                        ? " [Local Offline]"
+                        : tr.status === "ready"
+                          ? " [Ready]"
+                          : tr.status === "needs_esv_key"
+                            ? " [Free ESV Key]"
+                            : tr.status === "needs_api_bible_key"
+                              ? " [API.Bible Key]"
+                              : " [Import File]";
+                    return (
+                      <option key={tr.id} value={tr.id}>
+                        {tr.id} — {tr.name}
+                        {tag}
+                      </option>
+                    );
+                  })}
+                </optgroup>
               ))}
             </select>
             <button
@@ -1614,6 +1764,151 @@ export const BibleLookupModal: React.FC<BibleLookupModalProps> = ({
             </button>
           </div>
         </div>
+
+        {/* Inline Translation Setup Banner (ESV API Key / API.Bible Key / Local File Import) */}
+        {activeCatalogEntry && activeCatalogEntry.status !== "ready" && (
+          <div
+            style={{
+              padding: "10px 12px",
+              background: "rgba(30, 41, 59, 0.85)",
+              border: "1px solid rgba(245, 158, 11, 0.45)",
+              borderRadius: 10,
+              display: "flex",
+              flexDirection: "column",
+              gap: 8,
+              flexShrink: 0,
+            }}
+          >
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
+              <div style={{ fontSize: 12, color: "#FDE68A", fontWeight: 700 }}>
+                {activeCatalogEntry.name} ({activeCatalogEntry.year}) —{" "}
+                <span style={{ color: "#CBD5E1", fontWeight: 500 }}>{activeCatalogEntry.description}</span>
+              </div>
+            </div>
+
+            {activeCatalogEntry.status === "needs_esv_key" && (
+              <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                <Key size={14} color="#FBBF24" />
+                <input
+                  type="password"
+                  value={setupKeyInput}
+                  onChange={(e) => setSetupKeyInput(e.target.value)}
+                  placeholder="Paste free Crossway ESV API token (from api.esv.org)..."
+                  aria-label="Crossway ESV API token"
+                  style={{
+                    flex: 1,
+                    minWidth: 220,
+                    background: "#0B0F17",
+                    border: "1px solid #334155",
+                    borderRadius: 6,
+                    padding: "6px 10px",
+                    color: "#F8FAFC",
+                    fontSize: 12,
+                  }}
+                />
+                <button
+                  type="button"
+                  disabled={setupBusy || !setupKeyInput.trim()}
+                  onClick={() => void handleSaveProviderKey("esv")}
+                  style={{
+                    background: "#D97706",
+                    border: "1px solid #F59E0B",
+                    color: "#FFFFFF",
+                    borderRadius: 6,
+                    padding: "6px 12px",
+                    fontSize: 12,
+                    fontWeight: 700,
+                    cursor: "pointer",
+                  }}
+                >
+                  {setupBusy ? "Saving..." : "Save & Unlock ESV"}
+                </button>
+              </div>
+            )}
+
+            {activeCatalogEntry.status === "needs_api_bible_key" && (
+              <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                <Key size={14} color="#38BDF8" />
+                <input
+                  type="password"
+                  value={setupKeyInput}
+                  onChange={(e) => setSetupKeyInput(e.target.value)}
+                  placeholder="Paste free API.Bible key (from scripture.api.bible)..."
+                  aria-label="API.Bible key"
+                  style={{
+                    flex: 1,
+                    minWidth: 220,
+                    background: "#0B0F17",
+                    border: "1px solid #334155",
+                    borderRadius: 6,
+                    padding: "6px 10px",
+                    color: "#F8FAFC",
+                    fontSize: 12,
+                  }}
+                />
+                <button
+                  type="button"
+                  disabled={setupBusy || !setupKeyInput.trim()}
+                  onClick={() => void handleSaveProviderKey("api_bible")}
+                  style={{
+                    background: "#0284C7",
+                    border: "1px solid #38BDF8",
+                    color: "#FFFFFF",
+                    borderRadius: 6,
+                    padding: "6px 12px",
+                    fontSize: 12,
+                    fontWeight: 700,
+                    cursor: "pointer",
+                  }}
+                >
+                  {setupBusy ? "Saving..." : "Save API.Bible Key"}
+                </button>
+              </div>
+            )}
+
+            <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+              <Upload size={14} color="#34D399" />
+              <input
+                type="text"
+                value={localFileInput}
+                onChange={(e) => setLocalFileInput(e.target.value)}
+                placeholder={`Or import local ${activeCatalogEntry.id} file path (Zefania .xml / OSIS .osis / OpenSong .xmm / .json)...`}
+                aria-label="Local Bible file path"
+                style={{
+                  flex: 1,
+                  minWidth: 220,
+                  background: "#0B0F17",
+                  border: "1px solid #334155",
+                  borderRadius: 6,
+                  padding: "6px 10px",
+                  color: "#F8FAFC",
+                  fontSize: 12,
+                }}
+              />
+              <button
+                type="button"
+                disabled={setupBusy || !localFileInput.trim()}
+                onClick={() => void handleImportLocalBible()}
+                style={{
+                  background: "#059669",
+                  border: "1px solid #10B981",
+                  color: "#FFFFFF",
+                  borderRadius: 6,
+                  padding: "6px 12px",
+                  fontSize: 12,
+                  fontWeight: 700,
+                  cursor: "pointer",
+                }}
+              >
+                {setupBusy ? "Importing..." : `Import ${activeCatalogEntry.id} Offline`}
+              </button>
+            </div>
+
+            {setupMessage && (
+              <div style={{ fontSize: 11.5, color: "#6EE7B7" }}>{setupMessage}</div>
+            )}
+          </div>
+        )}
 
         {/* Mode Tabs & Slide Pacing Bar */}
         <div
@@ -1809,7 +2104,7 @@ export const BibleLookupModal: React.FC<BibleLookupModalProps> = ({
                 <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", flexShrink: 0 }}>
                   <button
                     type="button"
-                    onClick={handleLookupOnline}
+                    onClick={() => void handleLookupOnline()}
                     disabled={isOnlineLoading || !searchQuery.trim()}
                     style={{
                       display: "flex",

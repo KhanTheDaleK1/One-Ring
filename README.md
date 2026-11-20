@@ -1,4 +1,4 @@
-# One Ring — Unified Production Suite (`v0.3.8-alpha`)
+# One Ring — Unified Production Suite (`v0.3.9-alpha`)
 
 A clean-slate, cross-platform (**Windows, macOS & Linux**) desktop production suite built with **Tauri v2, Rust, React, and TypeScript**. One Ring unifies church and live-production workflows — slides, broadcast compositing, live stream telemetry & audience chat, zero-popup native window/display capture, multi-camera PTZ switching, audio mixing, AoIP routing, and IP video routing — inside one customizable interface.
 
@@ -62,3 +62,9 @@ Customize your active canvas title (e.g., `"Main Sanctuary"`) and re-order, show
 - [docs/ROADMAP_TO_100.md](./docs/ROADMAP_TO_100.md) — Phased parity tracking across all production domains
 - [docs/UX_DESIGN.md](./docs/UX_DESIGN.md) — Canvas UX & operator guardrails
 - [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md) — Apache 2.0 upstream open-source attributions
+
+### What's New in v0.3.9-alpha
+- **41+ Translation Multi-Provider Bible Engine:** Categorized dropdown across all 6 translation families (Word-for-Word, Thought-for-Thought, Paraphrases, Catholic & Orthodox Canons, Jewish Tanakh, Historical Predecessors), live open-license lookup (`helloao.org` + `bible-api.com`), inline official Crossway ESV API & API.Bible key setup, and local offline XML/OSIS/Zefania/OpenSong/JSON importer.
+- **One-Click Runtime Installers:** Fixed Windows OpenCode CLI installer (official GitHub release zip) + added one-click standalone FFmpeg installer (`~/.onering/bin` auto-discovery).
+- **Song & Lyric Search Polish:** Unified into 1 universal search bar + smart word-boundary line-balancing with a persistent `2 / 4 lines per slide` toggle.
+- **Legal & Security Compliance:** Added `PRIVACY.md` (US + GDPR), `TERMS.md`, `SECURITY.md`, `PRODUCT.md`, expanded `THIRD_PARTY_NOTICES.md`, and path-traversal hardening on local Bible imports.

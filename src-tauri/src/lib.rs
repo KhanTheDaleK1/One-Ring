@@ -3601,6 +3601,92 @@ async fn install_ffmpeg_runtime(
     Ok(runtime::broadcast_daemon::probe_media_engine_status(&supervisor))
 }
 
+
+#[tauri::command]
+fn bible_list_translations(
+    state: State<'_, ManagedState>,
+) -> Vec<runtime::bible_engine::BibleTranslationInfo> {
+    let cfg = {
+        let guard = state.inner.lock().unwrap();
+        runtime::bible_engine::BibleProviderConfig {
+            esv_api_key: guard.settings.slides.esv_api_key.clone(),
+            api_bible_key: guard.settings.slides.api_bible_key.clone(),
+            local_bibles_dir: guard.settings.slides.local_bibles_dir.clone(),
+        }
+    };
+    runtime::bible_engine::list_translations(&cfg)
+}
+
+#[tauri::command]
+async fn bible_lookup_passage(
+    reference: String,
+    translation_id: String,
+    state: State<'_, ManagedState>,
+) -> Result<runtime::bible_engine::BiblePassageResult, String> {
+    let cfg = {
+        let guard = state.inner.lock().unwrap();
+        runtime::bible_engine::BibleProviderConfig {
+            esv_api_key: guard.settings.slides.esv_api_key.clone(),
+            api_bible_key: guard.settings.slides.api_bible_key.clone(),
+            local_bibles_dir: guard.settings.slides.local_bibles_dir.clone(),
+        }
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        runtime::bible_engine::lookup_passage(&reference, &translation_id, &cfg)
+    })
+    .await
+    .map_err(|e| format!("Bible lookup task failed: {e}"))?
+}
+
+#[tauri::command]
+async fn bible_import_local_file(
+    file_path: String,
+    translation_code: Option<String>,
+    state: State<'_, ManagedState>,
+) -> Result<runtime::bible_engine::BibleTranslationInfo, String> {
+    let local_dir = {
+        let guard = state.inner.lock().unwrap();
+        guard.settings.slides.local_bibles_dir.clone()
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        runtime::bible_engine::import_local_bible_file(
+            &file_path,
+            translation_code.as_deref(),
+            &local_dir,
+        )
+    })
+    .await
+    .map_err(|e| format!("Bible import task failed: {e}"))?
+}
+
+#[tauri::command]
+fn bible_save_keys(
+    esv_api_key: Option<String>,
+    api_bible_key: Option<String>,
+    local_bibles_dir: Option<String>,
+    state: State<'_, ManagedState>,
+) -> Vec<runtime::bible_engine::BibleTranslationInfo> {
+    let cfg = {
+        let mut guard = state.inner.lock().unwrap();
+        if let Some(k) = esv_api_key {
+            guard.settings.slides.esv_api_key = k.trim().to_string();
+        }
+        if let Some(k) = api_bible_key {
+            guard.settings.slides.api_bible_key = k.trim().to_string();
+        }
+        if let Some(d) = local_bibles_dir {
+            guard.settings.slides.local_bibles_dir = d.trim().to_string();
+        }
+        runtime::bible_engine::BibleProviderConfig {
+            esv_api_key: guard.settings.slides.esv_api_key.clone(),
+            api_bible_key: guard.settings.slides.api_bible_key.clone(),
+            local_bibles_dir: guard.settings.slides.local_bibles_dir.clone(),
+        }
+    };
+    let _ = state.save_settings();
+    runtime::bible_engine::list_translations(&cfg)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -3856,7 +3942,11 @@ pub fn run() {
             ai_assistant_status,
             ai_assistant_chat,
             install_opencode_cli,
-            install_ffmpeg_runtime
+            install_ffmpeg_runtime,
+            bible_list_translations,
+            bible_lookup_passage,
+            bible_import_local_file,
+            bible_save_keys
         ])
         .build(tauri::generate_context!())
         .expect("error while building One Ring")

@@ -46,6 +46,54 @@ function cleanImportedLine(raw: string): string {
     .trim();
 }
 
+/** Split an oversized lyric line at the word boundary closest to its midpoint. */
+function splitLineAtMidpoint(line: string): [string, string] | null {
+  const words = line.split(/\s+/).filter(Boolean);
+  if (words.length < 2) return null;
+  const midpoint = line.length / 2;
+  let bestCount = 1;
+  let bestDelta = Math.abs(words[0].length - midpoint);
+  let leftLength = words[0].length;
+  for (let count = 2; count < words.length; count++) {
+    leftLength += 1 + words[count - 1].length;
+    const delta = Math.abs(leftLength - midpoint);
+    if (delta < bestDelta) {
+      bestDelta = delta;
+      bestCount = count;
+    }
+  }
+  return [words.slice(0, bestCount).join(" "), words.slice(bestCount).join(" ")];
+}
+
+/**
+ * Reflow raw lyrics into visual lines that fit cleanly on a slide. Any line longer
+ * than maxCharsPerLine is halved at the nearest word boundary and rechecked
+ * recursively, so each returned line is short enough to render on one visual line.
+ */
+export function balanceLyricLines(raw: string, maxCharsPerLine = 46): string[] {
+  const balanced: string[] = [];
+  const appendLine = (line: string): void => {
+    if (line.length <= maxCharsPerLine) {
+      balanced.push(line);
+      return;
+    }
+    const halves = splitLineAtMidpoint(line);
+    if (!halves) {
+      // A single word longer than the limit cannot be split without breaking it.
+      balanced.push(line);
+      return;
+    }
+    appendLine(halves[0]);
+    appendLine(halves[1]);
+  };
+
+  for (const rawLine of raw.split(/\r?\n/)) {
+    const line = cleanImportedLine(rawLine);
+    if (line) appendLine(line);
+  }
+  return balanced;
+}
+
 function sectionLabel(raw: string): string {
   const value = (raw || "").trim();
   const match = value.match(/^([A-Za-z]+)\s*(\d*)$/);
@@ -1724,17 +1772,17 @@ export const SlidesCanvasView: React.FC<SlidesCanvasViewProps> = ({
         onClose={() => setShowSongCatalogModal(false)}
         licenseNumber={state.settings?.slides?.songLibraryClientId || "Public Domain"}
         serviceSongTitles={(state.slides.songs || []).map((s) => s.title)}
-        onImportSong={(song: SongLibraryResult) => {
-          const lines = song.lyricsPreview.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+        onImportSong={(song: SongLibraryResult, linesPerSlide: 2 | 4 = 2) => {
+          const lines = balanceLyricLines(song.lyricsPreview);
           const importedSlides: SlideCue[] = [];
-          for (let i = 0; i < lines.length; i += 2) {
+          for (let i = 0; i < lines.length; i += linesPerSlide) {
             const num = importedSlides.length + 1;
             importedSlides.push({
               id: `songLibrary-${song.songNumber}-${num}`,
               number: num,
               section: "Verse",
               title: `${song.title} - ${num}`,
-              text: lines.slice(i, i + 2).join("\n"),
+              text: lines.slice(i, i + linesPerSlide).join("\n"),
               kind: "lyrics",
             });
           }

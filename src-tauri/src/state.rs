@@ -426,6 +426,12 @@ pub struct SlidesSettings {
     pub song_library_client_id: String,
     pub song_library_client_secret: String,
     pub display_assignments: DisplayAssignments,
+    #[serde(default)]
+    pub esv_api_key: String,
+    #[serde(default)]
+    pub api_bible_key: String,
+    #[serde(default)]
+    pub local_bibles_dir: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

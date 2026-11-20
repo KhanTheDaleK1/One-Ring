@@ -28,11 +28,12 @@ export interface SongLibraryResult {
 interface SongCatalogModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onImportSong: (song: SongLibraryResult) => void;
+  onImportSong: (song: SongLibraryResult, linesPerSlide?: LinesPerSlide) => void;
   licenseNumber?: string;
   serviceSongTitles?: string[];
 }
 
+type LinesPerSlide = 2 | 4;
 type SourceFilter = "all" | "online" | "local" | "public-domain";
 type SourceKind = "online" | "local" | "public-domain";
 
@@ -49,6 +50,7 @@ interface Notice {
 }
 
 const LOCAL_FOLDER_STORAGE_KEY = "onering_local_song_folder";
+const LINES_PER_SLIDE_STORAGE_KEY = "onering_song_lines_per_slide";
 
 const FILTERS: Array<{ id: SourceFilter; label: string }> = [
   { id: "all", label: "All" },
@@ -898,6 +900,13 @@ export const SongCatalogModal: React.FC<SongCatalogModalProps> = ({
   const [notice, setNotice] = useState<Notice | null>(null);
   const [folderExpanded, setFolderExpanded] = useState(false);
   const [refreshToken, setRefreshToken] = useState(0);
+  const [linesPerSlide, setLinesPerSlide] = useState<LinesPerSlide>(() => {
+    try {
+      return localStorage.getItem(LINES_PER_SLIDE_STORAGE_KEY) === "4" ? 4 : 2;
+    } catch {
+      return 2;
+    }
+  });
   const [localFolder, setLocalFolder] = useState(() => {
     try {
       return localStorage.getItem(LOCAL_FOLDER_STORAGE_KEY) ?? "";
@@ -967,6 +976,15 @@ export const SongCatalogModal: React.FC<SongCatalogModalProps> = ({
     }
   };
 
+  const updateLinesPerSlide = (value: LinesPerSlide) => {
+    setLinesPerSlide(value);
+    try {
+      localStorage.setItem(LINES_PER_SLIDE_STORAGE_KEY, String(value));
+    } catch {
+      // Restricted webviews may block storage; the in-memory value still works for this session.
+    }
+  };
+
   const handleSearch = (event: React.FormEvent) => {
     event.preventDefault();
     const trimmed = searchTerm.trim();
@@ -980,7 +998,7 @@ export const SongCatalogModal: React.FC<SongCatalogModalProps> = ({
   };
 
   const handleImport = (entry: CatalogEntry) => {
-    onImportSong(entry.song);
+    onImportSong(entry.song, linesPerSlide);
     setImportedKeys(new Set([...importedKeys, entry.key]));
   };
 
@@ -1104,36 +1122,74 @@ export const SongCatalogModal: React.FC<SongCatalogModalProps> = ({
             </button>
           </form>
 
-          <div
-            role="group"
-            aria-label="Search source filter"
-            style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 12 }}
-          >
-            {FILTERS.map((option) => {
-              const active = filter === option.id;
-              return (
-                <button
-                  key={option.id}
-                  type="button"
-                  onClick={() => setFilter(option.id)}
-                  aria-pressed={active}
-                  className="btn"
-                  style={{
-                    height: 30,
-                    padding: "0 12px",
-                    borderRadius: 999,
-                    fontSize: 12,
-                    fontWeight: 600,
-                    cursor: "pointer",
-                    backgroundColor: active ? "#0369A1" : "#1F2937",
-                    border: `1px solid ${active ? "#38BDF8" : "#374151"}`,
-                    color: active ? "#F0F9FF" : "#9CA3AF",
-                  }}
-                >
-                  {option.label}
-                </button>
-              );
-            })}
+          <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", marginTop: 12 }}>
+            <div
+              role="group"
+              aria-label="Search source filter"
+              style={{ display: "flex", gap: 6, flexWrap: "wrap" }}
+            >
+              {FILTERS.map((option) => {
+                const active = filter === option.id;
+                return (
+                  <button
+                    key={option.id}
+                    type="button"
+                    onClick={() => setFilter(option.id)}
+                    aria-pressed={active}
+                    className="btn"
+                    style={{
+                      height: 30,
+                      padding: "0 12px",
+                      borderRadius: 999,
+                      fontSize: 12,
+                      fontWeight: 600,
+                      cursor: "pointer",
+                      backgroundColor: active ? "#0369A1" : "#1F2937",
+                      border: `1px solid ${active ? "#38BDF8" : "#374151"}`,
+                      color: active ? "#F0F9FF" : "#9CA3AF",
+                    }}
+                  >
+                    {option.label}
+                  </button>
+                );
+              })}
+            </div>
+
+            <div
+              role="group"
+              aria-label="Lines per slide"
+              style={{ display: "flex", alignItems: "center", gap: 6 }}
+            >
+              <span style={{ fontSize: 11, fontWeight: 600, color: "#9CA3AF", whiteSpace: "nowrap" }}>
+                Lines / slide
+              </span>
+              {([2, 4] as LinesPerSlide[]).map((value) => {
+                const active = linesPerSlide === value;
+                return (
+                  <button
+                    key={value}
+                    type="button"
+                    onClick={() => updateLinesPerSlide(value)}
+                    aria-pressed={active}
+                    title={`Chunk imported lyrics into ${value} lines per slide`}
+                    className="btn"
+                    style={{
+                      height: 26,
+                      padding: "0 10px",
+                      borderRadius: 999,
+                      fontSize: 11,
+                      fontWeight: 700,
+                      cursor: "pointer",
+                      backgroundColor: active ? "#1D4ED8" : "#1F2937",
+                      border: `1px solid ${active ? "#60A5FA" : "#374151"}`,
+                      color: active ? "#EFF6FF" : "#9CA3AF",
+                    }}
+                  >
+                    {value} lines
+                  </button>
+                );
+              })}
+            </div>
           </div>
 
           {/* Compact, collapsible local folder configuration (non-secret path only) */}

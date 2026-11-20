@@ -1206,7 +1206,7 @@ export async function checkForUpdate(): Promise<UpdateInfo | null> {
       const releases = await resp.json();
       if (!releases || releases.length === 0) return null;
       const latest = releases[0];
-      const currentVersion = "0.3.8";
+      const currentVersion = "0.3.9";
       const latestTag: string = latest.tag_name || "";
       const updateAvailable = latestTag.replace(/^v/, "") !== currentVersion.replace(/^v/, "");
       return {
@@ -1325,7 +1325,7 @@ export async function recordFrontendCrash(
   const report: CrashReportSummary = {
     id: `frontend-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
     timestampUtc: new Date().toISOString(),
-    appVersion: "0.3.8",
+    appVersion: "0.3.9",
     os: "preview",
     arch: "preview",
     kind: "frontend",
@@ -2424,4 +2424,78 @@ export async function installFfmpegRuntime(): Promise<MediaEngineStatus> {
     throw new Error("One-click FFmpeg installation requires the One Ring desktop app.");
   }
   return invokeTauri<MediaEngineStatus>("install_ffmpeg_runtime");
+}
+
+export interface BibleTranslationInfo {
+  id: string;
+  name: string;
+  year: string;
+  category: string;
+  categoryLabel: string;
+  description: string;
+  status: "ready" | "needs_esv_key" | "needs_api_bible_key" | "needs_local_file" | string;
+  provider: "local" | "open_online" | "esv_api" | "api_bible" | "local_import" | string;
+  localFilePath?: string | null;
+}
+
+export interface BibleVerseItem {
+  verse: number;
+  text: string;
+}
+
+export interface BiblePassageResult {
+  reference: string;
+  translationId: string;
+  translationName: string;
+  source: string;
+  copyrightNotice: string;
+  verses: BibleVerseItem[];
+}
+
+export async function bibleListTranslations(): Promise<BibleTranslationInfo[]> {
+  if (isTauri()) {
+    return invokeTauri<BibleTranslationInfo[]>("bible_list_translations");
+  }
+  return [];
+}
+
+export async function bibleLookupPassage(
+  reference: string,
+  translationId: string
+): Promise<BiblePassageResult> {
+  if (isTauri()) {
+    return invokeTauri<BiblePassageResult>("bible_lookup_passage", {
+      reference,
+      translationId,
+    });
+  }
+  throw new Error("Live multi-provider Bible lookup requires the desktop runtime.");
+}
+
+export async function bibleImportLocalFile(
+  filePath: string,
+  translationCode?: string
+): Promise<BibleTranslationInfo> {
+  if (isTauri()) {
+    return invokeTauri<BibleTranslationInfo>("bible_import_local_file", {
+      filePath,
+      translationCode: translationCode ?? null,
+    });
+  }
+  throw new Error("Local Bible file import requires the desktop runtime.");
+}
+
+export async function bibleSaveKeys(params: {
+  esvApiKey?: string;
+  apiBibleKey?: string;
+  localBiblesDir?: string;
+}): Promise<BibleTranslationInfo[]> {
+  if (isTauri()) {
+    return invokeTauri<BibleTranslationInfo[]>("bible_save_keys", {
+      esvApiKey: params.esvApiKey ?? null,
+      apiBibleKey: params.apiBibleKey ?? null,
+      localBiblesDir: params.localBiblesDir ?? null,
+    });
+  }
+  return [];
 }

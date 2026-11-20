@@ -443,6 +443,9 @@ export interface SlidesSettings {
   songLibraryClientId: string;
   songLibraryClientSecret: string;
   displayAssignments: DisplayAssignments;
+  esvApiKey?: string;
+  apiBibleKey?: string;
+  localBiblesDir?: string;
 }
 
 export interface CameraPresetName {

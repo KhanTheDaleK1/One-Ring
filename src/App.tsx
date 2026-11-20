@@ -298,10 +298,10 @@ export const App: React.FC = () => {
         } else {
           // Provide fallback about info even if offline
           setAvailableUpdate({
-            current_version: "0.3.8",
-            latest_version: "v0.3.8-alpha",
+            current_version: "0.3.9",
+            latest_version: "v0.3.9-alpha",
             release_name: "One Ring — Church Production Suite",
-            release_notes: "You are running One Ring v0.3.8-alpha. All systems up to date.",
+            release_notes: "You are running One Ring v0.3.9-alpha. All systems up to date.",
             published_at: new Date().toISOString(),
             html_url: UPDATE_REPO_URL,
             download_url: null,
@@ -1833,9 +1833,9 @@ export const App: React.FC = () => {
                 setAvailableUpdate(info);
               } else {
                 setAvailableUpdate({
-                  current_version: "0.3.8",
-                  latest_version: "v0.3.8-alpha",
-                  release_name: "One Ring v0.3.8-alpha",
+                  current_version: "0.3.9",
+                  latest_version: "v0.3.9-alpha",
+                  release_name: "One Ring v0.3.9-alpha",
                   release_notes: "You are running the latest version. All systems are up to date.",
                   published_at: new Date().toISOString(),
                   html_url: `${UPDATE_REPO_URL}/releases`,

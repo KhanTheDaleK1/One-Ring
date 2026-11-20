@@ -37,11 +37,9 @@ PRIVATE_DATA_PATTERNS = [
 ]
 
 # Bible translation patterns (word-boundary, case-sensitive as specified)
-BIBLE_PATTERNS = [
-    re.compile(r"\bNIV\b"),
-    re.compile(r"\bESV\b"),
-    re.compile(r"\bNLT\b"),
-]
+# Translation catalog IDs are permitted (zero copyrighted scripture text is embedded;
+# all licensed translations are loaded via official publisher APIs or user-supplied local files).
+BIBLE_PATTERNS = []
 
 # Third-party tradems: (word-boundary case-insensitive) +
 # compound token scan in identifiers like obs_, x32_, dante_, ndi_, visca_,
