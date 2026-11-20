@@ -1716,51 +1716,64 @@ export const App: React.FC = () => {
         isOpen={showAiDrawer}
         onClose={() => setShowAiDrawer(false)}
         state={state}
-        onApplySong={(title, slides) => {
+        onApplySong={(title, rawSlides) => {
+          const songId = `song_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+          const normalizedSlides: SlideCue[] = rawSlides.map((s, idx) => ({
+            id: typeof s.id === "string" && s.id.trim() ? s.id : `${songId}_${idx + 1}`,
+            number: idx + 1,
+            section: typeof s.section === "string" && s.section.trim() ? s.section : "Verse",
+            title: typeof s.title === "string" && s.title.trim() ? s.title : `${title} - ${idx + 1}`,
+            text: String(s.text ?? ""),
+            kind: s.kind || "lyrics",
+          }));
           setState((prev) => {
             if (!prev) return prev;
-            const newSong = {
-              id: `ai-song-${Date.now()}`,
-              title,
-              slides,
-            };
-            const nextSongs = [...(prev.slides.songs || []), newSong];
+            const newSong = { id: songId, title, slides: normalizedSlides };
             const nextSlidesState = {
               ...prev.slides,
-              songs: nextSongs,
-              activeSongId: newSong.id,
-              slides,
+              presentationName: title,
+              activeSongId: songId,
+              songs: [...(prev.slides.songs || []), newSong],
               currentSlide: 1,
-              totalSlides: slides.length,
-              currentTitle: slides[0]?.title || title,
+              totalSlides: normalizedSlides.length,
+              currentText: normalizedSlides[0]?.text || "",
+              nextText: normalizedSlides[1]?.text || "",
+              cleared: false,
+              slides: normalizedSlides,
             };
             void bridge.syncWorkspaceState({ slides: nextSlidesState }).catch(() => {});
+            emitLanSync("slide_changed", { slides: nextSlidesState });
             return { ...prev, slides: nextSlidesState };
           });
         }}
-        onApplyScripture={(reference, slides) => {
+        onApplyScripture={(reference, rawSlides) => {
+          const songId = `scripture_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+          const normalizedSlides: SlideCue[] = (rawSlides.length > 0 ? rawSlides : [{ id: `${songId}_1`, number: 1, section: reference, title: reference, text: reference, kind: "scripture" as const }]).map((s, idx) => ({
+            id: typeof s.id === "string" && s.id.trim() ? s.id : `${songId}_${idx + 1}`,
+            number: idx + 1,
+            section: typeof s.section === "string" && s.section.trim() ? s.section : reference,
+            title: typeof s.title === "string" && s.title.trim() ? s.title : `${reference} - ${idx + 1}`,
+            text: String(s.text ?? reference),
+            kind: "scripture" as const,
+          }));
           setState((prev) => {
             if (!prev) return prev;
-            // Add scripture slides at the beginning, similar to onApplySong pattern.
-            const newScriptureSlide: SlideCue = {
-              id: `ai-scripture-${Date.now()}`,
-              number: 1,
-              section: reference,
-              title: reference,
-              text: slides[0]?.text || reference,
-              kind: "scripture",
-            };
-            // Insert at the beginning of the slides array
+            const newItem = { id: songId, title: reference, slides: normalizedSlides };
             const nextSlidesState = {
               ...prev.slides,
-              slides: [newScriptureSlide, ...(prev.slides.slides || [])],
+              presentationName: reference,
+              activeSongId: songId,
+              songs: [...(prev.slides.songs || []), newItem],
               currentSlide: 1,
-              totalSlides: 1 + ((prev.slides.slides || [])?.length || 0),
-              currentText: newScriptureSlide.text,
-              nextText: slides[1]?.text || "",
+              totalSlides: normalizedSlides.length,
+              currentText: normalizedSlides[0]?.text || "",
+              nextText: normalizedSlides[1]?.text || "",
+              cleared: false,
+              slides: normalizedSlides,
             };
             void bridge.syncWorkspaceState({ slides: nextSlidesState }).catch(() => {});
-            return { ...prev, slides: nextSlidesState as AppStateSnapshot["slides"] };
+            emitLanSync("slide_changed", { slides: nextSlidesState });
+            return { ...prev, slides: nextSlidesState };
           });
         }}
         onApplyTheme={(patch) => {

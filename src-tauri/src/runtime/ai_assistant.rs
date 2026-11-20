@@ -372,47 +372,43 @@ fn enrich_assistant_actions(
             match search_song_lyrics(&title, if artist.is_empty() { None } else { Some(&artist.as_str()) }, true) {
                 Ok(lyric_results) => {
                     if let Some(song) = lyric_results.first() {
-                        // Get the lyrics and split into clean, word-boundary-balanced lines
-                        let lyrics = &song.lyrics;
-                        let lines: Vec<&str> = lyrics.lines().map(|l| l.trim()).filter(|l| !l.is_empty()).collect();
-
-                        // Balance lines into groups of `linesPerSlide` lines, respecting word boundaries
+                        // Split each raw lyric line cleanly at word boundaries (~46 chars) without merging separate lines
                         let mut balanced_lines: Vec<String> = Vec::new();
-                        let mut current_line_set: Vec<String> = Vec::new();
-                        let mut current_chars = 0usize;
-
-                        for line in lines {
-                            let line_len = line.chars().count();
-                            // If adding this line would exceed ~46 chars or we have a full set, finalize current set
-                            if current_chars + line_len > 46 && !current_line_set.is_empty() {
-                                // Join the current set into a single line text
-                                let text = current_line_set.join(" ");
-                                balanced_lines.push(text);
-                                current_line_set = Vec::new();
-                                current_chars = 0;
+                        for raw_line in song.lyrics.lines().map(|l| l.trim()).filter(|l| !l.is_empty()) {
+                            if raw_line.chars().count() <= 46 {
+                                balanced_lines.push(raw_line.to_string());
+                            } else {
+                                let mut cur = String::new();
+                                for word in raw_line.split_whitespace() {
+                                    if !cur.is_empty() && cur.chars().count() + 1 + word.chars().count() > 46 {
+                                        balanced_lines.push(cur);
+                                        cur = word.to_string();
+                                    } else {
+                                        if !cur.is_empty() {
+                                            cur.push(' ');
+                                        }
+                                        cur.push_str(word);
+                                    }
+                                }
+                                if !cur.is_empty() {
+                                    balanced_lines.push(cur);
+                                }
                             }
-                            current_line_set.push(line.to_string());
-                            current_chars += line_len;
-                        }
-                        // Flush remaining lines
-                        if !current_line_set.is_empty() {
-                            let text = current_line_set.join(" ");
-                            balanced_lines.push(text);
                         }
 
-                        // Chunk into slides of 2 lines per slide (or 4 if linesPerSlide suggests)
+                        let per_slide = (lines_per_slide as usize).clamp(1, 6);
                         let slides: Vec<serde_json::Value> = balanced_lines
-                            .chunks(lines_per_slide as usize)
+                            .chunks(per_slide)
                             .enumerate()
                             .map(|(i, chunk)| {
-                                let section = if chunk.len() == 1 {
-                                    "Verse".to_string()
-                                } else {
-                                    format!("Chorus/Verse {}", i + 1)
-                                };
+                                let num = (i + 1) as u32;
                                 serde_json::json!({
-                                    "section": section,
-                                    "text": chunk.join("\n")
+                                    "id": format!("ai-song-{}-{}", song.id, num),
+                                    "number": num,
+                                    "section": "Verse",
+                                    "title": format!("{} - {}", title, num),
+                                    "text": chunk.join("\n"),
+                                    "kind": "lyrics"
                                 })
                             })
                             .collect();
@@ -459,10 +455,15 @@ fn enrich_assistant_actions(
                         .chunks(2)
                         .enumerate()
                         .map(|(i, chunk)| {
+                            let num = (i + 1) as u32;
                             let ref_str = passage.reference.clone();
                             serde_json::json!({
-                                "section": format!("{} {:?}", ref_str, i + 1),
-                                "text": chunk.join(" ")
+                                "id": format!("ai-scripture-{}", num),
+                                "number": num,
+                                "section": format!("{} ({})", ref_str, translation),
+                                "title": format!("{} • Slide {}", ref_str, num),
+                                "text": format!("{}\n— {} ({})", chunk.join(" "), ref_str, translation),
+                                "kind": "scripture"
                             })
                         })
                         .collect();

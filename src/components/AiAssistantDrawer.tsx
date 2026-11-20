@@ -186,11 +186,19 @@ export const AiAssistantDrawer: React.FC<AiAssistantDrawerProps> = ({
     } else if (action.kind === "add_song") {
       // If the backend enrichment already provided pre-resolved slides, use them.
       // Otherwise, fall back to searching for lyrics in the frontend.
-      const slides = p.slides as SlideCue[] | undefined;
-      if (slides && slides.length > 0) {
+      const rawSlides = Array.isArray(p.slides) ? (p.slides as Partial<SlideCue>[]) : undefined;
+      if (rawSlides && rawSlides.length > 0) {
         const title = String(p.title ?? "New Song").trim();
-        const artist = String(p.artist ?? "").trim();
-        onApplySong(title, slides);
+        const ts = Date.now();
+        const normalized: SlideCue[] = rawSlides.map((s, idx) => ({
+          id: typeof s.id === "string" && s.id.trim() ? s.id : `ai-song-${ts}-${idx + 1}`,
+          number: typeof s.number === "number" && s.number > 0 ? s.number : idx + 1,
+          section: typeof s.section === "string" && s.section.trim() ? s.section : "Verse",
+          title: typeof s.title === "string" && s.title.trim() ? s.title : `${title} - ${idx + 1}`,
+          text: String(s.text ?? ""),
+          kind: s.kind || "lyrics",
+        }));
+        onApplySong(title, normalized);
       } else {
         // No pre-resolved slides (e.g. browser preview mode) — search for lyrics frontend.
         const title = String(p.title ?? "New Song").trim();
