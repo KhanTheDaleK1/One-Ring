@@ -206,7 +206,7 @@ pub fn install_opencode_cli() -> Result<AiAssistantStatus, String> {
             "-ExecutionPolicy",
             "Bypass",
             "-Command",
-            "irm https://opencode.ai/install.ps1 | iex",
+            r#"$ErrorActionPreference = 'Stop'; $arch = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'arm64' } else { 'x64' }; $url = "https://github.com/anomalyco/opencode/releases/latest/download/opencode-windows-$arch.zip"; $dest = Join-Path $env:USERPROFILE '.opencode\bin'; New-Item -ItemType Directory -Force -Path $dest | Out-Null; $zip = Join-Path $env:TEMP "opencode-install-$PID.zip"; $stage = Join-Path $env:TEMP "opencode-stage-$PID"; Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile $zip -TimeoutSec 60; Expand-Archive -Force -Path $zip -DestinationPath $stage; $exe = Get-ChildItem -Path $stage -Recurse -Filter 'opencode.exe' | Select-Object -First 1; if (-not $exe) { throw 'opencode.exe not found in downloaded archive' }; Copy-Item -Force $exe.FullName (Join-Path $dest 'opencode.exe'); Remove-Item -Force -ErrorAction SilentlyContinue $zip; Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $stage"#,
         ])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
