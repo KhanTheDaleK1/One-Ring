@@ -259,10 +259,30 @@ function loadCameraRoster(): PtzCameraEntry[] {
   return [];
 }
 
+/** Only non-secret relay settings belong in localStorage; tokens stay in memory / native storage. */
+function persistRelayConfig(config: AudienceRelayConfig): void {
+  const { authToken: _secret, ...persisted } = config;
+  localStorage.setItem(RELAY_STORAGE_KEY, JSON.stringify(persisted));
+}
+
 function loadRelayConfig(): AudienceRelayConfig {
   try {
     const raw = localStorage.getItem(RELAY_STORAGE_KEY);
-    if (raw) return { ...DEFAULT_AUDIENCE_RELAY_CONFIG, ...JSON.parse(raw) };
+    if (raw) {
+      const parsed = JSON.parse(raw) as Partial<AudienceRelayConfig>;
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        const config: AudienceRelayConfig = {
+          ...DEFAULT_AUDIENCE_RELAY_CONFIG,
+          ...parsed,
+          authToken: "",
+        };
+        if (typeof parsed.authToken === "string") {
+          // Rewrite any legacy entry that captured a secret without it.
+          persistRelayConfig(config);
+        }
+        return config;
+      }
+    }
   } catch {
     // Ignore a malformed locally saved relay configuration.
   }
@@ -958,7 +978,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       const note = await configureAudienceRelay(config);
       setRelay(config);
       try {
-        localStorage.setItem(RELAY_STORAGE_KEY, JSON.stringify(config));
+        persistRelayConfig(config);
       } catch {
         // Local persistence is best-effort.
       }

@@ -7,7 +7,12 @@ import {
   applyStatePatch,
   bridge,
   broadcastLanSyncEvent,
+  getEngineerLockStatus,
+  isTrustedSyncPayload,
+  lockEngineerMode,
+  stampSyncPayload,
   subscribeEvents,
+  unlockEngineerMode,
   UPDATE_REPO_URL,
 } from "./bridge";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
@@ -34,6 +39,10 @@ import type { BroadcastProfileSettings, UpdateInfo } from "./types";
 const BROADCAST_PROFILE_KEY = "onering_broadcast_profile";
 const BROADCAST_STREAM_KEY = "onering_broadcast_stream_config";
 const BROADCAST_HOTKEYS_KEY = "onering_broadcast_hotkeys";
+
+/** "show" is the volunteer-first boot surface; "master" remains the legacy show-mode tab id. */
+type AppViewMode = ViewMode | "show";
+const isShowMode = (target: AppViewMode): boolean => target === "show" || target === "master";
 
 function defaultBroadcastProfile(): BroadcastProfileSettings {
   const defaults: BroadcastProfileSettings = {
@@ -64,9 +73,10 @@ function loadBroadcastStream(): { rtmpUrl: string; streamKey: string } {
     const raw = localStorage.getItem(BROADCAST_STREAM_KEY);
     if (raw) {
       const parsed = JSON.parse(raw);
-      if (typeof parsed?.rtmpUrl === "string" && typeof parsed?.streamKey === "string") {
-        return { rtmpUrl: parsed.rtmpUrl, streamKey: parsed.streamKey };
-      }
+      const rtmpUrl = typeof parsed?.rtmpUrl === "string" ? parsed.rtmpUrl : "";
+      // Migrate legacy entries: the endpoint is UI state, the key is a secret.
+      localStorage.setItem(BROADCAST_STREAM_KEY, JSON.stringify({ rtmpUrl }));
+      return { rtmpUrl, streamKey: "" };
     }
   } catch {
     // Ignore malformed locally saved stream configuration.
@@ -86,7 +96,12 @@ function loadBroadcastHotkeys(): Record<string, string> {
 
 export const App: React.FC = () => {
   const [state, setState] = useState<AppStateSnapshot | null>(null);
-  const [mode, setMode] = useState<ViewMode>("mixing");
+  const [mode, setMode] = useState<AppViewMode>("show");
+  const [engineerUnlocked, setEngineerUnlocked] = useState(false);
+  const [pinTarget, setPinTarget] = useState<AppViewMode | null>(null);
+  const [pinValue, setPinValue] = useState("");
+  const [pinError, setPinError] = useState<string | null>(null);
+  const [pinBusy, setPinBusy] = useState(false);
   const [availableUpdate, setAvailableUpdate] = useState<UpdateInfo | null>(null);
   const [isEditingShowName, setIsEditingShowName] = useState(false);
   const [discoveredPeer, setDiscoveredPeer] = useState<DiscoveredPeerInfo | null>(null);
@@ -221,13 +236,15 @@ export const App: React.FC = () => {
         const savedRaw = localStorage.getItem("onering_workspace_autosave_v1");
         if (savedRaw) {
           const saved = JSON.parse(savedRaw);
-          if (saved.slides && (!snapshot.slides.slides || snapshot.slides.slides.length === 0)) {
-            snapshot.slides = { ...snapshot.slides, ...saved.slides };
-            hydratedFromLocal = true;
-          }
-          if (Array.isArray(saved.sources) && saved.sources.length > 0 && (!snapshot.sources || snapshot.sources.length === 0)) {
-            snapshot.sources = saved.sources;
-            hydratedFromLocal = true;
+          if (isTrustedSyncPayload(saved, "WORKSPACE_AUTOSAVE")) {
+            if (saved.slides && (!snapshot.slides.slides || snapshot.slides.slides.length === 0)) {
+              snapshot.slides = { ...snapshot.slides, ...(saved.slides as typeof snapshot.slides) };
+              hydratedFromLocal = true;
+            }
+            if (Array.isArray(saved.sources) && saved.sources.length > 0 && (!snapshot.sources || snapshot.sources.length === 0)) {
+              snapshot.sources = saved.sources as typeof snapshot.sources;
+              hydratedFromLocal = true;
+            }
           }
         }
       } catch {}
@@ -244,6 +261,22 @@ export const App: React.FC = () => {
       disposed = true;
       unlistenMenu?.();
       clearInterval(peerTimer);
+    };
+  }, []);
+
+  // Engineer access starts locked on every launch; only a successful PIN unlock opens it.
+  useEffect(() => {
+    let active = true;
+    setEngineerUnlocked(false);
+    void getEngineerLockStatus()
+      .then((unlocked) => {
+        if (active && unlocked) setEngineerUnlocked(true);
+      })
+      .catch(() => {
+        // Stay locked when the native status command is unavailable.
+      });
+    return () => {
+      active = false;
     };
   }, []);
 
@@ -637,16 +670,67 @@ export const App: React.FC = () => {
   useEffect(() => {
     if (isOutputWindow || !state?.slides) return;
     try {
-      localStorage.setItem("onering_live_slides_state", JSON.stringify(state.slides));
+      localStorage.setItem("onering_live_slides_state", JSON.stringify(stampSyncPayload(state.slides)));
       localStorage.setItem(
         "onering_workspace_autosave_v1",
-        JSON.stringify({ slides: state.slides, sources: state.sources })
+        JSON.stringify(stampSyncPayload({ slides: state.slides, sources: state.sources }))
       );
       const ch = new BroadcastChannel("onering_display_sync");
-      ch.postMessage({ type: "SLIDES_UPDATE", slides: state.slides });
+      ch.postMessage(stampSyncPayload({ type: "SLIDES_UPDATE", slides: state.slides }));
       ch.close();
     } catch {}
   }, [state?.slides, state?.sources, isOutputWindow]);
+
+  // Returning to the volunteer surface always locks engineer controls in the host runtime.
+  const returnToShowMode = () => {
+    void lockEngineerMode().catch(() => undefined);
+    setEngineerUnlocked(false);
+    setPinTarget(null);
+    setPinValue("");
+    setPinError(null);
+    setMode("show");
+  };
+
+  const requestMode = (target: AppViewMode) => {
+    if (isShowMode(target)) {
+      returnToShowMode();
+      return;
+    }
+    if (!engineerUnlocked) {
+      setPinError(null);
+      setPinValue("");
+      setPinTarget(target);
+      return;
+    }
+    setMode(target);
+  };
+
+  const submitEngineerPin = async () => {
+    if (!pinTarget || pinBusy) return;
+    const pin = pinValue.trim();
+    if (!pin) {
+      setPinError("Enter the Engineer PIN to continue.");
+      return;
+    }
+    setPinBusy(true);
+    try {
+      const accepted = await unlockEngineerMode(pin);
+      if (!accepted) {
+        setPinError("That PIN was not accepted. Try again.");
+        setPinValue("");
+        return;
+      }
+      setEngineerUnlocked(true);
+      setMode(pinTarget);
+      setPinTarget(null);
+      setPinValue("");
+      setPinError(null);
+    } catch {
+      setPinError("Engineer unlock is unavailable. Try again.");
+    } finally {
+      setPinBusy(false);
+    }
+  };
 
   if (isOutputWindow) {
     return <SecondaryOutputWindow />;
@@ -784,7 +868,7 @@ export const App: React.FC = () => {
                 key={tab.id}
                 type="button"
                 className="btn"
-                onClick={() => setMode(tab.id as ViewMode)}
+                onClick={() => requestMode(tab.id as ViewMode)}
                 style={{
                   height: 36,
                   padding: "0 14px",
@@ -825,7 +909,7 @@ export const App: React.FC = () => {
           <button
             type="button"
             className="btn"
-            onClick={() => setMode("settings")}
+            onClick={() => requestMode("settings")}
             style={{
               height: 36,
               padding: "0 12px",
@@ -839,6 +923,27 @@ export const App: React.FC = () => {
           >
             <Settings size={14} />
             Settings
+          </button>
+
+          <button
+            type="button"
+            className="btn"
+            onClick={returnToShowMode}
+            title="Lock engineer controls and return to Volunteer Show Mode"
+            style={{
+              height: 36,
+              padding: "0 12px",
+              fontSize: 13,
+              background: isShowMode(mode) ? "#0F2A24" : "#3B1D1D",
+              borderColor: isShowMode(mode) ? "#14B8A6" : "#DC2626",
+              color: isShowMode(mode) ? "#99F6E4" : "#FCA5A5",
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
+            }}
+          >
+            <Lock size={14} />
+            {isShowMode(mode) ? "Show Mode" : "Lock"}
           </button>
         </div>
       </header>
@@ -1015,7 +1120,7 @@ export const App: React.FC = () => {
         />
       )}
 
-      {mode === "master" && (
+      {(mode === "show" || mode === "master") && (
         <ShowModeView
           state={state}
           onTriggerCue={(idx) => {
@@ -1102,11 +1207,11 @@ export const App: React.FC = () => {
               onRunProbes={() => bridge.runPreflightProbes().then(setState)}
               onEnterShowMode={() => {
                 setShowPreflight(false);
-                setMode("master");
+                requestMode("show");
               }}
               onOpenEngineer={() => {
                 setShowPreflight(false);
-                setMode("mixing");
+                requestMode("mixing");
               }}
             />
             <ShowBuilderView
@@ -1118,7 +1223,7 @@ export const App: React.FC = () => {
               }}
               onOpenSettings={() => {
                 setShowPreflight(false);
-                setMode("settings");
+                requestMode("settings");
               }}
             />
           </div>
@@ -1132,9 +1237,9 @@ export const App: React.FC = () => {
           setShowWelcomeTour(false);
         }}
         onNavigateTab={(tabKey) => {
-          const map: Record<string, ViewMode> = {
+          const map: Record<string, AppViewMode> = {
             preflight: "master",
-            show: "master",
+            show: "show",
             engineer: "mixing",
             mixing: "mixing",
             video: "video",
@@ -1144,7 +1249,7 @@ export const App: React.FC = () => {
             settings: "settings",
           };
           if (tabKey in map) {
-            setMode(map[tabKey]);
+            requestMode(map[tabKey]);
           }
         }}
       />
@@ -1185,6 +1290,110 @@ export const App: React.FC = () => {
         onClose={() => setIsEditingShowName(false)}
       />
 
+      {pinTarget && (
+        <div
+          role="presentation"
+          style={{
+            position: "fixed",
+            inset: 0,
+            zIndex: 950,
+            background: "rgba(3,6,12,0.86)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: 20,
+          }}
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget && !pinBusy) setPinTarget(null);
+          }}
+        >
+          <form
+            onSubmit={(event) => {
+              event.preventDefault();
+              void submitEngineerPin();
+            }}
+            style={{
+              width: "min(420px, 100%)",
+              background: "#141A24",
+              border: "1px solid #334155",
+              borderRadius: 12,
+              padding: 24,
+              display: "grid",
+              gap: 14,
+              boxShadow: "0 24px 70px rgba(0,0,0,0.7)",
+            }}
+          >
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <Lock size={20} color="#60A5FA" />
+              <strong style={{ fontSize: 17 }}>Engineer PIN required</strong>
+            </div>
+            <p style={{ margin: 0, fontSize: 13, lineHeight: 1.5, color: "#CBD5E1" }}>
+              Volunteer Show Mode keeps the cue deck available. Enter the Engineer PIN to open
+              configuration and mixing controls.
+            </p>
+            <input
+              type="password"
+              autoFocus
+              inputMode="numeric"
+              autoComplete="off"
+              value={pinValue}
+              onChange={(event) => {
+                setPinValue(event.target.value);
+                setPinError(null);
+              }}
+              onKeyDown={(event) => {
+                if (event.key === "Escape" && !pinBusy) setPinTarget(null);
+              }}
+              placeholder="Engineer PIN"
+              aria-label="Engineer PIN"
+              style={{
+                width: "100%",
+                height: 42,
+                boxSizing: "border-box",
+                padding: "0 12px",
+                background: "#0B0F16",
+                border: `1px solid ${pinError ? "#EF4444" : "#334155"}`,
+                borderRadius: 8,
+                color: "#F3F4F6",
+                fontSize: 15,
+                letterSpacing: "0.2em",
+              }}
+            />
+            {pinError && (
+              <span role="alert" style={{ fontSize: 12, color: "#FCA5A5" }}>
+                {pinError}
+              </span>
+            )}
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+              <button
+                type="button"
+                className="btn"
+                disabled={pinBusy}
+                onClick={() => setPinTarget(null)}
+                style={{ height: 36, padding: "0 14px", fontSize: 12 }}
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                className="btn"
+                disabled={pinBusy}
+                style={{
+                  height: 36,
+                  padding: "0 16px",
+                  fontSize: 12,
+                  background: "#2563EB",
+                  borderColor: "#60A5FA",
+                  color: "#FFFFFF",
+                }}
+              >
+                {pinBusy ? "Checking..." : "Unlock Engineer Mode"}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
       {availableUpdate && (
         <UpdateModal update={availableUpdate} onDismiss={() => setAvailableUpdate(null)} />
       )}
@@ -1206,7 +1415,8 @@ export const App: React.FC = () => {
         onSaveStreamConfig={(rtmpUrl, streamKey) => {
           setBroadcastStream({ rtmpUrl, streamKey });
           try {
-            localStorage.setItem(BROADCAST_STREAM_KEY, JSON.stringify({ rtmpUrl, streamKey }));
+            // Keep only non-secret UI state on disk; the key lives in memory / native settings.
+            localStorage.setItem(BROADCAST_STREAM_KEY, JSON.stringify({ rtmpUrl }));
           } catch {
             // Local persistence is best-effort.
           }

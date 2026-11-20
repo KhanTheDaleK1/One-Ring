@@ -26,6 +26,7 @@ pub mod broadcast_worker_ipc;
 pub mod slide_http_adapter;
 pub mod dual_stream_adapter;
 pub mod console_adapter;
+pub mod native_capture;
 
 use crate::protocols::{DeviceCapabilities, DeviceKind};
 use crate::state::SharedState;

@@ -44,6 +44,7 @@ pub struct CanvasTabConfig {
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 pub type SharedState = Arc<Mutex<AppStateSnapshot>>;
 
@@ -692,6 +693,8 @@ pub struct ManagedState {
     pub runtime: Mutex<Option<Arc<crate::runtime::AdapterRegistry>>>,
     /// Where `AppSettings` is persisted. `None` keeps settings in memory only.
     pub settings_path: Mutex<Option<PathBuf>>,
+    /// Engineer Mode unlock expiry. `None` means locked.
+    pub engineer_unlocked_until: Mutex<Option<Instant>>,
 }
 
 impl Default for ManagedState {
@@ -701,6 +704,7 @@ impl Default for ManagedState {
             undo_stack: Arc::new(Mutex::new(Vec::new())),
             runtime: Mutex::new(None),
             settings_path: Mutex::new(None),
+            engineer_unlocked_until: Mutex::new(None),
         }
     }
 }
@@ -767,12 +771,37 @@ pub fn write_settings_to_disk(path: &Path, settings: &AppSettings) -> Result<(),
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|err| format!("create settings dir {}: {err}", parent.display()))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))
+                .map_err(|err| format!("set settings dir permissions {}: {err}", parent.display()))?;
+        }
     }
     let json = serde_json::to_string_pretty(settings)
         .map_err(|err| format!("serialize settings: {err}"))?;
     let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, json)
-        .map_err(|err| format!("write settings tmp {}: {err}", tmp.display()))?;
+    #[cfg(unix)]
+    {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&tmp)
+            .map_err(|err| format!("write settings tmp {}: {err}", tmp.display()))?;
+        file.write_all(json.as_bytes())
+            .map_err(|err| format!("write settings tmp {}: {err}", tmp.display()))?;
+        file.sync_all()
+            .map_err(|err| format!("sync settings tmp {}: {err}", tmp.display()))?;
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::write(&tmp, json)
+            .map_err(|err| format!("write settings tmp {}: {err}", tmp.display()))?;
+    }
     std::fs::rename(&tmp, path)
         .map_err(|err| format!("commit settings {}: {err}", path.display()))?;
     Ok(())
@@ -782,6 +811,56 @@ pub fn write_settings_to_disk(path: &Path, settings: &AppSettings) -> Result<(),
 pub fn with_state<R>(state: &SharedState, f: impl FnOnce(&mut AppStateSnapshot) -> R) -> R {
     let mut guard = state.lock().unwrap();
     f(&mut guard)
+}
+
+fn is_allowed_http_url(raw: &str) -> bool {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() || trimmed.chars().any(|c| c.is_control()) {
+        return false;
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    lower.starts_with("http://") || lower.starts_with("https://")
+}
+
+fn sanitize_url_value(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::String(text) => {
+            if !is_allowed_http_url(text) {
+                *text = String::new();
+            } else {
+                *text = text.trim().to_string();
+            }
+        }
+        serde_json::Value::Object(map) => {
+            for (key, child) in map.iter_mut() {
+                if key.eq_ignore_ascii_case("url") {
+                    match child {
+                        serde_json::Value::String(text) => {
+                            if !is_allowed_http_url(text) {
+                                *text = String::new();
+                            } else {
+                                *text = text.trim().to_string();
+                            }
+                        }
+                        _ => sanitize_url_value(child),
+                    }
+                } else {
+                    sanitize_url_value(child);
+                }
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                sanitize_url_value(item);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Sanitize any `url` setting on a scene source: only trimmed http/https URLs are kept.
+pub fn sanitize_source_settings_urls(settings: &mut serde_json::Value) {
+    sanitize_url_value(settings);
 }
 
 impl AppStateSnapshot {
@@ -1005,7 +1084,10 @@ impl AppStateSnapshot {
     }
 
     /// Replace all authored show content from a `*.ring.json` payload.
-    pub fn apply_show_file(&mut self, show: ShowFile) {
+    pub fn apply_show_file(&mut self, mut show: ShowFile) {
+        for source in &mut show.sources {
+            sanitize_source_settings_urls(&mut source.settings);
+        }
         self.service_name = if show.service_name.trim().is_empty() {
             "Untitled Show".into()
         } else {
@@ -1527,5 +1609,35 @@ mod tests {
         default_section_settings(&mut settings, "ipVideo").expect("reset camera section");
         assert_eq!(settings.ip_video_ptz.ptz_ip_port, 52381);
         assert!(default_section_settings(&mut settings, "unknown").is_err());
+    }
+
+    #[test]
+    fn apply_show_file_sanitizes_source_urls() {
+        let mut state = default_simulator_state();
+        let mut show = state.to_show_file();
+        show.sources = vec![SceneSourceItem {
+            id: "src-1".into(),
+            name: "Browser".into(),
+            r#type: "browser".into(),
+            enabled: true,
+            locked: false,
+            volume_db: None,
+            muted: None,
+            color_tag: None,
+            hide_in_mixer: None,
+            group_id: None,
+            filters: None,
+            transform: None,
+            settings: serde_json::json!({
+                "url": "javascript:alert(1)",
+                "nested": { "url": "file:///etc/passwd" },
+                "ok": { "url": " https://192.0.2.50/page " }
+            }),
+        }];
+        state.apply_show_file(show);
+        let settings = &state.sources[0].settings;
+        assert_eq!(settings["url"], serde_json::json!(""));
+        assert_eq!(settings["nested"]["url"], serde_json::json!(""));
+        assert_eq!(settings["ok"]["url"], serde_json::json!("https://192.0.2.50/page"));
     }
 }

@@ -124,6 +124,12 @@ fn format_db(db: f32) -> String {
     }
 }
 
+/// Resolve the verified local encoder binary. The PATH scan accepts only regular,
+/// executable files and returns canonicalized locations.
+fn resolved_worker_program() -> String {
+    crate::runtime::broadcast_daemon::find_ffmpeg_binary().unwrap_or_else(|| "ffmpeg".into())
+}
+
 pub fn build_ffmpeg_filtergraph(plan: &StudioCompositorPlan) -> Vec<String> {
     let mut args: Vec<String> = Vec::new();
     let mut filters: Vec<String> = Vec::new();
@@ -340,23 +346,37 @@ impl BroadcastWorkerSupervisor {
         Ok(())
     }
 
-    /// Turn a compositor plan into a worker process. The executable is taken from
-    /// `RING_MEDIA_WORKER` when set, otherwise the locally installed encoder binary is used.
+    /// Turn a compositor plan into a worker process. The executable override is a
+    /// development-only convenience; release builds resolve the verified local binary.
     pub fn start_compositor(
         &self,
         plan: &StudioCompositorPlan,
         video_bitrate_kbps: Option<u32>,
     ) -> Result<String, String> {
+        // Screen every untrusted destination before it reaches the subprocess command line.
+        for out in &plan.stream_outputs {
+            crate::runtime::broadcast_daemon::validate_stream_url(&out.url)
+                .map_err(|e| format!("Invalid stream output: {e}"))?;
+        }
+        for out in &plan.record_outputs {
+            crate::runtime::broadcast_daemon::validate_media_path(&out.path)
+                .map_err(|e| format!("Invalid record output: {e}"))?;
+        }
+
         let mut args = vec!["-hide_banner".to_string(), "-y".to_string()];
         args.extend(build_ffmpeg_filtergraph(plan));
         if let Some(kbps) = video_bitrate_kbps.filter(|kbps| *kbps > 0) {
             args.push("-b:v".into());
             args.push(format!("{kbps}k"));
         }
-        let program = std::env::var("RING_MEDIA_WORKER")
-            .ok()
-            .filter(|value| !value.trim().is_empty())
-            .unwrap_or_else(|| "ffmpeg".into());
+        let program = if cfg!(debug_assertions) {
+            std::env::var("RING_MEDIA_WORKER")
+                .ok()
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or_else(resolved_worker_program)
+        } else {
+            resolved_worker_program()
+        };
         self.spawn(&program, &args)?;
         Ok(format!(
             "Studio compositor started: {}x{} @ {} fps ({} stream, {} record)",
@@ -486,6 +506,26 @@ mod tests {
         assert!(joined.contains("-f mpegts"));
         assert!(joined.contains("-f matroska"));
         assert!(joined.contains("-f mp4"));
+    }
+
+    #[test]
+    fn start_compositor_rejects_untrusted_destinations() {
+        let sup = BroadcastWorkerSupervisor::default();
+        let mut plan = base_plan();
+        plan.stream_outputs = vec![StreamOutputSpec {
+            protocol: StreamProtocol::Rtmps,
+            url: "-f mpegts".into(),
+        }];
+        assert!(sup.start_compositor(&plan, None).is_err());
+        assert!(!sup.is_running());
+
+        plan.stream_outputs.clear();
+        plan.record_outputs = vec![RecordOutputSpec {
+            container: RecordContainer::Mkv,
+            path: "../outside.mkv".into(),
+        }];
+        assert!(sup.start_compositor(&plan, None).is_err());
+        assert!(!sup.is_running());
     }
 
     #[test]

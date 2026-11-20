@@ -19,6 +19,7 @@ const WS_RECONNECT_DELAY: Duration = Duration::from_secs(2);
 const IRC_RECONNECT_DELAY: Duration = Duration::from_secs(3);
 const WEBHOOK_POLL_INTERVAL: Duration = Duration::from_secs(10);
 const HTTP_TIMEOUT: Duration = Duration::from_secs(5);
+const MAX_HTTP_BODY_BYTES: u64 = 256 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -393,6 +394,8 @@ pub fn configure_relay(
     emit: AudienceEmit,
     config: AudienceRelayConfig,
 ) -> Result<String, String> {
+    validate_auth_token(&config.auth_token)?;
+    validate_channel_name(&config.channel_name)?;
     state.stop();
     state.set_config(config.clone());
     if !config.enabled {
@@ -405,6 +408,7 @@ pub fn configure_relay(
             if endpoint.is_empty() {
                 return Err("WebSocket relay requires endpointUrl".into());
             }
+            validate_ws_url(&endpoint)?;
             let (tx, rx) = mpsc::unbounded_channel::<String>();
             let st = state.clone();
             let cfg = config.clone();
@@ -429,9 +433,7 @@ pub fn configure_relay(
         }
         "irc" => {
             let endpoint = config.endpoint_url.trim().to_string();
-            if endpoint.is_empty() {
-                return Err("IRC relay requires endpointUrl (host:port)".into());
-            }
+            validate_irc_endpoint(&endpoint)?;
             let (tx, rx) = mpsc::unbounded_channel::<String>();
             let st = state.clone();
             let cfg = config.clone();
@@ -445,11 +447,74 @@ pub fn configure_relay(
     }
 }
 
+/// Control characters in URLs, tokens or channel names can forge extra HTTP/IRC lines.
+fn has_control_chars(value: &str) -> bool {
+    value.chars().any(|c| c.is_ascii_control())
+}
+
 fn validate_http_url(url: &str) -> Result<(), String> {
-    if url.starts_with("http://") || url.starts_with("https://") {
+    if has_control_chars(url) {
+        return Err("URL contains control characters".into());
+    }
+    if !url.starts_with("http://") && !url.starts_with("https://") {
+        return Err("URL must start with http:// or https://".into());
+    }
+    let (_, _, path) = parse_http_url(url)?;
+    if has_control_chars(&path) {
+        return Err("URL path contains control characters".into());
+    }
+    Ok(())
+}
+
+fn validate_ws_url(url: &str) -> Result<(), String> {
+    if has_control_chars(url) {
+        return Err("WebSocket URL contains control characters".into());
+    }
+    if url.starts_with("ws://") || url.starts_with("wss://") {
         Ok(())
     } else {
-        Err("URL must start with http:// or https://".into())
+        Err("WebSocket URL must start with ws:// or wss://".into())
+    }
+}
+
+fn validate_irc_endpoint(endpoint: &str) -> Result<(), String> {
+    if endpoint.trim().is_empty() {
+        return Err("IRC relay requires endpointUrl (host:port)".into());
+    }
+    if has_control_chars(endpoint) {
+        return Err("IRC endpoint contains control characters".into());
+    }
+    Ok(())
+}
+
+fn validate_auth_token(token: &str) -> Result<(), String> {
+    if has_control_chars(token) {
+        return Err("authToken contains control characters".into());
+    }
+    Ok(())
+}
+
+fn validate_channel_name(channel: &str) -> Result<(), String> {
+    if has_control_chars(channel) {
+        return Err("channelName contains control characters".into());
+    }
+    Ok(())
+}
+
+/// Build a channel name that is safe to place in an IRC command line.
+fn irc_channel(config: &AudienceRelayConfig) -> String {
+    let cleaned: String = config
+        .channel_name
+        .trim()
+        .chars()
+        .filter(|c| !c.is_ascii_control() && !c.is_ascii_whitespace() && *c != ',')
+        .collect();
+    if cleaned.is_empty() {
+        "#audience".to_string()
+    } else if cleaned.starts_with('#') {
+        cleaned
+    } else {
+        format!("#{cleaned}")
     }
 }
 
@@ -459,6 +524,10 @@ async fn run_websocket_relay(
     config: AudienceRelayConfig,
     mut outbound: mpsc::UnboundedReceiver<String>,
 ) {
+    if validate_ws_url(config.endpoint_url.trim()).is_err() {
+        eprintln!("[audience] refusing invalid WebSocket relay URL");
+        return;
+    }
     loop {
         match connect_async(config.endpoint_url.trim()).await {
             Ok((ws, _)) => {
@@ -519,6 +588,10 @@ async fn run_webhook_poller(state: AudienceState, emit: AudienceEmit, config: Au
         futures_util::future::pending::<()>().await;
         return;
     }
+    if validate_http_url(&poll_url).is_err() {
+        eprintln!("[audience] refusing invalid webhook poll URL");
+        return;
+    }
     loop {
         if let Ok(body) = http_get_body(&poll_url).await {
             match parse_inbound_json_frame(&body) {
@@ -543,6 +616,7 @@ async fn run_webhook_poller(state: AudienceState, emit: AudienceEmit, config: Au
 pub fn send_webhook_message(config: &AudienceRelayConfig, author: &str, text: &str, channel: &str) -> Result<(), String> {
     let url = config.endpoint_url.trim();
     validate_http_url(url)?;
+    validate_auth_token(config.auth_token.trim())?;
     let payload = json!({ "author": author, "text": text, "channel": channel }).to_string();
     if url.starts_with("https://") {
         return http_post_via_curl(url, &payload, config.auth_token.trim());
@@ -551,6 +625,7 @@ pub fn send_webhook_message(config: &AudienceRelayConfig, author: &str, text: &s
 }
 
 async fn http_get_body(url: &str) -> Result<String, String> {
+    validate_http_url(url)?;
     let url = url.to_string();
     tokio::task::spawn_blocking(move || {
         if url.starts_with("https://") {
@@ -611,6 +686,8 @@ fn http_post_plain(url: &str, payload: &str, auth_token: &str) -> Result<(), Str
 }
 
 fn http_post_via_curl(url: &str, payload: &str, auth_token: &str) -> Result<(), String> {
+    validate_http_url(url)?;
+    validate_auth_token(auth_token)?;
     let mut args = vec![
         "-sS".to_string(),
         "-m".to_string(),
@@ -638,9 +715,10 @@ fn http_post_via_curl(url: &str, payload: &str, auth_token: &str) -> Result<(), 
     }
 }
 
-fn read_http_body(mut stream: TcpStream) -> Result<String, String> {
+fn read_http_body(stream: TcpStream) -> Result<String, String> {
+    let mut limited = stream.take(MAX_HTTP_BODY_BYTES);
     let mut buf = Vec::new();
-    stream.read_to_end(&mut buf).map_err(|e| e.to_string())?;
+    limited.read_to_end(&mut buf).map_err(|e| e.to_string())?;
     let text = String::from_utf8_lossy(&buf).to_string();
     if let Some((_, body)) = text.split_once("\r\n\r\n") {
         Ok(body.to_string())
@@ -659,15 +737,21 @@ fn parse_http_url(url: &str) -> Result<(String, u16, String), String> {
     } else {
         return Err("URL must start with http:// or https://".into());
     };
+    if has_control_chars(rest) {
+        return Err("URL contains control characters".into());
+    }
     let default_port = if scheme == "https" { 443 } else { 80 };
     let mut parts = rest.splitn(2, '/');
     let authority = parts.next().unwrap_or("");
     let path = format!("/{}", parts.next().unwrap_or(""));
-    if authority.is_empty() {
-        return Err("Missing host in URL".into());
+    if authority.is_empty() || has_control_chars(&authority) || has_control_chars(&path) {
+        return Err("Missing or invalid host/path in URL".into());
     }
     if let Some((host, port)) = authority.rsplit_once(':') {
         if let Ok(port) = port.parse::<u16>() {
+            if host.is_empty() || has_control_chars(host) {
+                return Err("Invalid host in URL".into());
+            }
             return Ok((host.to_string(), port, path));
         }
     }
@@ -697,6 +781,9 @@ async fn run_irc_once(
     outbound: &mut mpsc::UnboundedReceiver<String>,
 ) -> Result<(), String> {
     let addr = config.endpoint_url.trim();
+    validate_irc_endpoint(addr)?;
+    validate_auth_token(&config.auth_token)?;
+    validate_channel_name(&config.channel_name)?;
     let stream = TokioTcpStream::connect(addr).await.map_err(|e| e.to_string())?;
     let (reader, mut writer) = stream.into_split();
     let mut lines = BufReader::new(reader).lines();
@@ -706,13 +793,7 @@ async fn run_irc_once(
     } else {
         config.host_display_name.trim()
     });
-    let channel = if config.channel_name.trim().is_empty() {
-        "#audience".to_string()
-    } else if config.channel_name.trim().starts_with('#') {
-        config.channel_name.trim().to_string()
-    } else {
-        format!("#{}", config.channel_name.trim())
-    };
+    let channel = irc_channel(config);
 
     if !config.auth_token.trim().is_empty() {
         writer
@@ -763,14 +844,12 @@ fn sanitize_irc_token(input: &str) -> String {
 }
 
 pub fn format_irc_outbound_privmsg(config: &AudienceRelayConfig, text: &str) -> String {
-    let channel = if config.channel_name.trim().is_empty() {
-        "#audience".to_string()
-    } else if config.channel_name.trim().starts_with('#') {
-        config.channel_name.trim().to_string()
-    } else {
-        format!("#{}", config.channel_name.trim())
-    };
-    let clean = text.replace(['\r', '\n'], " ").trim().to_string();
+    let channel = irc_channel(config);
+    let clean: String = text
+        .chars()
+        .map(|c| if c.is_ascii_control() { ' ' } else { c })
+        .collect();
+    let clean = clean.trim().to_string();
     format!("PRIVMSG {channel} :{clean}")
 }
 
@@ -904,5 +983,64 @@ mod tests {
             .expect("server timeout")
             .expect("server join");
         state.stop();
+    }
+
+    #[test]
+    fn relay_configuration_rejects_control_characters() {
+        let emit: AudienceEmit = Arc::new(|_, _| {});
+        let state = AudienceState::default();
+        let base = AudienceRelayConfig {
+            enabled: true,
+            mode: "websocket".into(),
+            endpoint_url: "ws://127.0.0.1:47801/relay".into(),
+            auth_token: String::new(),
+            channel_name: "main".into(),
+            host_display_name: "Host".into(),
+            stats_webhook_url: String::new(),
+        };
+
+        let mut ws_url = base.clone();
+        ws_url.endpoint_url = "ws://host/relay\r\nX-Injected: yes".into();
+        assert!(configure_relay(&state, emit.clone(), ws_url).is_err());
+
+        let mut scheme = base.clone();
+        scheme.endpoint_url = "http://host/relay".into();
+        assert!(configure_relay(&state, emit.clone(), scheme).is_err());
+
+        let mut token = base.clone();
+        token.auth_token = "secret\r\nX-Injected: yes".into();
+        assert!(configure_relay(&state, emit.clone(), token).is_err());
+
+        let mut channel = base.clone();
+        channel.channel_name = "main\nJOIN #other".into();
+        assert!(configure_relay(&state, emit.clone(), channel).is_err());
+
+        let mut webhook = base.clone();
+        webhook.mode = "webhook".into();
+        webhook.endpoint_url = "http://host/hook\r\nX-Injected: yes".into();
+        assert!(configure_relay(&state, emit.clone(), webhook).is_err());
+
+        let mut irc = base.clone();
+        irc.mode = "irc".into();
+        irc.endpoint_url = "host:6667\r\nJOIN #other".into();
+        assert!(configure_relay(&state, emit.clone(), irc).is_err());
+
+        assert!(validate_ws_url("wss://host/relay").is_ok());
+        assert!(validate_ws_url("ws://host/relay\n").is_err());
+        assert!(validate_http_url("https://host/path").is_ok());
+        assert!(validate_http_url("https://host/path\n").is_err());
+        assert!(parse_http_url("http://host/pa\nth").is_err());
+    }
+
+    #[test]
+    fn irc_outbound_channel_cannot_inject_a_command() {
+        let config = AudienceRelayConfig {
+            channel_name: "main\r\nJOIN #other".into(),
+            ..AudienceRelayConfig::default()
+        };
+        let line = format_irc_outbound_privmsg(&config, "hello\r\nJOIN #other");
+        assert!(!line.contains('\r'));
+        assert!(!line.contains('\n'));
+        assert!(line.starts_with("PRIVMSG #"));
     }
 }

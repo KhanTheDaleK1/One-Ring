@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import { Monitor, Video, Tv, Layers } from "lucide-react";
-import type { SceneSourceItem, SourceFilter, SourceTransform } from "../types";
+import type { NativeCaptureFrame, SceneSourceItem, SourceFilter, SourceTransform } from "../types";
+import { isTauriRuntime, startNativeCaptureStream, stopNativeCaptureStream } from "../bridge";
 
 export interface BroadcastSceneDefinition {
   id: string;
@@ -61,6 +62,17 @@ const DEFAULT_SLIDESHOW_CARDS: Array<{ title: string; subtitle: string; gradient
     accent: "#C084FC",
   },
 ];
+
+/** Browser sources may only point at ordinary web pages — never file, script, or custom schemes. */
+function isSafeHttpUrl(url: unknown): boolean {
+  if (typeof url !== "string" || url.trim().length === 0) return false;
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === "http:" || parsed.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
 
 function resolveColor(value: unknown, fallback: string): string {
   if (typeof value === "string" && value.trim().length > 0) {
@@ -670,10 +682,125 @@ const ImageSlideShowLayer: React.FC<{ source: SceneSourceItem }> = ({ source }) 
   );
 };
 
+// ---------------------------------------------------------------------------------------------
+// Native capture frames — one shared store fed by the `capture://frame` event channel
+// ---------------------------------------------------------------------------------------------
+
+const nativeFrameUrls = new Map<string, string>();
+const nativeFrameListeners = new Set<() => void>();
+
+function notifyNativeFrameListeners() {
+  nativeFrameListeners.forEach((listener) => listener());
+}
+
+function publishNativeFrame(frame: NativeCaptureFrame) {
+  if (!frame || typeof frame.sourceId !== "string" || frame.sourceId.length === 0) return;
+  if (typeof frame.base64Data !== "string" || frame.base64Data.length === 0) return;
+  if (typeof frame.mimeType !== "string" || !/^[a-z][\w.+-]*\/[\w.+-]+$/i.test(frame.mimeType)) return;
+  const url = `data:${frame.mimeType};base64,${frame.base64Data}`;
+  if (nativeFrameUrls.get(frame.sourceId) === url) return;
+  nativeFrameUrls.set(frame.sourceId, url);
+  notifyNativeFrameListeners();
+}
+
+function clearNativeFrame(sourceId: string) {
+  if (!nativeFrameUrls.delete(sourceId)) return;
+  notifyNativeFrameListeners();
+}
+
+function useNativeFrameUrl(sourceId: string | null): string | null {
+  const [url, setUrl] = useState<string | null>(() =>
+    sourceId ? nativeFrameUrls.get(sourceId) ?? null : null
+  );
+  useEffect(() => {
+    setUrl(sourceId ? nativeFrameUrls.get(sourceId) ?? null : null);
+    if (!sourceId) return;
+    const listener = () => {
+      const next = nativeFrameUrls.get(sourceId) ?? null;
+      setUrl((prev) => (prev === next ? prev : next));
+    };
+    nativeFrameListeners.add(listener);
+    return () => {
+      nativeFrameListeners.delete(listener);
+    };
+  }, [sourceId]);
+  return url;
+}
+
+/** Best-effort global event subscription; browser preview and older runtimes simply stay idle. */
+function useNativeCaptureFrameEvents() {
+  useEffect(() => {
+    if (!isTauriRuntime()) return;
+    let cancelled = false;
+    let unlisten: (() => void) | null = null;
+    (async () => {
+      try {
+        const { listen } = await import("@tauri-apps/api/event");
+        const stop = await listen<NativeCaptureFrame>("capture://frame", (event) => {
+          publishNativeFrame(event.payload);
+        });
+        if (cancelled) stop();
+        else unlisten = stop;
+      } catch {
+        // The event channel is optional: the explicit browser picker remains available.
+      }
+    })();
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, []);
+}
+
+const nativeBadgeStyle: React.CSSProperties = {
+  position: "absolute",
+  top: 6,
+  left: 6,
+  padding: "2px 7px",
+  borderRadius: 4,
+  background: "rgba(6, 78, 59, 0.9)",
+  border: "1px solid #10B981",
+  color: "#A7F3D0",
+  fontSize: 10,
+  fontWeight: 800,
+  letterSpacing: "0.04em",
+  pointerEvents: "none",
+  zIndex: 30,
+};
+
 const LiveDisplayOrWindowLayer: React.FC<{ source: SceneSourceItem }> = ({ source }) => {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const [stream, setStream] = useState<MediaStream | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  const isWindow = source.type === "window_capture";
+  const kind: "window" | "display" = isWindow ? "window" : "display";
+  const settings = source.settings ?? {};
+  const rawTargetId = isWindow ? settings.nativeWindowId : settings.nativeDisplayId;
+  const targetId = typeof rawTargetId === "number" ? rawTargetId : Number(rawTargetId);
+  const hasNativeTarget = Number.isFinite(targetId) && targetId >= 0;
+  const captureMethod = typeof settings.captureMethod === "string" ? settings.captureMethod : "native";
+  const useNative = isTauriRuntime() && captureMethod !== "browser" && hasNativeTarget;
+  const frameUrl = useNativeFrameUrl(useNative ? source.id : null);
+  const fpsRaw = Number(settings.fps ?? 5);
+  const fps = Number.isFinite(fpsRaw) ? Math.max(2, Math.min(15, fpsRaw)) : 5;
+
+  useEffect(() => {
+    if (!useNative) return;
+    clearNativeFrame(source.id);
+    let stopped = false;
+    void startNativeCaptureStream(source.id, kind, targetId, fps)
+      .then(() => {
+        // If the source changed while startup was in flight, stop the late session too.
+        if (stopped) void stopNativeCaptureStream(source.id).catch(() => {});
+      })
+      .catch(() => null);
+    return () => {
+      stopped = true;
+      clearNativeFrame(source.id);
+      void stopNativeCaptureStream(source.id).catch(() => {});
+    };
+  }, [source.id, useNative, kind, targetId, fps]);
 
   const startCapture = async (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -698,13 +825,56 @@ const LiveDisplayOrWindowLayer: React.FC<{ source: SceneSourceItem }> = ({ sourc
     };
   }, [stream]);
 
+  if (useNative) {
+    const targetLabel = isWindow
+      ? String(settings.windowTitle ?? settings.window ?? settings.appName ?? "")
+      : String(settings.displayName ?? "");
+    return (
+      <div style={{ position: "relative", width: "100%", height: "100%", background: "#05070B", overflow: "hidden" }}>
+        {frameUrl ? (
+          <img
+            src={frameUrl}
+            alt={`${source.name} native capture`}
+            draggable={false}
+            style={{ width: "100%", height: "100%", objectFit: "contain", pointerEvents: "none" }}
+          />
+        ) : (
+          <div
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              alignItems: "center",
+              justifyContent: "center",
+              gap: 6,
+              width: "100%",
+              height: "100%",
+              boxSizing: "border-box",
+              padding: 16,
+              textAlign: "center",
+              color: "#CBD5E1",
+            }}
+          >
+            <Monitor size={28} color="#34D399" />
+            <div style={{ fontSize: 12, fontWeight: 700 }}>{source.name}</div>
+            {targetLabel && <div style={{ fontSize: 11, color: "#94A3B8" }}>{targetLabel}</div>}
+            <div style={{ fontSize: 10.5, color: "#6EE7B7" }}>Waiting for first native frame…</div>
+          </div>
+        )}
+        <div style={nativeBadgeStyle}>Native · Zero-Popup</div>
+      </div>
+    );
+  }
+
   if (!stream) {
+    const targetLabel = isWindow
+      ? String(settings.windowTitle ?? settings.window ?? "")
+      : String(settings.displayName ?? "");
     return (
       <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "100%", color: "#CBD5E1", gap: 10, background: "rgba(15, 23, 42, 0.75)" }}>
         <Monitor size={32} color="#60A5FA" />
         <div style={{ fontSize: 13, fontWeight: 700 }}>{source.name}</div>
-        {source.settings?.window ? (
-          <div style={{ fontSize: 11, color: "#94A3B8" }}>Target: {String(source.settings.window)}</div>
+        {targetLabel ? (
+          <div style={{ fontSize: 11, color: "#94A3B8" }}>Target: {targetLabel}</div>
         ) : null}
         <button
           type="button"
@@ -798,13 +968,39 @@ const SceneLayersRenderer: React.FC<SceneLayersRendererProps> = ({
           content = <LiveCameraLayer source={s} chromaKey={chromaKeyFilter} />;
         } else if (s.type === "window_capture" || s.type === "display_capture") {
           content = <LiveDisplayOrWindowLayer source={s} />;
-        } else if (s.type === "browser" && s.settings?.url) {
-          content = (
+        } else if (s.type === "browser") {
+          content = isSafeHttpUrl(s.settings?.url) ? (
             <iframe
               src={String(s.settings.url)}
               title={s.name}
+              sandbox="allow-scripts allow-same-origin"
+              referrerPolicy="no-referrer"
               style={{ width: "100%", height: "100%", border: "none", pointerEvents: "none" }}
             />
+          ) : (
+            <div
+              style={{
+                width: "100%",
+                height: "100%",
+                display: "flex",
+                flexDirection: "column",
+                alignItems: "center",
+                justifyContent: "center",
+                gap: 8,
+                textAlign: "center",
+                background: "#111827",
+                color: "#FCA5A5",
+                border: "1px dashed #7F1D1D",
+                boxSizing: "border-box",
+                padding: 16,
+              }}
+            >
+              <Monitor size={28} color="#FCA5A5" />
+              <strong style={{ fontSize: 14 }}>Browser source unavailable</strong>
+              <span style={{ fontSize: 12, color: "#CBD5E1" }}>
+                A valid web address (http or https) is required for this source.
+              </span>
+            </div>
           );
         } else if (s.type === "color") {
           content = (
@@ -1102,6 +1298,7 @@ export const ProgramCanvasRenderer: React.FC<ProgramCanvasRendererProps> = ({
   compact = false,
 }) => {
   const containerRef = useRef<HTMLDivElement | null>(null);
+  useNativeCaptureFrameEvents();
   const [dragState, setDragState] = useState<DragState | null>(null);
   const [snapGuides, setSnapGuides] = useState<{ x: boolean; y: boolean }>({ x: false, y: false });
 

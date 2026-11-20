@@ -20,6 +20,8 @@ jobs:
     runs-on: ${{ matrix.platform }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: setup node
         uses: actions/setup-node@v4
@@ -29,21 +31,43 @@ jobs:
       - name: install Rust stable
         uses: dtolnay/rust-toolchain@stable
 
-      - name: install frontend dependencies
-        run: npm install
+      - name: Validate release tag
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.]+)?$ ]]; then
+            echo "Invalid release tag '$TAG'. Expected vMAJOR.MINOR.PATCH with an optional -suffix."
+            exit 1
+          fi
 
       - name: Clean-room compliance check
         run: python3 scripts/check_clean_room.py
         env:
           ONE_RING_UPDATE_REPO: ${{ github.repository }}
 
+      - name: install frontend dependencies
+        run: npm ci
+
+      - name: Build frontend
+        run: npm run build
+        env:
+          VITE_UPDATE_REPO: ${{ github.repository }}
+          ONE_RING_UPDATE_REPO: ${{ github.repository }}
+
+      - name: Verify native tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml
+        env:
+          ONE_RING_UPDATE_REPO: ${{ github.repository }}
+
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VITE_UPDATE_REPO: ${{ github.repository }}
           ONE_RING_UPDATE_REPO: ${{ github.repository }}
         with:
           tagName: ${{ github.ref_name }}
           releaseName: "One Ring ${{ github.ref_name }}"
-          releaseBody: "Automated installer bundle for Windows (.msi / .exe) and macOS (.dmg / .app)."
-          releaseDraft: false
+          releaseBody: "Automated installer bundle for Windows (.msi / .exe) and macOS (.dmg / .app). Alpha builds are unsigned; signed updater artifacts are planned for beta/GA."
+          releaseDraft: true
           prerelease: true

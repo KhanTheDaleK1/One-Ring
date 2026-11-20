@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { Monitor, Radio, Tv } from "lucide-react";
 import type { AudienceChatMessage, SceneSourceItem, SlideCue, SlideState, SlideTheme } from "../types";
+import { isTrustedSyncPayload, stampSyncPayload } from "../bridge";
 import { ProgramCanvasRenderer, type BroadcastSceneDefinition } from "./ProgramCanvasRenderer";
 import {
   editableSlideTextStyle,
@@ -26,7 +27,9 @@ interface StoredSlideExtras {
 function readStoredSlideExtras(): StoredSlideExtras {
   try {
     const raw = localStorage.getItem(SLIDE_EXTRAS_KEY);
-    return raw ? (JSON.parse(raw) as StoredSlideExtras) : {};
+    if (!raw) return {};
+    const parsed: unknown = JSON.parse(raw);
+    return isTrustedSyncPayload(parsed, "SLIDE_EXTRAS_STATE") ? (parsed as StoredSlideExtras) : {};
   } catch {
     return {};
   }
@@ -44,9 +47,11 @@ function readStoredAudienceOverlay(): AudienceChatMessage | null {
   try {
     const raw = localStorage.getItem(AUDIENCE_OVERLAY_KEY);
     if (!raw) return null;
-    const parsed = JSON.parse(raw) as AudienceChatMessage | null;
-    if (!parsed || typeof parsed.id !== "string" || typeof parsed.text !== "string") return null;
-    return parsed;
+    const parsed: unknown = JSON.parse(raw);
+    if (!isTrustedSyncPayload(parsed, "AUDIENCE_OVERLAY")) return null;
+    const message = (parsed as Record<string, unknown>).message as AudienceChatMessage | null;
+    if (!message || typeof message.id !== "string" || typeof message.text !== "string") return null;
+    return message;
   } catch {
     return null;
   }
@@ -199,7 +204,11 @@ function readStoredBroadcastScenes(): BroadcastScenesState {
   try {
     const saved = localStorage.getItem("onering_broadcast_scenes");
     if (!saved) return { scenes: [], activeSceneId: null, previewSceneId: null };
-    return parseBroadcastScenesPayload(JSON.parse(saved));
+    const parsed: unknown = JSON.parse(saved);
+    if (!isTrustedSyncPayload(parsed, "BROADCAST_SCENES_UPDATE")) {
+      return { scenes: [], activeSceneId: null, previewSceneId: null };
+    }
+    return parseBroadcastScenesPayload(parsed);
   } catch {
     return { scenes: [], activeSceneId: null, previewSceneId: null };
   }
@@ -209,8 +218,10 @@ function readStoredWorkspaceSources(): SceneSourceItem[] {
   try {
     const saved = localStorage.getItem("onering_workspace_autosave_v1");
     if (!saved) return [];
-    const parsed = JSON.parse(saved);
-    return Array.isArray(parsed?.sources) ? parsed.sources : [];
+    const parsed: unknown = JSON.parse(saved);
+    if (!isTrustedSyncPayload(parsed, "WORKSPACE_AUTOSAVE")) return [];
+    const stored = parsed as Record<string, unknown>;
+    return Array.isArray(stored.sources) ? (stored.sources as SceneSourceItem[]) : [];
   } catch {
     return [];
   }
@@ -224,7 +235,9 @@ export const SecondaryOutputWindow: React.FC = () => {
   const [slides, setSlides] = useState<SlideState | null>(() => {
     try {
       const saved = localStorage.getItem("onering_live_slides_state");
-      return saved ? JSON.parse(saved) : null;
+      if (!saved) return null;
+      const parsed: unknown = JSON.parse(saved);
+      return isTrustedSyncPayload(parsed, "SLIDES_STATE") ? (parsed as SlideState) : null;
     } catch {
       return null;
     }
@@ -246,44 +259,57 @@ export const SecondaryOutputWindow: React.FC = () => {
   );
 
   useEffect(() => {
-    const handleMessage = (data: any) => {
-      if (!data) return;
-      if (data.type === "SLIDES_UPDATE" && data.slides) {
-        setSlides(data.slides);
-      }
-      if (
-        data.type === "BROADCAST_SCENES_UPDATE" ||
-        data.type === "SCENES_UPDATE" ||
-        Array.isArray(data.scenes)
+    const handleMessage = (data: unknown) => {
+      if (!data || typeof data !== "object" || Array.isArray(data)) return;
+      const payload = data as Record<string, unknown>;
+      if (typeof payload.type !== "string") return;
+
+      if (payload.type === "SLIDES_UPDATE" && isTrustedSyncPayload(payload, "SLIDES_UPDATE")) {
+        setSlides(payload.slides as SlideState);
+      } else if (
+        payload.type === "BROADCAST_SCENES_UPDATE" ||
+        payload.type === "SCENES_UPDATE" ||
+        Array.isArray(payload.scenes)
       ) {
-        setBroadcastScenes(parseBroadcastScenesPayload(data.payload ?? data));
-      }
-      if (data.type === "SOURCES_UPDATE" && Array.isArray(data.sources)) {
-        setWorkspaceSources(data.sources);
-      }
-      if (data.type === "ACTIVE_SCENE_UPDATE" && typeof data.sceneId === "string") {
-        setBroadcastScenes((prev) => ({ ...prev, activeSceneId: data.sceneId }));
-      }
-      if (data.type === "AUDIENCE_OVERLAY") {
-        const message = data.message as AudienceChatMessage | null;
+        // Some producers wrap the scene list in `payload`; validate the actual scene envelope.
+        const envelope = payload.payload ?? payload;
+        if (isTrustedSyncPayload(envelope, "BROADCAST_SCENES_UPDATE")) {
+          setBroadcastScenes(parseBroadcastScenesPayload(envelope));
+        }
+      } else if (
+        payload.type === "SOURCES_UPDATE" &&
+        isTrustedSyncPayload(payload, "SOURCES_UPDATE")
+      ) {
+        setWorkspaceSources(payload.sources as SceneSourceItem[]);
+      } else if (
+        payload.type === "ACTIVE_SCENE_UPDATE" &&
+        isTrustedSyncPayload(payload, "ACTIVE_SCENE_UPDATE")
+      ) {
+        setBroadcastScenes((prev) => ({ ...prev, activeSceneId: payload.sceneId as string }));
+      } else if (
+        payload.type === "AUDIENCE_OVERLAY" &&
+        isTrustedSyncPayload(payload, "AUDIENCE_OVERLAY")
+      ) {
+        const message = payload.message as AudienceChatMessage | null;
         setAudienceOverlay(
           message && typeof message.id === "string" && typeof message.text === "string"
             ? message
             : null
         );
-      }
-      if (
-        data.type === "STAGE_LAYOUT_UPDATE" &&
-        STAGE_LAYOUT_MODES.includes(data.layout as StageLayoutMode)
+      } else if (
+        payload.type === "STAGE_LAYOUT_UPDATE" &&
+        isTrustedSyncPayload(payload, "STAGE_LAYOUT_UPDATE")
       ) {
-        setStageLayout(data.layout as StageLayoutMode);
-      }
-      if (data.type === "SLIDE_EXTRAS_UPDATE" && Array.isArray(data.slides)) {
+        setStageLayout(payload.layout as StageLayoutMode);
+      } else if (
+        payload.type === "SLIDE_EXTRAS_UPDATE" &&
+        isTrustedSyncPayload(payload, "SLIDE_EXTRAS_UPDATE")
+      ) {
         setSlideExtras({
-          slides: data.slides as EditableSlide[],
-          theme: data.theme as SlideTheme | undefined,
-          stageLayout: STAGE_LAYOUT_MODES.includes(data.stageLayout as StageLayoutMode)
-            ? (data.stageLayout as StageLayoutMode)
+          slides: payload.slides as EditableSlide[],
+          theme: payload.theme as SlideTheme | undefined,
+          stageLayout: STAGE_LAYOUT_MODES.includes(payload.stageLayout as StageLayoutMode)
+            ? (payload.stageLayout as StageLayoutMode)
             : undefined,
         });
       }
@@ -303,24 +329,30 @@ export const SecondaryOutputWindow: React.FC = () => {
     const onStorage = (ev: StorageEvent) => {
       if (ev.key === "onering_live_slides_state" && ev.newValue) {
         try {
-          setSlides(JSON.parse(ev.newValue));
+          const parsed: unknown = JSON.parse(ev.newValue);
+          if (isTrustedSyncPayload(parsed, "SLIDES_STATE")) setSlides(parsed as SlideState);
         } catch {}
       } else if (ev.key === "onering_broadcast_scenes") {
         if (ev.newValue) {
           try {
-            setBroadcastScenes(parseBroadcastScenesPayload(JSON.parse(ev.newValue)));
+            const parsed: unknown = JSON.parse(ev.newValue);
+            if (isTrustedSyncPayload(parsed, "BROADCAST_SCENES_UPDATE")) {
+              setBroadcastScenes(parseBroadcastScenesPayload(parsed));
+            }
           } catch {}
         } else {
           setBroadcastScenes({ scenes: [], activeSceneId: null, previewSceneId: null });
         }
       } else if (ev.key === "onering_workspace_autosave_v1" && ev.newValue) {
         try {
-          const parsed = JSON.parse(ev.newValue);
-          if (Array.isArray(parsed?.sources)) {
-            setWorkspaceSources(parsed.sources);
+          const parsed: unknown = JSON.parse(ev.newValue);
+          if (!isTrustedSyncPayload(parsed, "WORKSPACE_AUTOSAVE")) return;
+          const saved = parsed as Record<string, unknown>;
+          if (Array.isArray(saved.sources)) {
+            setWorkspaceSources(saved.sources as SceneSourceItem[]);
           }
-          if (parsed?.slides) {
-            setSlides((prev) => prev || parsed.slides);
+          if (saved.slides) {
+            setSlides((prev) => prev || (saved.slides as SlideState));
           }
         } catch {}
       } else if (ev.key === STAGE_LAYOUT_KEY && ev.newValue) {
@@ -375,7 +407,7 @@ export const SecondaryOutputWindow: React.FC = () => {
     const handleSelectSceneTile = (sceneId: string) => {
       try {
         const ch = new BroadcastChannel("onering_display_sync");
-        ch.postMessage({ type: "SELECT_SCENE", sceneId });
+        ch.postMessage(stampSyncPayload({ type: "SELECT_SCENE", sceneId }));
         ch.close();
       } catch {}
     };

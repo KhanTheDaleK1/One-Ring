@@ -22,14 +22,19 @@ use runtime::slide_http_adapter::SlideHttpCommand;
 use runtime::dual_stream_adapter::DualStreamCommand;
 use runtime::console_adapter::ConsoleCommand;
 use runtime::{AdapterCommand, AdapterRegistry, RuntimeConfig};
+use runtime::native_capture::{
+    CapturableDisplay, CapturableWindow, NativeCaptureFrame, NativeCaptureManager,
+    NativeCaptureSessionInfo,
+};
 use state::{
     default_section_settings, persist_snapshot_settings, recompute_derived_alerts, with_state,
     AoipRoute, AppSettings, AppState, AppStateSnapshot, CueVerificationReport, CueVerificationStep,
     ManagedState, PreflightCheck, SceneSourceItem, ServiceCue, SharedState, ShowFile, SlideState,
     UndoEntry,
 };
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 static PTZ_IP_SEQ: AtomicU32 = AtomicU32::new(1);
 use tauri::{Emitter, Manager, State};
@@ -51,12 +56,21 @@ pub struct HostDisplayInfo {
 /// them into the hub started alongside peer discovery; the hub fans them out to the other stations.
 #[derive(Clone)]
 pub struct LanSyncHub {
-    outbound: mpsc::UnboundedSender<String>,
+    outbound: Option<mpsc::UnboundedSender<String>>,
     station_id: String,
+    sync_token: String,
 }
 
 impl LanSyncHub {
-    pub fn connect(hub_address: &str, station_id: String) -> Self {
+    pub fn disabled(station_id: String, sync_token: String) -> Self {
+        Self {
+            outbound: None,
+            station_id,
+            sync_token,
+        }
+    }
+
+    pub fn connect(hub_address: &str, station_id: String, sync_token: String) -> Self {
         let (outbound, inbound) = mpsc::unbounded_channel::<String>();
         let url = normalize_lan_sync_url(hub_address);
         std::thread::spawn(move || {
@@ -69,8 +83,9 @@ impl LanSyncHub {
             runtime.block_on(relay_lan_sync_envelopes(url, inbound));
         });
         Self {
-            outbound,
+            outbound: Some(outbound),
             station_id,
+            sync_token,
         }
     }
 
@@ -80,13 +95,21 @@ impl LanSyncHub {
         if kind.trim().is_empty() {
             return Err("LAN sync kind must not be empty".into());
         }
-        let envelope = serde_json::json!({
+        let Some(outbound) = &self.outbound else {
+            return Ok(());
+        };
+        let mut envelope = serde_json::json!({
             "senderId": self.station_id,
             "kind": kind,
             "payload": payload,
             "sentAtMs": unix_millis(),
         });
-        self.outbound
+        if !self.sync_token.trim().is_empty() {
+            if let Some(obj) = envelope.as_object_mut() {
+                obj.insert("syncToken".to_string(), serde_json::Value::String(self.sync_token.clone()));
+            }
+        }
+        outbound
             .send(envelope.to_string())
             .map_err(|_| "LAN sync relay is offline".into())
     }
@@ -1184,7 +1207,8 @@ fn update_settings(
     settings: AppSettings,
     app: tauri::AppHandle,
     state: State<ManagedState>,
-) -> AppStateSnapshot {
+) -> Result<AppStateSnapshot, String> {
+    require_engineer(&state)?;
     let config = RuntimeConfig::from_env_and_settings(&settings);
     {
         let mut inner = state.inner.lock().unwrap();
@@ -1215,7 +1239,7 @@ fn update_settings(
             "[settings] WARNING: failed to persist configuration: {err}"
         ));
     }
-    state.inner.lock().unwrap().clone()
+    Ok(state.inner.lock().unwrap().clone())
 }
 
 /// Persist frontend-authored workspace edits (show name, broadcast sources, imported songs/theme)
@@ -1260,31 +1284,169 @@ fn import_show_file(show: ShowFile, state: State<ManagedState>) -> AppStateSnaps
 
 
 
+fn ct_eq(a: &str, b: &str) -> bool {
+    let a = a.as_bytes();
+    let b = b.as_bytes();
+    let mut diff: usize = a.len() ^ b.len();
+    let max = a.len().max(b.len());
+    for i in 0..max {
+        let x = *a.get(i).unwrap_or(&0);
+        let y = *b.get(i).unwrap_or(&0);
+        diff |= (x ^ y) as usize;
+    }
+    diff == 0
+}
+
+fn require_engineer(managed: &ManagedState) -> Result<(), String> {
+    let mut guard = managed
+        .engineer_unlocked_until
+        .lock()
+        .map_err(|_| "Engineer lock state poisoned".to_string())?;
+    match *guard {
+        Some(deadline) if Instant::now() <= deadline => Ok(()),
+        Some(_) => {
+            *guard = None;
+            Err("Engineer Mode is locked".into())
+        }
+        None => Err("Engineer Mode is locked".into()),
+    }
+}
+
+fn unlock_engineer_with_state(pin: &str, managed: &ManagedState) -> Result<bool, String> {
+    let configured = managed
+        .inner
+        .lock()
+        .map_err(|_| "State lock poisoned".to_string())?
+        .settings
+        .general
+        .engineer_pin
+        .clone();
+    if ct_eq(pin, &configured) {
+        let mut lock = managed
+            .engineer_unlocked_until
+            .lock()
+            .map_err(|_| "Engineer lock state poisoned".to_string())?;
+        *lock = Some(Instant::now() + Duration::from_secs(30 * 60));
+        Ok(true)
+    } else {
+        Err("Invalid Engineer PIN".into())
+    }
+}
+
+fn lock_engineer_with_state(managed: &ManagedState) -> Result<(), String> {
+    let mut lock = managed
+        .engineer_unlocked_until
+        .lock()
+        .map_err(|_| "Engineer lock state poisoned".to_string())?;
+    *lock = None;
+    Ok(())
+}
+
+fn engineer_is_unlocked(managed: &ManagedState) -> Result<bool, String> {
+    let mut guard = managed
+        .engineer_unlocked_until
+        .lock()
+        .map_err(|_| "Engineer lock state poisoned".to_string())?;
+    match *guard {
+        Some(deadline) if Instant::now() <= deadline => Ok(true),
+        Some(_) => {
+            *guard = None;
+            Ok(false)
+        }
+        None => Ok(false),
+    }
+}
+
 #[tauri::command]
-fn open_in_browser(url: String) -> Result<(), String> {
+fn unlock_engineer_mode(pin: String, state: State<ManagedState>) -> Result<bool, String> {
+    unlock_engineer_with_state(&pin, &state)
+}
+
+#[tauri::command]
+fn lock_engineer_mode(state: State<ManagedState>) -> Result<(), String> {
+    lock_engineer_with_state(&state)
+}
+
+#[tauri::command]
+fn get_engineer_lock_status(state: State<ManagedState>) -> Result<bool, String> {
+    engineer_is_unlocked(&state)
+}
+
+fn parse_https_host(url: &str) -> Option<String> {
+    let rest = url.strip_prefix("https://")?;
+    let authority = rest.split(['/', '?', '#']).next()?.trim();
+    if authority.is_empty() {
+        return None;
+    }
+    let host = if authority.starts_with('[') {
+        let end = authority.find(']')?;
+        &authority[1..end]
+    } else {
+        authority.rsplit_once(':').map(|(h, p)| if p.chars().all(|c| c.is_ascii_digit()) { h } else { authority }).unwrap_or(authority)
+    };
+    if host.is_empty() {
+        None
+    } else {
+        Some(host.to_ascii_lowercase())
+    }
+}
+
+fn open_in_browser_allowed_host(host: &str) -> bool {
+    let host = host.to_ascii_lowercase();
+    if matches!(
+        host.as_str(),
+        "github.com" | "objects.githubusercontent.com" | "api.github.com"
+    ) {
+        return true;
+    }
+    if let Some(repo) = option_env!("ONE_RING_UPDATE_REPO") {
+        let repo = repo.trim().to_ascii_lowercase();
+        if !repo.is_empty() && !repo.contains('/') && repo == host {
+            return true;
+        }
+        // If a host-like value was provided, allow it.
+        if repo.contains('.') && !repo.contains('/') && repo == host {
+            return true;
+        }
+    }
+    false
+}
+
+fn validate_open_in_browser_url(url: &str) -> Result<String, String> {
     let trimmed = url.trim();
-    if !(trimmed.starts_with("https://") || trimmed.starts_with("http://")) {
-        return Err("Refused to open URL: only http:// and https:// URLs are allowed".into());
+    if !trimmed.starts_with("https://") {
+        return Err("Refused to open URL: only https:// URLs are allowed".into());
     }
     if trimmed.chars().any(|c| c.is_control() || c.is_whitespace()) {
         return Err("Refused to open URL containing whitespace or control characters".into());
     }
+    let host = parse_https_host(trimmed).ok_or_else(|| "Refused to open URL: invalid host".to_string())?;
+    if !open_in_browser_allowed_host(&host) {
+        return Err(format!("Refused to open URL: host '{host}' is not allowlisted"));
+    }
+    Ok(trimmed.to_string())
+}
+
+#[tauri::command]
+fn open_in_browser(url: String, managed: State<ManagedState>) -> Result<(), String> {
+    require_engineer(&managed)?;
+    let trimmed = validate_open_in_browser_url(&url)?;
 
     #[cfg(target_os = "macos")]
     std::process::Command::new("open")
-        .arg(trimmed)
+        .arg(&trimmed)
         .spawn()
         .map_err(|e| e.to_string())?;
 
     #[cfg(target_os = "windows")]
     std::process::Command::new("rundll32")
-        .args(["url.dll,FileProtocolHandler", trimmed])
+        .args(["url.dll,FileProtocolHandler", &trimmed])
         .spawn()
         .map_err(|e| e.to_string())?;
 
     #[cfg(target_os = "linux")]
     std::process::Command::new("xdg-open")
-        .arg(trimmed)
+        .arg(&trimmed)
         .spawn()
         .map_err(|e| e.to_string())?;
 
@@ -1323,7 +1485,9 @@ fn start_direct_ffmpeg_stream(
     rtmp_url: String,
     record_path: Option<String>,
     ffmpeg: State<runtime::broadcast_daemon::FfmpegStreamProcess>,
+    managed: State<ManagedState>,
 ) -> Result<String, String> {
+    require_engineer(&managed)?;
     ffmpeg.start_stream(&rtmp_url, record_path.as_deref())
 }
 
@@ -1364,10 +1528,28 @@ fn dispatch_broadcast_worker_command(
     cmd: runtime::broadcast_worker_ipc::BroadcastWorkerCommand,
     state: State<ManagedState>,
 ) -> String {
-    let serialized = serde_json::to_string(&cmd).unwrap_or_default();
+    let variant = serde_json::to_value(&cmd)
+        .ok()
+        .and_then(|value| {
+            match value {
+                serde_json::Value::Object(map) => {
+                    if map.len() == 1 {
+                        map.keys().next().cloned()
+                    } else {
+                        map.get("type")
+                            .or_else(|| map.get("command"))
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string())
+                    }
+                }
+                serde_json::Value::String(s) => Some(s),
+                _ => None,
+            }
+        })
+        .unwrap_or_else(|| "unknown".to_string());
     let mut inner = state.inner.lock().unwrap();
-    inner.push_event_log(format!("[broadcast-worker-ipc] {}", serialized));
-    serialized
+    inner.push_event_log(format!("[broadcast-worker-ipc] {variant}"));
+    variant
 }
 
 
@@ -1798,7 +1980,9 @@ fn start_studio_compositor(
     fps: Option<u32>,
     video_bitrate_kbps: Option<u32>,
     worker: State<runtime::broadcast_worker_ipc::BroadcastWorkerSupervisor>,
+    managed: State<ManagedState>,
 ) -> Result<String, String> {
+    require_engineer(&managed)?;
     use runtime::broadcast_worker_ipc::{
         AudioSourceSpec, RecordContainer, RecordOutputSpec, StudioCompositorPlan,
         StreamOutputSpec, StreamProtocol, VideoLayerSpec,
@@ -1924,7 +2108,9 @@ fn configure_audience_relay(
     config: runtime::audience_relay::AudienceRelayConfig,
     app: tauri::AppHandle,
     audience: State<runtime::audience_relay::AudienceState>,
+    managed: State<ManagedState>,
 ) -> Result<String, String> {
+    require_engineer(&managed)?;
     let emit: runtime::audience_relay::AudienceEmit = Arc::new(move |channel: &str, payload: serde_json::Value| {
         let _ = app.emit(channel, payload);
     });
@@ -2101,6 +2287,37 @@ async fn check_update() -> Result<Option<updater::UpdateInfo>, String> {
 
 /// Bounded budget for every individual connectivity probe.
 const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(250);
+
+static ACTIVE_SUBSYSTEM_PROBES: AtomicUsize = AtomicUsize::new(0);
+const MAX_CONCURRENT_SUBSYSTEM_PROBES: usize = 4;
+
+struct ProbeConcurrencyGuard;
+
+impl ProbeConcurrencyGuard {
+    fn try_acquire() -> Result<Self, String> {
+        let mut current = ACTIVE_SUBSYSTEM_PROBES.load(Ordering::SeqCst);
+        loop {
+            if current >= MAX_CONCURRENT_SUBSYSTEM_PROBES {
+                return Err("Too many concurrent subsystem probes".into());
+            }
+            match ACTIVE_SUBSYSTEM_PROBES.compare_exchange(
+                current,
+                current + 1,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            ) {
+                Ok(_) => return Ok(Self),
+                Err(actual) => current = actual,
+            }
+        }
+    }
+}
+
+impl Drop for ProbeConcurrencyGuard {
+    fn drop(&mut self) {
+        ACTIVE_SUBSYSTEM_PROBES.fetch_sub(1, Ordering::SeqCst);
+    }
+}
 
 #[derive(Debug, Clone)]
 struct ProbeOutcome {
@@ -2599,6 +2816,7 @@ async fn test_subsystem_connection(
     host: String,
     port: u16,
 ) -> Result<serde_json::Value, String> {
+    let _probe_guard = ProbeConcurrencyGuard::try_acquire()?;
     if host.trim().is_empty() {
         return Err("Connection host must not be empty".into());
     }
@@ -2765,9 +2983,18 @@ fn build_settings_bundle(settings: &AppSettings) -> String {
 
 /// Export the full configuration as a portable, versioned JSON bundle.
 #[tauri::command]
-fn export_settings_bundle(state: State<SharedState>) -> Result<String, String> {
+fn export_settings_bundle(
+    state: State<SharedState>,
+    managed: State<ManagedState>,
+) -> Result<String, String> {
+    require_engineer(&managed)?;
     let snapshot = state.lock().map_err(|_| "State lock poisoned".to_string())?;
     Ok(build_settings_bundle(&snapshot.settings))
+}
+
+fn contains_disallowed_url_or_path_chars(value: &str) -> bool {
+    let trimmed = value.trim_start();
+    trimmed.starts_with('-') || value.chars().any(|c| c.is_control())
 }
 
 fn validate_settings(settings: &AppSettings) -> Result<(), String> {
@@ -2791,6 +3018,34 @@ fn validate_settings(settings: &AppSettings) -> Result<(), String> {
             return Err(format!("Invalid port for {label}: {port} (ports start at 1)"));
         }
     }
+
+    for dest in &settings.broadcast.destinations {
+        let rtmp = dest.rtmp_url.trim();
+        if !rtmp.is_empty() {
+            let lower = rtmp.to_ascii_lowercase();
+            if !(lower.starts_with("rtmp://") || lower.starts_with("rtmps://") || lower.starts_with("srt://")) {
+                return Err("RTMP destination URLs must start with rtmp://, rtmps://, or srt://".into());
+            }
+            if contains_disallowed_url_or_path_chars(&dest.rtmp_url) {
+                return Err("RTMP destination URLs must not start with '-' or contain control characters".into());
+            }
+        }
+    }
+    if !settings.broadcast.recording_path.trim().is_empty()
+        && contains_disallowed_url_or_path_chars(&settings.broadcast.recording_path)
+    {
+        return Err("Recording path must not start with '-' or contain control characters".into());
+    }
+    if !settings.sync.hub_address.trim().is_empty()
+        && contains_disallowed_url_or_path_chars(&settings.sync.hub_address)
+    {
+        return Err("Hub address must not start with '-' or contain control characters".into());
+    }
+    if !settings.console.ip_address.trim().is_empty()
+        && contains_disallowed_url_or_path_chars(&settings.console.ip_address)
+    {
+        return Err("Console IP address must not start with '-' or contain control characters".into());
+    }
     Ok(())
 }
 
@@ -2813,7 +3068,15 @@ fn parse_settings_bundle(payload: &str) -> Result<AppSettings, String> {
 
 /// Import a versioned bundle (or a raw settings object), validate it and persist it.
 #[tauri::command]
-fn import_settings_bundle(payload: String, state: State<SharedState>) -> Result<AppState, String> {
+fn import_settings_bundle(
+    payload: String,
+    state: State<SharedState>,
+    managed: State<ManagedState>,
+) -> Result<AppState, String> {
+    require_engineer(&managed)?;
+    if payload.len() > 1_048_576 {
+        return Err("Settings bundle exceeds 1 MiB limit".into());
+    }
     let settings = parse_settings_bundle(&payload)?;
     let mut snapshot = state.lock().map_err(|_| "State lock poisoned".to_string())?;
     snapshot.settings = settings;
@@ -2830,7 +3093,12 @@ fn import_settings_bundle(payload: String, state: State<SharedState>) -> Result<
 
 /// Restore one named section to its defaults without disturbing the other sections.
 #[tauri::command]
-fn reset_settings_section(section: String, state: State<SharedState>) -> Result<AppState, String> {
+fn reset_settings_section(
+    section: String,
+    state: State<SharedState>,
+    managed: State<ManagedState>,
+) -> Result<AppState, String> {
+    require_engineer(&managed)?;
     let mut snapshot = state.lock().map_err(|_| "State lock poisoned".to_string())?;
     default_section_settings(&mut snapshot.settings, &section)?;
     snapshot.push_event_log(format!("[settings] Reset '{section}' section to defaults"));
@@ -2859,6 +3127,9 @@ fn is_sensitive_key(key: &str) -> bool {
         "pin",
         "email",
         "key",
+        "recordingpath",
+        "rtmpurl",
+        "hubaddress",
     ]
     .iter()
     .any(|needle| normalized.contains(needle))
@@ -2896,7 +3167,7 @@ fn build_diagnostic_bundle(snapshot: &AppStateSnapshot) -> Result<String, String
             serde_json::json!({
                 "id": health.id,
                 "status": health.status,
-                "detail": health.detail,
+                "detail": REDACTED,
                 "protocol": health.protocol,
                 "latencyMs": health.latency_ms,
             })
@@ -2926,14 +3197,22 @@ fn build_diagnostic_bundle(snapshot: &AppStateSnapshot) -> Result<String, String
 
 /// Export a sanitized snapshot for support: no credentials, tokens or PINs are included.
 #[tauri::command]
-fn export_diagnostic_bundle(state: State<SharedState>) -> Result<String, String> {
+fn export_diagnostic_bundle(
+    state: State<SharedState>,
+    managed: State<ManagedState>,
+) -> Result<String, String> {
+    require_engineer(&managed)?;
     let snapshot = state.lock().map_err(|_| "State lock poisoned".to_string())?;
     build_diagnostic_bundle(&snapshot)
 }
 
 /// Create (if needed) and reveal the folder holding settings.json.
 #[tauri::command]
-fn open_config_directory(app: tauri::AppHandle) -> Result<String, String> {
+fn open_config_directory(
+    app: tauri::AppHandle,
+    managed: State<ManagedState>,
+) -> Result<String, String> {
+    require_engineer(&managed)?;
     let directory = app
         .path()
         .app_config_dir()
@@ -2962,6 +3241,45 @@ fn open_config_directory(app: tauri::AppHandle) -> Result<String, String> {
     Ok("Opened configuration directory".into())
 }
 
+#[tauri::command]
+fn list_capturable_windows() -> Vec<CapturableWindow> {
+    runtime::native_capture::list_capturable_windows()
+}
+
+#[tauri::command]
+fn list_capturable_displays() -> Vec<CapturableDisplay> {
+    runtime::native_capture::list_capturable_displays()
+}
+
+#[tauri::command]
+fn capture_native_frame(
+    source_id: String,
+    target_kind: String,
+    target_id: u64,
+) -> Result<NativeCaptureFrame, String> {
+    runtime::native_capture::capture_native_frame(&source_id, &target_kind, target_id)
+}
+
+#[tauri::command]
+fn start_native_capture_stream(
+    app: tauri::AppHandle,
+    manager: State<NativeCaptureManager>,
+    source_id: String,
+    target_kind: String,
+    target_id: u64,
+    fps: u32,
+) -> Result<NativeCaptureSessionInfo, String> {
+    manager.start_stream(app, source_id, target_kind, target_id, fps)
+}
+
+#[tauri::command]
+fn stop_native_capture_stream(
+    source_id: String,
+    manager: State<NativeCaptureManager>,
+) -> Result<bool, String> {
+    manager.stop_stream(&source_id)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -2971,6 +3289,7 @@ pub fn run() {
         .manage(runtime::broadcast_daemon::ReplayBufferProcess::default())
         .manage(runtime::broadcast_worker_ipc::BroadcastWorkerSupervisor::default())
         .manage(runtime::audience_relay::AudienceState::default())
+        .manage(NativeCaptureManager::default())
         .setup(|app| {
             let managed = app.state::<ManagedState>();
 
@@ -3079,7 +3398,12 @@ pub fn run() {
                     std::process::id()
                 )
             };
-            app.manage(LanSyncHub::connect(&settings.sync.hub_address, station_id));
+            let sync_token = settings.sync.sync_token.clone();
+            if settings.sync.lan_discovery_enabled {
+                app.manage(LanSyncHub::connect(&settings.sync.hub_address, station_id, sync_token));
+            } else {
+                app.manage(LanSyncHub::disabled(station_id, sync_token));
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -3160,7 +3484,15 @@ pub fn run() {
             import_settings_bundle,
             reset_settings_section,
             export_diagnostic_bundle,
-            open_config_directory
+            open_config_directory,
+            unlock_engineer_mode,
+            lock_engineer_mode,
+            get_engineer_lock_status,
+            list_capturable_windows,
+            list_capturable_displays,
+            capture_native_frame,
+            start_native_capture_stream,
+            stop_native_capture_stream
         ])
         .build(tauri::generate_context!())
         .expect("error while building One Ring")
@@ -3170,6 +3502,7 @@ pub fn run() {
                 app_handle.state::<runtime::broadcast_daemon::FfmpegStreamProcess>().stop();
                 app_handle.state::<runtime::broadcast_daemon::ReplayBufferProcess>().stop();
                 app_handle.state::<runtime::broadcast_worker_ipc::BroadcastWorkerSupervisor>().stop();
+                app_handle.state::<NativeCaptureManager>().stop_all();
             }
         });
 }
@@ -3254,12 +3587,22 @@ mod settings_ipc_tests {
         snapshot.settings.slides.song_library_client_secret = "CLIENT_SECRET_SENTINEL".into();
         snapshot.settings.sync.sync_token = "TOKEN_SENTINEL".into();
         snapshot.settings.sync.account_email = "OWNER_EMAIL_SENTINEL".into();
+        snapshot.settings.broadcast.recording_path = "/var/lib/private/recordings".into();
+        snapshot.settings.sync.hub_address = "ws://192.0.2.55:47800".into();
         snapshot.settings.broadcast.destinations.push(RtmpDestination {
             id: "primary".into(),
             platform: "generic".into(),
             rtmp_url: "rtmp://192.0.2.20/live".into(),
             stream_key: "STREAM_KEY_SENTINEL".into(),
             enabled: true,
+        });
+        snapshot.health.push(crate::state::DomainHealth {
+            id: "test-health".into(),
+            label: "Test".into(),
+            status: "ok".into(),
+            detail: "Internal path /secret/path and host 192.0.2.99".into(),
+            protocol: "test".into(),
+            latency_ms: 5,
         });
 
         let diagnostics = build_diagnostic_bundle(&snapshot).expect("diagnostics");
@@ -3268,7 +3611,65 @@ mod settings_ipc_tests {
         assert!(!diagnostics.contains("TOKEN_SENTINEL"));
         assert!(!diagnostics.contains("OWNER_EMAIL_SENTINEL"));
         assert!(!diagnostics.contains("STREAM_KEY_SENTINEL"));
+        assert!(!diagnostics.contains("/var/lib/private/recordings"));
+        assert!(!diagnostics.contains("rtmp://192.0.2.20/live"));
+        assert!(!diagnostics.contains("ws://192.0.2.55:47800"));
+        assert!(!diagnostics.contains("Internal path /secret/path and host 192.0.2.99"));
         assert!(diagnostics.contains(REDACTED));
         assert!(diagnostics.contains(env!("CARGO_PKG_VERSION")));
+    }
+
+    #[test]
+    fn unlock_and_require_engineer_mode() {
+        let managed = state::ManagedState::default();
+        {
+            let mut inner = managed.inner.lock().unwrap();
+            inner.settings.general.engineer_pin = "1234".into();
+        }
+        assert!(require_engineer(&managed).is_err());
+        assert_eq!(engineer_is_unlocked(&managed).unwrap(), false);
+        assert!(unlock_engineer_with_state("0000", &managed).is_err());
+        assert!(require_engineer(&managed).is_err());
+        assert_eq!(unlock_engineer_with_state("1234", &managed).unwrap(), true);
+        assert_eq!(engineer_is_unlocked(&managed).unwrap(), true);
+        assert!(require_engineer(&managed).is_ok());
+        lock_engineer_with_state(&managed).unwrap();
+        assert!(require_engineer(&managed).is_err());
+        assert_eq!(engineer_is_unlocked(&managed).unwrap(), false);
+    }
+
+    #[test]
+    fn open_in_browser_url_validation_allows_only_https_allowlisted_hosts() {
+        assert!(validate_open_in_browser_url("https://github.com/example/repo").is_ok());
+        assert!(validate_open_in_browser_url("https://api.github.com/repos/example/repo/releases").is_ok());
+        assert!(validate_open_in_browser_url("https://objects.githubusercontent.com/some/path").is_ok());
+        assert!(validate_open_in_browser_url("http://github.com/example/repo").is_err());
+        assert!(validate_open_in_browser_url("https://evil.example.com/path").is_err());
+        assert!(validate_open_in_browser_url("javascript:alert(1)").is_err());
+        assert!(validate_open_in_browser_url("https://github.com/\nbad").is_err());
+    }
+
+    #[test]
+    fn settings_validation_rejects_bad_rtmp_urls_and_paths() {
+        let mut settings = AppSettings::default();
+        settings.broadcast.destinations.push(RtmpDestination {
+            id: "primary".into(),
+            platform: "generic".into(),
+            rtmp_url: "javascript:alert(1)".into(),
+            stream_key: String::new(),
+            enabled: true,
+        });
+        assert!(validate_settings(&settings).is_err());
+
+        let mut settings = AppSettings::default();
+        settings.broadcast.destinations.push(RtmpDestination {
+            id: "primary".into(),
+            platform: "generic".into(),
+            rtmp_url: "rtmps://192.0.2.20/live".into(),
+            stream_key: String::new(),
+            enabled: true,
+        });
+        settings.broadcast.recording_path = "-bad-path".into();
+        assert!(validate_settings(&settings).is_err());
     }
 }

@@ -15,8 +15,10 @@ import {
   DEFAULT_AUDIENCE_RELAY_CONFIG,
   getAudienceChatHistory,
   getStreamStats,
+  isTrustedSyncPayload,
   pinAudienceMessage,
   sendAudienceMessage,
+  stampSyncPayload,
 } from "../bridge";
 import type {
   AudienceChatMessage,
@@ -85,6 +87,12 @@ const normalizeRole = (role: string): AudienceChatRole => {
 const roleColor = (role: AudienceChatRole): string =>
   role === "HOST" ? "#FBBF24" : role === "MOD" ? "#A78BFA" : "#60A5FA";
 
+/** Persist only non-secret relay settings; the auth token stays in memory / native storage. */
+function persistRelayConfig(config: AudienceRelayConfig): void {
+  const { authToken: _secret, ...persisted } = config;
+  localStorage.setItem(RELAY_STORAGE_KEY, JSON.stringify(persisted));
+}
+
 function loadRelayConfig(): AudienceRelayConfig {
   try {
     const raw = localStorage.getItem(RELAY_STORAGE_KEY);
@@ -95,17 +103,22 @@ function loadRelayConfig(): AudienceRelayConfig {
           parsed.mode === "webhook" || parsed.mode === "irc" || parsed.mode === "websocket"
             ? parsed.mode
             : DEFAULT_AUDIENCE_RELAY_CONFIG.mode;
-        return {
+        const config: AudienceRelayConfig = {
           enabled: Boolean(parsed.enabled),
           mode,
           endpointUrl: typeof parsed.endpointUrl === "string" ? parsed.endpointUrl : "",
-          authToken: typeof parsed.authToken === "string" ? parsed.authToken : "",
+          authToken: "",
           channelName: typeof parsed.channelName === "string" ? parsed.channelName : "",
           hostDisplayName:
             typeof parsed.hostDisplayName === "string" ? parsed.hostDisplayName : "Host",
           statsWebhookUrl:
             typeof parsed.statsWebhookUrl === "string" ? parsed.statsWebhookUrl : "",
         };
+        if (typeof parsed.authToken === "string") {
+          // Migrate an older entry that captured a token: rewrite it without the secret.
+          persistRelayConfig(config);
+        }
+        return config;
       }
     }
   } catch {
@@ -268,7 +281,11 @@ export const StreamAudienceDock: React.FC<StreamAudienceDockProps> = ({
     try {
       const stored = localStorage.getItem(OVERLAY_STORAGE_KEY);
       if (stored) {
-        const restored = parseMessage(JSON.parse(stored));
+        const parsed: unknown = JSON.parse(stored);
+        const candidate = isTrustedSyncPayload(parsed, "AUDIENCE_OVERLAY")
+          ? (parsed as { message?: unknown }).message
+          : parsed;
+        const restored = parseMessage(candidate);
         if (restored) setPinnedId(restored.id);
       }
     } catch {
@@ -356,13 +373,14 @@ export const StreamAudienceDock: React.FC<StreamAudienceDockProps> = ({
   }, [modalOpen]);
 
   const publishOverlay = useCallback((message: AudienceChatMessage | null) => {
+    const payload = stampSyncPayload({ type: "AUDIENCE_OVERLAY", message });
     try {
-      channelRef.current?.postMessage({ type: "AUDIENCE_OVERLAY", message });
+      channelRef.current?.postMessage(payload);
     } catch {
       // cross-window transport is optional
     }
     try {
-      localStorage.setItem(OVERLAY_STORAGE_KEY, message ? JSON.stringify(message) : "");
+      localStorage.setItem(OVERLAY_STORAGE_KEY, message ? JSON.stringify(payload) : "");
     } catch {
       // storage may be unavailable in a constrained webview
     }
@@ -419,7 +437,7 @@ export const StreamAudienceDock: React.FC<StreamAudienceDockProps> = ({
     try {
       const result = await configureAudienceRelay(config);
       try {
-        localStorage.setItem(RELAY_STORAGE_KEY, JSON.stringify(config));
+        persistRelayConfig(config);
       } catch {
         // configuration still applies to this session
       }

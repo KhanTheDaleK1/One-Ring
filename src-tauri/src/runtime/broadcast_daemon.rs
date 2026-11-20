@@ -6,7 +6,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::io::{BufRead, BufReader, Write};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -33,13 +33,96 @@ pub struct MediaEngineStatus {
     pub daemon_running: bool,
 }
 
+/// Only explicit ingest schemes are allowed as FFmpeg stream destinations. Rejecting
+/// option-like and protocol-like values here keeps untrusted input off the subprocess
+/// command line.
+pub fn validate_stream_url(url: &str) -> Result<String, String> {
+    let trimmed = url.trim();
+    if trimmed.is_empty() {
+        return Err("Stream URL must not be empty".into());
+    }
+    if trimmed.starts_with('-') {
+        return Err("Stream URL must not start with '-'".into());
+    }
+    if trimmed.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        return Err("Stream URL must not contain whitespace or control characters".into());
+    }
+    let lowered = trimmed.to_ascii_lowercase();
+    if !(lowered.starts_with("rtmp://")
+        || lowered.starts_with("rtmps://")
+        || lowered.starts_with("srt://"))
+    {
+        return Err("Stream URL must use an allowed ingest scheme".into());
+    }
+    Ok(trimmed.to_string())
+}
+
+/// Detect a `scheme:`-style prefix before the first path separator. FFmpeg interprets
+/// such arguments as protocol URLs rather than plain files. A Windows drive designator
+/// is a local path, not a protocol.
+fn has_protocol_prefix(value: &str) -> bool {
+    for (_idx, ch) in value.char_indices() {
+        match ch {
+            '/' | '\\' => return false,
+            ':' => {
+                #[cfg(windows)]
+                {
+                    if _idx == 1 && value.as_bytes()[0].is_ascii_alphabetic() {
+                        return false;
+                    }
+                }
+                return true;
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
+/// Validate a local recording destination before it is passed to FFmpeg as an output
+/// argument: no empty values, option injection, control characters, parent traversal,
+/// or protocol prefixes.
+pub fn validate_media_path(path: &str) -> Result<PathBuf, String> {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return Err("Media path must not be empty".into());
+    }
+    if trimmed.starts_with('-') {
+        return Err("Media path must not start with '-'".into());
+    }
+    if trimmed.chars().any(|c| c.is_control()) {
+        return Err("Media path must not contain control characters".into());
+    }
+    if has_protocol_prefix(trimmed) {
+        return Err("Media path must not contain a protocol prefix".into());
+    }
+    let candidate = Path::new(trimmed);
+    if candidate.components().any(|c| matches!(c, Component::ParentDir)) {
+        return Err("Media path must not contain parent traversal components".into());
+    }
+    Ok(candidate.to_path_buf())
+}
+
 fn find_in_path(names: &[&str]) -> Option<String> {
     let path_var = std::env::var_os("PATH")?;
     for dir in std::env::split_paths(&path_var) {
         for name in names {
             let candidate = dir.join(name);
-            if candidate.is_file() {
-                return Some(candidate.to_string_lossy().to_string());
+            let Ok(meta) = std::fs::metadata(&candidate) else {
+                continue;
+            };
+            if !meta.is_file() {
+                continue;
+            }
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                if meta.permissions().mode() & 0o111 == 0 {
+                    continue;
+                }
+            }
+            if let Ok(canonical) = candidate.canonicalize() {
+                return Some(canonical.to_string_lossy().to_string());
             }
         }
     }
@@ -529,9 +612,16 @@ impl FfmpegStreamProcess {
         if self.is_running() {
             return Ok("FFmpeg native encoder already streaming".into());
         }
-        let rec_clean = record_path.map(str::trim).filter(|s| !s.is_empty());
-        let rtmp_clean = rtmp_url.trim();
-        if rec_clean.is_none() && rtmp_clean.is_empty() {
+        let rec_clean = match record_path.map(str::trim).filter(|s| !s.is_empty()) {
+            Some(path) => Some(validate_media_path(path)?),
+            None => None,
+        };
+        let rtmp_clean = if rtmp_url.trim().is_empty() {
+            None
+        } else {
+            Some(validate_stream_url(rtmp_url)?)
+        };
+        if rec_clean.is_none() && rtmp_clean.is_none() {
             return Err("No RTMP URL or local recording path configured for standalone FFmpeg".into());
         }
 
@@ -570,33 +660,34 @@ impl FfmpegStreamProcess {
         }
 
         // Apply codec options explicitly per output so multi-output streams never fall back to flv1/mp3.
-        if let Some(rec) = rec_clean {
-            if let Some(parent) = Path::new(rec).parent() {
+        if let Some(rec) = &rec_clean {
+            if let Some(parent) = rec.parent() {
                 if !parent.as_os_str().is_empty() {
                     let _ = std::fs::create_dir_all(parent);
                 }
             }
             push_video_encode_args(&mut args, has_audio);
-            let ext = Path::new(rec)
+            let ext = rec
                 .extension()
                 .and_then(|e| e.to_str())
                 .unwrap_or("mp4")
                 .to_ascii_lowercase();
+            let rec_arg = rec.to_string_lossy().to_string();
             match ext.as_str() {
-                "mkv" => args.extend(["-f".into(), "matroska".into(), rec.to_string()]),
-                "flv" => args.extend(["-f".into(), "flv".into(), rec.to_string()]),
+                "mkv" => args.extend(["-f".into(), "matroska".into(), rec_arg]),
+                "flv" => args.extend(["-f".into(), "flv".into(), rec_arg]),
                 _ => args.extend([
                     "-movflags".into(),
                     "+frag_keyframe+empty_moov".into(),
                     "-f".into(),
                     "mp4".into(),
-                    rec.to_string(),
+                    rec_arg,
                 ]),
             }
         }
-        if !rtmp_clean.is_empty() {
+        if let Some(url) = &rtmp_clean {
             push_video_encode_args(&mut args, has_audio);
-            args.extend(["-f".into(), "flv".into(), rtmp_clean.to_string()]);
+            args.extend(["-f".into(), "flv".into(), url.clone()]);
         }
 
         args.extend(["-progress".into(), "pipe:1".into(), "-nostats".into()]);
@@ -613,7 +704,7 @@ impl FfmpegStreamProcess {
             let mut latest = self.latest_stats.lock().unwrap();
             *latest = LatestFfmpegStats::default();
             latest.snapshot.source = "ffmpeg".into();
-            latest.snapshot.live = !rtmp_clean.is_empty();
+            latest.snapshot.live = rtmp_clean.is_some();
             latest.snapshot.recording = rec_clean.is_some();
             latest.snapshot.updated_at_ms = now_ms();
         }
@@ -676,6 +767,61 @@ impl Drop for TempDirGuard {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.0);
     }
+}
+
+/// Upper bound on archive members unpacked from a schedule archive.
+pub const MAX_ARCHIVE_ENTRIES: usize = 500;
+
+/// Screen ZIP member names before any extraction happens. Absolute paths and parent
+/// traversal components would let an archive write outside its temporary directory.
+pub fn screen_archive_members(names: &[String]) -> Result<(), String> {
+    if names.len() > MAX_ARCHIVE_ENTRIES {
+        return Err(format!(
+            "Archive has {} entries; limit is {MAX_ARCHIVE_ENTRIES}",
+            names.len()
+        ));
+    }
+    for name in names {
+        if name.is_empty() {
+            return Err("Archive contains an empty member name".into());
+        }
+        if name.starts_with('/') || name.starts_with('\\') {
+            return Err(format!("Archive contains an absolute member path: {name}"));
+        }
+        if name.split(['/', '\\']).any(|part| part == "..") {
+            return Err(format!("Archive contains a parent traversal member: {name}"));
+        }
+    }
+    Ok(())
+}
+
+/// List member names without unpacking so they can be screened first.
+fn list_archive_members(file_path: &str) -> Result<Vec<String>, String> {
+    #[cfg(not(target_os = "windows"))]
+    let output = Command::new("unzip")
+        .args(["-Z1", file_path])
+        .output()
+        .map_err(|e| format!("Failed to list archive members: {e}"))?;
+
+    #[cfg(target_os = "windows")]
+    let script = format!(
+        "Add-Type -AssemblyName System.IO.Compression.FileSystem; $z = [System.IO.Compression.ZipFile]::OpenRead('{}'); try {{ $z.Entries | ForEach-Object {{ $_.FullName }} }} finally {{ $z.Dispose() }}",
+        file_path.replace('\'', "''")
+    );
+    #[cfg(target_os = "windows")]
+    let output = Command::new("powershell")
+        .args(["-NoProfile", "-Command", &script])
+        .output()
+        .map_err(|e| format!("Failed to list archive members: {e}"))?;
+
+    if !output.status.success() {
+        return Err("Failed to list archive members".into());
+    }
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(|line| line.trim_end_matches('\r').to_string())
+        .filter(|line| !line.is_empty())
+        .collect())
 }
 
 /// Strip basic RTF control words (`\par`, `\line`, `{\fonttbl...}`, etc.) to readable lyrics text.
@@ -770,6 +916,8 @@ pub fn parse_slide_archive(file_path: &str) -> Result<Vec<ImportedSongPayload>, 
     if !p.exists() {
         return Err(format!("File not found: {file_path}"));
     }
+    let members = list_archive_members(file_path)?;
+    screen_archive_members(&members)?;
     let nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos())
@@ -811,39 +959,44 @@ pub fn parse_slide_archive(file_path: &str) -> Result<Vec<ImportedSongPayload>, 
 
     let db_path = tmp_dir.join("main.db");
     let mut results = Vec::new();
-    if db_path.exists() {
-        let db_str = db_path.to_string_lossy();
-        // Prefer JSON mode in sqlite3 so multi-line RTF/text columns never split across rows.
-        if let Ok(out) = Command::new("sqlite3")
-            .args([
-                "-json",
-                db_str.as_ref(),
-                "SELECT title, COALESCE(words, '') AS words FROM song;",
-            ])
-            .output()
-        {
-            if out.status.success() {
-                if let Ok(rows) = serde_json::from_slice::<Vec<serde_json::Value>>(&out.stdout) {
-                    for row in rows {
-                        let title = row
-                            .get("title")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .trim();
-                        let words = row
-                            .get("words")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("");
-                        if !title.is_empty() {
-                            results.push(ImportedSongPayload {
-                                title: title.to_string(),
-                                raw_lyrics: strip_basic_rtf(words),
-                            });
+    match std::fs::symlink_metadata(&db_path) {
+        Ok(meta) if meta.file_type().is_file() => {
+            let db_str = db_path.to_string_lossy();
+            // Prefer JSON mode in sqlite3 so multi-line RTF/text columns never split across rows.
+            if let Ok(out) = Command::new("sqlite3")
+                .args([
+                    "-json",
+                    db_str.as_ref(),
+                    "SELECT title, COALESCE(words, '') AS words FROM song;",
+                ])
+                .output()
+            {
+                if out.status.success() {
+                    if let Ok(rows) = serde_json::from_slice::<Vec<serde_json::Value>>(&out.stdout) {
+                        for row in rows {
+                            let title = row
+                                .get("title")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .trim();
+                            let words = row
+                                .get("words")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("");
+                            if !title.is_empty() {
+                                results.push(ImportedSongPayload {
+                                    title: title.to_string(),
+                                    raw_lyrics: strip_basic_rtf(words),
+                                });
+                            }
                         }
                     }
                 }
             }
         }
+        Ok(_) => return Err("Archived database entry is not a regular file".into()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(format!("Failed to inspect archived database entry: {e}")),
     }
     if results.is_empty() {
         results.push(ImportedSongPayload {
@@ -1030,11 +1183,11 @@ impl ReplayBufferProcess {
 /// Never overwrites the input file in-place.
 pub fn remux_mkv_to_mp4(input_path: &str) -> Result<String, String> {
     let bin = find_ffmpeg_binary().ok_or_else(|| "FFmpeg binary not found for auto-remux".to_string())?;
-    let p = Path::new(input_path);
-    if !p.exists() {
+    let p = validate_media_path(input_path)?;
+    if !p.is_file() {
         return Err(format!("Recording not found: {input_path}"));
     }
-    let out = if p
+    let final_out = if p
         .extension()
         .and_then(|e| e.to_str())
         .map(|e| e.eq_ignore_ascii_case("mp4"))
@@ -1048,20 +1201,34 @@ pub fn remux_mkv_to_mp4(input_path: &str) -> Result<String, String> {
     } else {
         p.with_extension("mp4")
     };
+    let stem = final_out
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| "recording".into());
+    // Never hand FFmpeg a destination it may silently overwrite. Write to a unique
+    // sibling first, then publish it with an atomic rename only on success.
+    let temp_out = final_out.with_file_name(format!("{stem}_remux_{}.mp4", std::process::id()));
+    let input_arg = p.to_string_lossy().to_string();
+    let temp_arg = temp_out.to_string_lossy().to_string();
     let status = Command::new(&bin)
         .args([
-            "-y",
-            "-i", input_path,
+            "-n",
+            "-i", &input_arg,
             "-c", "copy",
             "-movflags", "+faststart",
-            &out.to_string_lossy(),
+            &temp_arg,
         ])
         .output()
         .map_err(|e| format!("Failed to spawn FFmpeg remux: {e}"))?;
     if !status.status.success() {
+        let _ = std::fs::remove_file(&temp_out);
         return Err(format!("FFmpeg remux failed: {}", String::from_utf8_lossy(&status.stderr)));
     }
-    Ok(format!("Remuxed cleanly to {}", out.display()))
+    std::fs::rename(&temp_out, &final_out).map_err(|e| {
+        let _ = std::fs::remove_file(&temp_out);
+        format!("Failed to finalize remuxed recording: {e}")
+    })?;
+    Ok(format!("Remuxed cleanly to {}", final_out.display()))
 }
 
 #[cfg(test)]
@@ -1118,5 +1285,93 @@ mod tests {
         let caps = parse_ffmpeg_encoder_table(&table);
         let hw_count = caps.iter().filter(|c| c.neutral_id == "hw_h264").count();
         assert_eq!(hw_count, 1);
+    }
+
+    #[test]
+    fn validate_stream_url_accepts_only_ingest_schemes() {
+        for url in [
+            "rtmp://ingest.example/live/key",
+            "rtmps://ingest.example/live/key",
+            "srt://ingest.example:9000",
+        ] {
+            assert_eq!(validate_stream_url(url), Ok(url.to_string()));
+        }
+        assert_eq!(
+            validate_stream_url("  rtmps://ingest.example/live/key  "),
+            Ok("rtmps://ingest.example/live/key".to_string())
+        );
+    }
+
+    #[test]
+    fn validate_stream_url_rejects_option_and_untrusted_values() {
+        for bad in [
+            "",
+            "-f mpegts",
+            "rtmp://ingest.example/key -y",
+            "rtmp://ingest.example/key\n-y",
+            "https://ingest.example/live",
+            "file:///tmp/key",
+            "rtmp://ingest.example/\u{7f}key",
+        ] {
+            assert!(validate_stream_url(bad).is_err(), "accepted {bad:?}");
+        }
+    }
+
+    #[test]
+    fn validate_media_path_accepts_local_paths() {
+        assert_eq!(
+            validate_media_path("capture.mkv"),
+            Ok(PathBuf::from("capture.mkv"))
+        );
+        assert_eq!(
+            validate_media_path("/tmp/capture.mp4"),
+            Ok(PathBuf::from("/tmp/capture.mp4"))
+        );
+        assert_eq!(
+            validate_media_path("services Sunday/capture.mkv"),
+            Ok(PathBuf::from("services Sunday/capture.mkv"))
+        );
+    }
+
+    #[test]
+    fn validate_media_path_rejects_injection_and_traversal() {
+        for bad in [
+            "",
+            "-f matroska",
+            "capture\u{0000}.mkv",
+            "../outside.mkv",
+            "recordings/../../outside.mkv",
+            "..",
+            "http://example/capture.mp4",
+            "concat:list.txt",
+            "file:/tmp/capture.mp4",
+            "pipe:1",
+        ] {
+            assert!(validate_media_path(bad).is_err(), "accepted {bad:?}");
+        }
+    }
+
+    #[test]
+    fn screen_archive_members_rejects_unsafe_entries() {
+        let safe: Vec<String> = ["main.db", "art/cover.jpg", "songs/theme.txt"]
+            .iter()
+            .map(|name| name.to_string())
+            .collect();
+        assert!(screen_archive_members(&safe).is_ok());
+
+        let too_many: Vec<String> = (0..MAX_ARCHIVE_ENTRIES + 1)
+            .map(|idx| format!("entry{idx}.txt"))
+            .collect();
+        assert!(screen_archive_members(&too_many).is_err());
+
+        for bad in [
+            "/tmp/outside.db",
+            "\\outside\\main.db",
+            "../main.db",
+            "art/../../main.db",
+            "art\\..\\main.db",
+        ] {
+            assert!(screen_archive_members(&[bad.to_string()]).is_err(), "accepted {bad:?}");
+        }
     }
 }

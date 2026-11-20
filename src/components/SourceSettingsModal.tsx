@@ -1,5 +1,11 @@
-import React, { useState, useEffect } from "react";
-import { listOpenWindows, listHostMediaDevices, type HostMediaDevice } from "../bridge";
+import React, { useState, useEffect, useCallback } from "react";
+import {
+  listHostMediaDevices,
+  listCapturableWindows,
+  listCapturableDisplays,
+  type HostMediaDevice,
+} from "../bridge";
+import type { CapturableDisplay, CapturableWindow, SceneSourceItem } from "../types";
 import {
   Settings,
   X,
@@ -15,7 +21,6 @@ import {
   Sliders,
   FolderOpen,
 } from "lucide-react";
-import type { SceneSourceItem } from "../types";
 
 interface SourceSettingsModalProps {
   source: SceneSourceItem | null;
@@ -33,8 +38,10 @@ export const SourceSettingsModal: React.FC<SourceSettingsModalProps> = ({
   if (!isOpen || !source) return null;
 
   const [name, setName] = useState(source.name);
-  const [openWindows, setOpenWindows] = useState<string[]>([]);
+  const [capturableWindows, setCapturableWindows] = useState<CapturableWindow[]>([]);
+  const [capturableDisplays, setCapturableDisplays] = useState<CapturableDisplay[]>([]);
   const [loadingWindows, setLoadingWindows] = useState(false);
+  const [loadingDisplays, setLoadingDisplays] = useState(false);
   const [hardwareDevices, setHardwareDevices] = useState<HostMediaDevice[]>([]);
 
   useEffect(() => {
@@ -43,24 +50,76 @@ export const SourceSettingsModal: React.FC<SourceSettingsModalProps> = ({
     }
   }, [isOpen]);
 
-  const refreshWindows = () => {
+  const refreshWindows = useCallback(async () => {
     setLoadingWindows(true);
-    listOpenWindows().then((wins) => {
-      setOpenWindows(wins);
+    try {
+      setCapturableWindows(await listCapturableWindows());
+    } catch {
+      setCapturableWindows([]);
+    } finally {
       setLoadingWindows(false);
-    });
-  };
+    }
+  }, []);
+
+  const refreshDisplays = useCallback(async () => {
+    setLoadingDisplays(true);
+    try {
+      setCapturableDisplays(await listCapturableDisplays());
+    } catch {
+      setCapturableDisplays([]);
+    } finally {
+      setLoadingDisplays(false);
+    }
+  }, []);
 
   useEffect(() => {
-    if (isOpen && source?.type === "window_capture") {
-      refreshWindows();
-    }
-  }, [isOpen, source?.type]);
-  const [settings, setSettings] = useState<Record<string, any>>({ ...source.settings });
+    if (isOpen && source?.type === "window_capture") void refreshWindows();
+  }, [isOpen, source?.type, refreshWindows]);
+
+  useEffect(() => {
+    if (isOpen && source?.type === "display_capture") void refreshDisplays();
+  }, [isOpen, source?.type, refreshDisplays]);
+
+  const [settings, setSettings] = useState<Record<string, any>>(() => ({
+    ...(source.type === "window_capture" || source.type === "display_capture"
+      ? { captureMethod: "native", fps: 5 }
+      : {}),
+    ...source.settings,
+  }));
 
   const patchSetting = (key: string, val: any) => {
     setSettings((prev) => ({ ...prev, [key]: val }));
   };
+
+  const renderCaptureMethod = () => (
+    <div>
+      <label style={labelStyle}>Capture Method</label>
+      <select
+        style={inputStyle}
+        value={settings.captureMethod || "native"}
+        onChange={(e) => patchSetting("captureMethod", e.target.value)}
+      >
+        <option value="native">Native — Zero-Popup (recommended)</option>
+        <option value="browser">Browser picker (explicit fallback)</option>
+      </select>
+    </div>
+  );
+
+  const renderFpsSelector = () => (
+    <div>
+      <label style={labelStyle}>Capture Frame Rate (FPS)</label>
+      <select
+        style={inputStyle}
+        value={Number(settings.fps ?? 5)}
+        onChange={(e) => patchSetting("fps", Number(e.target.value))}
+      >
+        <option value={2}>2 fps — low bandwidth</option>
+        <option value={5}>5 fps — recommended for slides</option>
+        <option value={10}>10 fps</option>
+        <option value={15}>15 fps — smooth motion</option>
+      </select>
+    </div>
+  );
 
   const renderFields = () => {
     switch (source.type) {
@@ -157,17 +216,46 @@ export const SourceSettingsModal: React.FC<SourceSettingsModalProps> = ({
         return (
           <>
             <div>
-              <label style={labelStyle}>Display / Monitor</label>
-              <select
-                style={inputStyle}
-                value={settings.display || 0}
-                onChange={(e) => patchSetting("display", Number(e.target.value))}
-              >
-                <option value={0}>Display 1: Main Desktop (1920x1080)</option>
-                <option value={1}>Display 2: Projector / FOH Screen</option>
-                <option value={2}>Display 3: Stage Confidence Display</option>
-              </select>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                <label style={{ ...labelStyle, marginBottom: 0 }}>Display / Monitor</label>
+                <span style={badgeStyle}>Zero-Popup Native Capture</span>
+              </div>
+              <div style={{ display: "flex", gap: 8 }}>
+                <select
+                  style={inputStyle}
+                  value={settings.nativeDisplayId === undefined || settings.nativeDisplayId === null ? "" : String(settings.nativeDisplayId)}
+                  onChange={(e) => {
+                    const picked = capturableDisplays.find((d) => String(d.id) === e.target.value);
+                    if (!picked) {
+                      patchSetting("nativeDisplayId", null);
+                      return;
+                    }
+                    setSettings((prev) => ({
+                      ...prev,
+                      nativeDisplayId: picked.id,
+                      displayName: picked.name,
+                      captureMethod: "native",
+                      display: picked.id,
+                    }));
+                  }}
+                >
+                  <option value="">-- Choose an OS Display --</option>
+                  {capturableDisplays.map((d) => (
+                    <option key={d.id} value={d.id}>{`${d.name}${d.isPrimary ? " (Primary)" : ""} — ${d.width}×${d.height}`}</option>
+                  ))}
+                </select>
+                <button type="button" onClick={refreshDisplays} style={refreshButtonStyle}>
+                  {loadingDisplays ? "Scanning..." : "Refresh Displays"}
+                </button>
+              </div>
+              {capturableDisplays.length === 0 && !loadingDisplays && (
+                <div style={{ fontSize: 11, color: "#94A3B8", marginTop: 6 }}>
+                  No OS displays detected. Use Refresh Displays, or choose the browser fallback below.
+                </div>
+              )}
             </div>
+            {renderCaptureMethod()}
+            {renderFpsSelector()}
             <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 4 }}>
               <input
                 type="checkbox"
@@ -186,27 +274,47 @@ export const SourceSettingsModal: React.FC<SourceSettingsModalProps> = ({
         return (
           <>
             <div>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, marginBottom: 6 }}>
                 <label style={{ ...labelStyle, marginBottom: 0 }}>Select Window to Display</label>
-                <button
-                  type="button"
-                  onClick={refreshWindows}
-                  style={{ background: "transparent", border: "none", color: "#60A5FA", fontSize: 11, fontWeight: 700, cursor: "pointer" }}
+                <span style={badgeStyle}>Zero-Popup Native Capture</span>
+              </div>
+              <div style={{ display: "flex", gap: 8 }}>
+                <select
+                  style={inputStyle}
+                  value={settings.nativeWindowId === undefined || settings.nativeWindowId === null ? "" : String(settings.nativeWindowId)}
+                  onChange={(e) => {
+                    const picked = capturableWindows.find((w) => String(w.id) === e.target.value);
+                    if (!picked) {
+                      patchSetting("nativeWindowId", null);
+                      return;
+                    }
+                    setSettings((prev) => ({
+                      ...prev,
+                      nativeWindowId: picked.id,
+                      windowTitle: picked.title,
+                      appName: picked.appName,
+                      captureMethod: "native",
+                      window: picked.title,
+                    }));
+                  }}
                 >
-                  {loadingWindows ? "Scanning..." : "↻ Refresh Windows"}
+                  <option value="">-- Choose an OS Window --</option>
+                  {capturableWindows.map((w) => (
+                    <option key={w.id} value={w.id}>{`${w.appName} — ${w.title} (${w.width}×${w.height})`}</option>
+                  ))}
+                </select>
+                <button type="button" onClick={refreshWindows} style={refreshButtonStyle}>
+                  {loadingWindows ? "Scanning..." : "Refresh Windows"}
                 </button>
               </div>
-              <select
-                style={inputStyle}
-                value={settings.window || ""}
-                onChange={(e) => patchSetting("window", e.target.value)}
-              >
-                <option value="">-- Choose an Open Window --</option>
-                {openWindows.map((w) => (
-                  <option key={w} value={w}>{w}</option>
-                ))}
-              </select>
+              {capturableWindows.length === 0 && !loadingWindows && (
+                <div style={{ fontSize: 11, color: "#94A3B8", marginTop: 6 }}>
+                  No OS windows detected. Use Refresh Windows, or choose the browser fallback below.
+                </div>
+              )}
             </div>
+            {renderCaptureMethod()}
+            {renderFpsSelector()}
             <div>
               <label style={labelStyle}>Window Match Priority</label>
               <select
@@ -498,6 +606,35 @@ export const SourceSettingsModal: React.FC<SourceSettingsModalProps> = ({
       </div>
     </div>
   );
+};
+
+const badgeStyle: React.CSSProperties = {
+  display: "inline-flex",
+  alignItems: "center",
+  flexShrink: 0,
+  padding: "2px 7px",
+  borderRadius: 4,
+  background: "rgba(16, 185, 129, 0.14)",
+  border: "1px solid rgba(16, 185, 129, 0.45)",
+  color: "#6EE7B7",
+  fontSize: 9.5,
+  fontWeight: 800,
+  letterSpacing: "0.05em",
+  whiteSpace: "nowrap",
+};
+
+const refreshButtonStyle: React.CSSProperties = {
+  flexShrink: 0,
+  padding: "0 10px",
+  height: 38,
+  background: "#1E293B",
+  border: "1px solid #334155",
+  borderRadius: 6,
+  color: "#93C5FD",
+  fontSize: 11,
+  fontWeight: 700,
+  cursor: "pointer",
+  whiteSpace: "nowrap",
 };
 
 const labelStyle: React.CSSProperties = {

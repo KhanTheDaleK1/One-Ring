@@ -43,7 +43,8 @@ You can customize your active canvas title (e.g., `"Main Sanctuary"`) and re-ord
 
 - **Automated LAN Peer Discovery & Pairing (`UDP :47888`)**: Automatically detects nearby One Ring stations on your local network and prompts you to pair and sync stations together.
 - **Portable Show Files (`.ring.json`)**: Export and import full cue stacks, scenes, sources, audio routes, and slide decks.
-- **Built-In Auto-Updater & macOS Menu Bar**: Native `About One Ring` / `Check for Updates...` panel fetching signed GitHub releases directly inside the app.
+- **Built-In Update Check & macOS Menu Bar**: Native `About One Ring` / `Check for Updates...` panel that reads release metadata and links to the download page. **Alpha builds are unsigned**: there is no signed updater integration yet, so installers must be verified and promoted manually. Tauri signed-updater support is planned for beta/GA.
+- **Volunteer-First Boot**: The app opens in Volunteer Show Mode. Entering mixing, camera, slide, broadcast, or settings views requires the Engineer PIN; returning to Show Mode locks them again.
 - **Clean-Slate Architecture**: Launches cleanly without pre-loaded dummy shows or fake mock traffic. Set `RING_LIVE=1` to activate live socket adapters.
 
 ---

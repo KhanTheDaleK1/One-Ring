@@ -211,6 +211,7 @@ State is split into two files:
 
 ## 7. Frontend Architecture & UX Modes
 
+- **Boot Posture**: The frontend opens in Volunteer Show Mode. Mixing, camera, slide, broadcast, and settings views are gated behind an Engineer PIN checked by the native host (`unlock_engineer_mode` / `get_engineer_lock_status`); returning to Show Mode calls `lock_engineer_mode`. Cross-window sync payloads carry a per-session nonce and are shape/URL validated, and secrets (stream keys, relay tokens) are never written to localStorage.
 - **Live Show Mode (Volunteer-First)**:
   - High-contrast grid of large, unmistakable Cue buttons (`Pre-Service`, `Worship`, `Sermon`, `Go Live`, `Emergency Mute`).
   - Top **Health Strip** showing live status dots for Slides, Livestream, Mixer, Routing, and Cameras.
@@ -229,11 +230,12 @@ CI/CD runs on **GitHub Actions** with a dual-OS matrix (`macos-latest` and `wind
 
 | Platform | Output Artifacts | Signing & OS Permissions |
 | :--- | :--- | :--- |
-| **macOS** | `.app` bundle & `.dmg` installer | Code-signing with Developer ID + notarization. `Info.plist` includes `NSLocalNetworkUsageDescription` and `NSBonjourServices` (`_netaudio-arc._tcp`) for mDNS/UDP access on macOS Sequoia+. |
-| **Windows** (`x86_64-pc-windows-msvc`) | `.msi` (WiX) & `.exe` (NSIS) | Authenticode code signing (`signtool`). Installer/first-run registers Windows Defender Firewall inbound/outbound rules for UDP `:10023` (mixer), UDP `:52381` (camera), and mDNS `:5353`. |
+| **macOS** | `.app` bundle & `.dmg` installer | **Alpha builds are unsigned** — no Developer ID signing or notarization is applied yet. `Info.plist` includes `NSLocalNetworkUsageDescription` and `NSBonjourServices` (`_netaudio-arc._tcp`) for mDNS/UDP access on macOS Sequoia+. Signed artifacts and notarization are planned for beta/GA. |
+| **Windows** (`x86_64-pc-windows-msvc`) | `.msi` (WiX) & `.exe` (NSIS) | **Alpha builds are unsigned** — no Authenticode signature is applied yet. Installer/first-run registers Windows Defender Firewall inbound/outbound rules for UDP `:10023` (mixer), UDP `:52381` (camera), and mDNS `:5353`. Signed artifacts are planned for beta/GA. |
 
 ### Release Verification
 
-1. `cargo test --workspace` (runs all unit tests + MockAdapter Cue Engine integration tests).
-2. `npm run build` (TypeScript typecheck + Vite production bundle).
-3. `cargo tauri build` on macOS & Windows runners, producing signed installers and updater manifests (`latest.json`).
+1. `cargo test --manifest-path src-tauri/Cargo.toml` (runs native unit tests + Cue Engine integration tests).
+2. `python3 scripts/check_clean_room.py` (clean-room compliance gate, before dependency installation).
+3. `npm ci` followed by `npm run build` (TypeScript typecheck + Vite production bundle).
+4. `cargo tauri build` on macOS & Windows runners. Builds are published as **drafts** for explicit human promotion; alpha installers are unsigned and are not distributed through a signed updater. Tauri signed-updater integration and signed updater manifests (`latest.json`) are planned for beta/GA.

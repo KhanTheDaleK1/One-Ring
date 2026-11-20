@@ -595,6 +595,9 @@ pub const DUAL_STREAM_NAMED_PIPE_WINDOWS: &str = "\x5c\x5c\x2e\x5c\x70\x69\x70\x
 pub const DUAL_STREAM_SOCKJS_PORT: u16 = 59650;
 pub const DUAL_STREAM_JSONRPC_VERSION: &str = "2.0";
 
+/// Hard limit for one buffered (newline-delimited) JSON-RPC frame.
+const MAX_LINE_BUFFER: usize = 256 * 1024;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DualStreamTransport {
     /// `127.0.0.1:28194`, always on, auto-authorized.
@@ -848,6 +851,12 @@ impl DualStreamLineDecoder {
 
     pub fn push(&mut self, bytes: &[u8]) -> Vec<String> {
         self.buf.extend_from_slice(bytes);
+        // A peer that never sends a newline must not be able to grow this buffer without bound.
+        if !self.buf.contains(&b'\n') && self.buf.len() > MAX_LINE_BUFFER {
+            self.buf.clear();
+            return Vec::new();
+        }
+
         let mut out = Vec::new();
         while let Some(pos) = self.buf.iter().position(|&b| b == b'\n') {
             let mut line = self.buf.drain(..=pos).collect::<Vec<u8>>();
@@ -857,11 +866,16 @@ impl DualStreamLineDecoder {
             if line.last() == Some(&b'\r') {
                 line.pop();
             }
-            if let Ok(text) = String::from_utf8(line) {
-                if !text.trim().is_empty() {
-                    out.push(text);
+            if line.len() <= MAX_LINE_BUFFER {
+                if let Ok(text) = String::from_utf8(line) {
+                    if !text.trim().is_empty() {
+                        out.push(text);
+                    }
                 }
             }
+        }
+        if self.buf.len() > MAX_LINE_BUFFER {
+            self.buf.clear();
         }
         out
     }
@@ -1063,6 +1077,23 @@ mod tests {
         assert_eq!(lines.len(), 2);
         assert!(lines[0].contains("\"id\":1"));
         assert!(lines[1].contains("\"id\":2"));
+        assert_eq!(decoder.buffered_len(), 0);
+    }
+
+    #[test]
+    fn dual_stream_line_decoder_caps_unterminated_lines() {
+        let mut decoder = DualStreamLineDecoder::new();
+        assert!(decoder.push(b"partial").is_empty());
+        let oversized = vec![b'x'; MAX_LINE_BUFFER];
+        assert!(decoder.push(&oversized).is_empty());
+        assert_eq!(decoder.buffered_len(), 0);
+
+        // A complete line at the cap is still delivered, and an oversized line is dropped.
+        let mut framed = vec![b'z'; MAX_LINE_BUFFER + 1];
+        framed.push(b'\n');
+        framed.extend_from_slice(b"small\n");
+        let lines = decoder.push(&framed);
+        assert_eq!(lines, vec!["small".to_string()]);
         assert_eq!(decoder.buffered_len(), 0);
     }
 

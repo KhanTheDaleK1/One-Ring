@@ -5,9 +5,13 @@ import type {
   AudienceChatMessage,
   AudienceRelayConfig,
   BroadcastTarget,
+  CapturableDisplay,
+  CapturableWindow,
   ConnectionTestResult,
   CueVerificationStep,
   DiscoveredLanDevice,
+  NativeCaptureFrame,
+  NativeCaptureSessionInfo,
   PreflightCheck,
   SceneSourceItem,
   SlideState,
@@ -20,6 +24,9 @@ import type { RingShowFile } from "./types";
 const isTauri = () =>
   typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
+/** Public guard so UI components can keep native-only paths out of browser preview mode. */
+export const isTauriRuntime = isTauri;
+
 /** Update repository configured at build time; neutral fallback keeps the UI private. */
 export const UPDATE_REPO_URL =
   (import.meta.env.VITE_UPDATE_REPO as string | undefined)?.trim() ||
@@ -28,6 +35,202 @@ export const UPDATE_REPO_URL =
 async function invokeTauri<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
   const { invoke } = await import("@tauri-apps/api/core");
   return invoke<T>(cmd, args);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Engineer-mode lock — native command first, in-memory preview fallback stays fail-closed
+// ---------------------------------------------------------------------------------------------
+
+let simEngineerUnlocked = false;
+
+/** Unlock engineer controls. The browser preview validates against the locally configured PIN. */
+export async function unlockEngineerMode(pin: string): Promise<boolean> {
+  if (isTauri()) {
+    try {
+      const unlocked = await invokeTauri<boolean>("unlock_engineer_mode", { pin });
+      simEngineerUnlocked = unlocked === true;
+    } catch {
+      simEngineerUnlocked = false;
+    }
+    return simEngineerUnlocked;
+  }
+  const configuredPin = simState.settings.general.engineerPin.trim();
+  simEngineerUnlocked = configuredPin.length > 0 && pin === configuredPin;
+  return simEngineerUnlocked;
+}
+
+/** Return to the volunteer-only surface and drop any in-memory unlock. */
+export async function lockEngineerMode(): Promise<void> {
+  simEngineerUnlocked = false;
+  if (isTauri()) {
+    try {
+      await invokeTauri<void>("lock_engineer_mode");
+    } catch {
+      // The local lock is already applied; a missing host command must not reopen access.
+    }
+  }
+}
+
+/** Mirrors the native status command: true means engineer controls are currently unlocked. */
+export async function getEngineerLockStatus(): Promise<boolean> {
+  if (isTauri()) {
+    try {
+      return (await invokeTauri<boolean>("get_engineer_lock_status")) === true;
+    } catch {
+      return simEngineerUnlocked;
+    }
+  }
+  return simEngineerUnlocked;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Cross-window sync validation — session nonce + strict payload/URL checks
+// ---------------------------------------------------------------------------------------------
+
+const SYNC_NONCE_KEY = "onering_sync_nonce";
+let fallbackNonce: string | null = null;
+
+function createNonce(): string {
+  try {
+    const bytes = new Uint8Array(16);
+    crypto.getRandomValues(bytes);
+    return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+  } catch {
+    return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+  }
+}
+
+/** A random value shared only by windows in this session (never written to disk). */
+export function getSessionNonce(): string {
+  try {
+    if (typeof sessionStorage !== "undefined") {
+      const existing = sessionStorage.getItem(SYNC_NONCE_KEY);
+      if (existing) return existing;
+      const nonce = createNonce();
+      sessionStorage.setItem(SYNC_NONCE_KEY, nonce);
+      return nonce;
+    }
+  } catch {
+    // Restricted webviews fall back to a per-document value.
+  }
+  if (!fallbackNonce) fallbackNonce = createNonce();
+  return fallbackNonce;
+}
+
+/** Attach the session nonce to every payload we broadcast or persist for output windows. */
+export function stampSyncPayload<T extends object>(payload: T): T & { nonce: string } {
+  return { ...payload, nonce: getSessionNonce() };
+}
+
+/** Only `http(s)` and inline image data URLs may be used as cross-window media sources. */
+export function isSafeMediaUrl(value: unknown): boolean {
+  if (typeof value !== "string" || value.length === 0 || value.length > 4096) return false;
+  const raw = value.trim();
+  if (/[\u0000-\u001f\u007f"'\(\)\\<>]/.test(raw)) return false;
+  let parsed: URL;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    return false;
+  }
+  if (parsed.protocol === "http:" || parsed.protocol === "https:") return true;
+  return parsed.protocol === "data:" && /^data:image\//i.test(raw);
+}
+
+const URL_FIELDS = new Set(["backgroundImage", "motionBackground", "url"]);
+
+function containsUnsafeUrl(value: unknown, depth: number, seen: WeakSet<object>): boolean {
+  if (depth > 12 || value === null || typeof value !== "object") return false;
+  if (seen.has(value)) return false;
+  seen.add(value);
+  if (Array.isArray(value)) {
+    return value.some((item) => containsUnsafeUrl(item, depth + 1, seen));
+  }
+  for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+    if (URL_FIELDS.has(key) && child !== undefined && child !== null && child !== "" && !isSafeMediaUrl(child)) {
+      return true;
+    }
+    if (typeof child === "object" && containsUnsafeUrl(child, depth + 1, seen)) return true;
+  }
+  return false;
+}
+
+export type SyncPayloadKind =
+  | "SLIDES_UPDATE"
+  | "SLIDES_STATE"
+  | "BROADCAST_SCENES_UPDATE"
+  | "SOURCES_UPDATE"
+  | "ACTIVE_SCENE_UPDATE"
+  | "AUDIENCE_OVERLAY"
+  | "STAGE_LAYOUT_UPDATE"
+  | "SLIDE_EXTRAS_UPDATE"
+  | "SLIDE_EXTRAS_STATE"
+  | "SELECT_SCENE"
+  | "WORKSPACE_AUTOSAVE";
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
+const isSlideLike = (value: unknown): boolean =>
+  isRecord(value) &&
+  typeof value.currentSlide === "number" &&
+  Number.isFinite(value.currentSlide) &&
+  (value.slides === undefined || Array.isArray(value.slides));
+
+const isSourceLike = (value: unknown): boolean =>
+  isRecord(value) && typeof value.id === "string" && typeof value.type === "string" && isRecord(value.settings);
+
+const isMessageLike = (value: unknown): boolean =>
+  isRecord(value) && typeof value.id === "string" && typeof value.text === "string";
+
+const isSceneLike = (value: unknown): boolean =>
+  isRecord(value) &&
+  typeof value.id === "string" &&
+  Array.isArray(value.sources) &&
+  value.sources.every(isSourceLike);
+
+const STAGE_LAYOUTS = new Set(["classic", "clock_focus", "notes_focus"]);
+
+/**
+ * Strict gate for cross-window data. A nonce, when present, must belong to this session;
+ * legacy producers without a nonce still get shape and media-URL validation.
+ */
+export function isTrustedSyncPayload(value: unknown, kind: SyncPayloadKind): boolean {
+  if (!isRecord(value)) return false;
+  if (typeof value.nonce === "string" && value.nonce !== getSessionNonce()) return false;
+  if (containsUnsafeUrl(value, 0, new WeakSet())) return false;
+
+  switch (kind) {
+    case "SLIDES_UPDATE":
+      return isSlideLike(value.slides);
+    case "SLIDES_STATE":
+      return isSlideLike(value);
+    case "BROADCAST_SCENES_UPDATE":
+      return Array.isArray(value.scenes) && value.scenes.every(isSceneLike);
+    case "SOURCES_UPDATE":
+      return Array.isArray(value.sources) && value.sources.every(isSourceLike);
+    case "ACTIVE_SCENE_UPDATE":
+    case "SELECT_SCENE":
+      return typeof value.sceneId === "string";
+    case "AUDIENCE_OVERLAY":
+      return value.message === null || isMessageLike(value.message);
+    case "STAGE_LAYOUT_UPDATE":
+      return STAGE_LAYOUTS.has(value.layout as string);
+    case "SLIDE_EXTRAS_UPDATE":
+      return Array.isArray(value.slides) && (value.theme === undefined || isRecord(value.theme));
+    case "SLIDE_EXTRAS_STATE":
+      return (
+        (value.slides === undefined || Array.isArray(value.slides)) &&
+        (value.theme === undefined || isRecord(value.theme))
+      );
+    case "WORKSPACE_AUTOSAVE":
+      return (
+        (value.slides === undefined || isSlideLike(value.slides)) &&
+        (value.sources === undefined || (Array.isArray(value.sources) && value.sources.every(isSourceLike)))
+      );
+    default:
+      return false;
+  }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -522,6 +725,10 @@ function syncSimUndo() {
 }
 
 export const bridge = {
+  unlockEngineerMode,
+  lockEngineerMode,
+  getEngineerLockStatus,
+
   async getAppState(): Promise<AppStateSnapshot> {
     if (isTauri()) return invokeTauri("get_app_state");
     return structuredClone(simState);
@@ -1045,6 +1252,82 @@ export async function listOpenWindows(): Promise<string[]> {
     }
   }
   return ["SlideHttp — Main Presentation", "Web Browser — Video Studio", "Presentation — Sunday Announcements"];
+}
+
+// ---------------------------------------------------------------------------------------------
+// Native Window & Display Capture — zero-popup IPC with inert browser fallbacks
+// ---------------------------------------------------------------------------------------------
+
+/** Enumerate OS windows available to the zero-popup native capture backend. */
+export async function listCapturableWindows(): Promise<CapturableWindow[]> {
+  if (!isTauri()) return [];
+  try {
+    const windows = await invokeTauri<CapturableWindow[]>("list_capturable_windows");
+    return Array.isArray(windows) ? windows : [];
+  } catch {
+    return [];
+  }
+}
+
+/** Enumerate physical displays available to the zero-popup native capture backend. */
+export async function listCapturableDisplays(): Promise<CapturableDisplay[]> {
+  if (!isTauri()) return [];
+  try {
+    const displays = await invokeTauri<CapturableDisplay[]>("list_capturable_displays");
+    return Array.isArray(displays) ? displays : [];
+  } catch {
+    return [];
+  }
+}
+
+/** Pull one encoded frame on demand (event-driven preview normally uses `capture://frame`). */
+export async function captureNativeFrame(
+  sourceId: string,
+  targetKind: "window" | "display",
+  targetId: number
+): Promise<NativeCaptureFrame | null> {
+  if (!isTauri()) return null;
+  try {
+    const frame = await invokeTauri<NativeCaptureFrame | null>("capture_native_frame", {
+      sourceId,
+      targetKind,
+      targetId,
+    });
+    return frame ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** Begin pushing native frames for a source; the runtime emits them on `capture://frame`. */
+export async function startNativeCaptureStream(
+  sourceId: string,
+  targetKind: "window" | "display",
+  targetId: number,
+  fps?: number
+): Promise<NativeCaptureSessionInfo | null> {
+  if (!isTauri()) return null;
+  try {
+    const session = await invokeTauri<NativeCaptureSessionInfo | null>("start_native_capture_stream", {
+      sourceId,
+      targetKind,
+      targetId,
+      fps: fps ?? 5,
+    });
+    return session ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** Stop a native stream. Never throws — teardown must not block a scene change. */
+export async function stopNativeCaptureStream(sourceId: string): Promise<boolean> {
+  if (!isTauri()) return false;
+  try {
+    return (await invokeTauri<boolean>("stop_native_capture_stream", { sourceId })) === true;
+  } catch {
+    return false;
+  }
 }
 
 export interface InstalledAudioPlugin {

@@ -20,6 +20,9 @@ pub const SLIDELINK_PORT: u16 = 18514;
 pub const STATUS_UPDATES_PATH: &str = "/v1/status/updates";
 pub const WS_PATH: &str = "/v1/ws";
 
+/// Hard limit for reassembling one status-stream envelope.
+const MAX_BUFFER_BYTES: usize = 2 * 1024 * 1024;
+
 /// Frequently used `/v1/*` paths.
 pub mod paths {
     pub const VERSION: &str = "/version";
@@ -517,9 +520,23 @@ impl SlideHttpUpdate {
 /// The HTTP client is expected to de-chunk transfer framing; this decoder additionally tolerates
 /// raw `\r\n\r\n` delimiters and hex chunk-size lines, and finds balanced braces so pretty-printed
 /// JSON is handled correctly.
+/// Progress of a brace-balanced envelope that is still waiting for more bytes.
+#[derive(Debug, Default)]
+struct BraceScan {
+    start: usize,
+    cursor: usize,
+    depth: i32,
+    in_string: bool,
+    escaped: bool,
+}
+
 #[derive(Debug, Default)]
 pub struct StatusStreamDecoder {
     buf: Vec<u8>,
+    /// Prefix already inspected; dropped once per `push` instead of per envelope.
+    consumed: usize,
+    /// Resumable scan state for a split envelope, so bytes are never rescanned.
+    partial: Option<BraceScan>,
 }
 
 impl StatusStreamDecoder {
@@ -529,56 +546,80 @@ impl StatusStreamDecoder {
 
     pub fn push(&mut self, bytes: &[u8]) -> Result<Vec<SlideHttpUpdate>, ProtocolError> {
         self.buf.extend_from_slice(bytes);
-        let mut out = Vec::new();
+        if self.buf.len() > MAX_BUFFER_BYTES {
+            self.clear();
+            return Err(ProtocolError::malformed(
+                "status stream buffer exceeded 2 MiB limit",
+            ));
+        }
 
+        let mut out = Vec::new();
         loop {
-            // Skip whitespace and any chunked-transfer framing until the next object.
-            let next_obj = self.buf.iter().position(|&b| b == b'{');
-            let Some(start) = next_obj else {
-                self.buf.clear();
-                break;
-            };
-            if start > 0 {
-                self.buf.drain(..start);
+            if self.partial.is_none() {
+                // Skip whitespace and chunked-transfer framing until the next object.
+                let Some(offset) = self.buf[self.consumed..].iter().position(|&b| b == b'{') else {
+                    self.consumed = self.buf.len();
+                    break;
+                };
+                let start = self.consumed + offset;
+                self.partial = Some(BraceScan {
+                    start,
+                    cursor: start + 1,
+                    depth: 1,
+                    in_string: false,
+                    escaped: false,
+                });
             }
 
-            let mut depth = 0i32;
-            let mut in_string = false;
-            let mut escaped = false;
+            let scan = self.partial.as_mut().expect("partial scan initialized");
             let mut end = None;
-            for (i, &b) in self.buf.iter().enumerate() {
-                if in_string {
-                    if escaped {
-                        escaped = false;
-                    } else if b == b'\\' {
-                        escaped = true;
-                    } else if b == b'"' {
-                        in_string = false;
+            while scan.cursor < self.buf.len() {
+                let index = scan.cursor;
+                let byte = self.buf[index];
+                scan.cursor += 1;
+                if scan.in_string {
+                    if scan.escaped {
+                        scan.escaped = false;
+                    } else if byte == b'\\' {
+                        scan.escaped = true;
+                    } else if byte == b'"' {
+                        scan.in_string = false;
                     }
-                } else {
-                    match b {
-                        b'"' => in_string = true,
-                        b'{' => depth += 1,
-                        b'}' => {
-                            depth -= 1;
-                            if depth == 0 {
-                                end = Some(i);
-                                break;
-                            }
+                    continue;
+                }
+                match byte {
+                    b'"' => scan.in_string = true,
+                    b'{' => scan.depth += 1,
+                    b'}' => {
+                        scan.depth -= 1;
+                        if scan.depth == 0 {
+                            end = Some(index);
+                            break;
                         }
-                        _ => {}
                     }
+                    _ => {}
                 }
             }
 
             let Some(end) = end else {
+                // Incomplete envelope: keep progress and resume on the next push.
                 break;
             };
-
-            let text = std::str::from_utf8(&self.buf[..=end])?;
+            let scan = self.partial.take().expect("partial scan present");
+            let text = std::str::from_utf8(&self.buf[scan.start..=end])?;
             let value: Value = serde_json::from_str(text)?;
             out.push(SlideHttpUpdate::from_value(value)?);
-            self.buf.drain(..=end);
+            self.consumed = end + 1;
+        }
+
+        let consumed = self.consumed;
+        if consumed > 0 {
+            if let Some(scan) = self.partial.as_mut() {
+                scan.start -= consumed;
+                scan.cursor -= consumed;
+            }
+            self.buf.drain(..consumed);
+            self.consumed = 0;
         }
 
         Ok(out)
@@ -590,6 +631,8 @@ impl StatusStreamDecoder {
 
     pub fn clear(&mut self) {
         self.buf.clear();
+        self.consumed = 0;
+        self.partial = None;
     }
 }
 
@@ -1002,6 +1045,37 @@ mod tests {
             .unwrap();
         assert_eq!(updates.len(), 1);
         assert_eq!(updates[0].url, "x");
+    }
+
+    #[test]
+    fn stream_decoder_enforces_two_mib_cap() {
+        let mut decoder = StatusStreamDecoder::new();
+        assert!(decoder.push(br#"{"url":"x","data":"#).unwrap().is_empty());
+
+        let oversized = vec![b'a'; MAX_BUFFER_BYTES];
+        assert!(decoder.push(&oversized).is_err());
+        assert_eq!(decoder.buffered_len(), 0);
+
+        // The decoder stays usable after discarding an oversized frame.
+        let updates = decoder
+            .push(br#"{"url":"after","data":1}"#)
+            .expect("decoder recovered");
+        assert_eq!(updates.len(), 1);
+        assert_eq!(updates[0].url, "after");
+    }
+
+    #[test]
+    fn stream_decoder_handles_many_envelopes_in_one_push() {
+        let mut decoder = StatusStreamDecoder::new();
+        let mut payload = String::new();
+        for index in 0..128 {
+            payload.push_str(&format!("{{\"url\":\"status/slide\",\"data\":{{\"i\":{index}}}}}\r\n"));
+        }
+        let updates = decoder.push(payload.as_bytes()).unwrap();
+        assert_eq!(updates.len(), 128);
+        assert_eq!(updates[0].data["i"], 0);
+        assert_eq!(updates[127].data["i"], 127);
+        assert_eq!(decoder.buffered_len(), 0);
     }
 
     #[test]

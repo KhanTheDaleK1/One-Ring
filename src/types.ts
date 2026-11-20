@@ -28,6 +28,59 @@ export interface SourceDefinition {
   defaultSettings: Record<string, unknown>;
 }
 
+// ---------------------------------------------------------------------------------------------
+// Native Window & Display Capture — camelCase mirrors of the desktop runtime IPC structs
+// ---------------------------------------------------------------------------------------------
+
+/** One OS window reported by the native screen-capture backend. */
+export interface CapturableWindow {
+  id: number;
+  title: string;
+  appName: string;
+  pid: number;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  isMinimized: boolean;
+  backend: string;
+}
+
+/** One physical display reported by the native screen-capture backend. */
+export interface CapturableDisplay {
+  id: number;
+  name: string;
+  width: number;
+  height: number;
+  x: number;
+  y: number;
+  scaleFactor: number;
+  isPrimary: boolean;
+  backend: string;
+}
+
+/** A single encoded frame pushed on the `capture://frame` event channel. */
+export interface NativeCaptureFrame {
+  sourceId: string;
+  targetKind: "window" | "display" | string;
+  targetId: number;
+  width: number;
+  height: number;
+  mimeType: string;
+  base64Data: string;
+  timestampMs: number;
+  backend: string;
+}
+
+/** Acknowledgement returned when a native capture stream is started. */
+export interface NativeCaptureSessionInfo {
+  sourceId: string;
+  targetKind: string;
+  targetId: number;
+  fps: number;
+  active: boolean;
+  backend: string;
+}
 
 export interface SourceFilter {
   id: string;
