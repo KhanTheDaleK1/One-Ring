@@ -3327,28 +3327,36 @@ fn open_config_directory(
 }
 
 #[tauri::command]
-fn list_capturable_windows() -> Vec<CapturableWindow> {
-    runtime::native_capture::list_capturable_windows()
+async fn list_capturable_windows() -> Vec<CapturableWindow> {
+    tauri::async_runtime::spawn_blocking(runtime::native_capture::list_capturable_windows)
+        .await
+        .unwrap_or_default()
 }
 
 #[tauri::command]
-fn list_capturable_displays() -> Vec<CapturableDisplay> {
-    runtime::native_capture::list_capturable_displays()
+async fn list_capturable_displays() -> Vec<CapturableDisplay> {
+    tauri::async_runtime::spawn_blocking(runtime::native_capture::list_capturable_displays)
+        .await
+        .unwrap_or_default()
 }
 
 #[tauri::command]
-fn capture_native_frame(
+async fn capture_native_frame(
     source_id: String,
     target_kind: String,
     target_id: u64,
 ) -> Result<NativeCaptureFrame, String> {
-    runtime::native_capture::capture_native_frame(&source_id, &target_kind, target_id)
+    tauri::async_runtime::spawn_blocking(move || {
+        runtime::native_capture::capture_native_frame(&source_id, &target_kind, target_id)
+    })
+    .await
+    .map_err(|err| format!("Native capture task failed: {err}"))?
 }
 
 #[tauri::command]
-fn start_native_capture_stream(
+async fn start_native_capture_stream(
     app: tauri::AppHandle,
-    manager: State<NativeCaptureManager>,
+    manager: State<'_, NativeCaptureManager>,
     source_id: String,
     target_kind: String,
     target_id: u64,

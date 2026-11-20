@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter};
-use tokio::task::JoinHandle;
+use tauri::async_runtime::JoinHandle;
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
@@ -1161,7 +1161,7 @@ impl NativeCaptureManager {
         let stream_kind = info.target_kind.clone();
         let interval_ms = 1000 / info.fps;
         let task_active = active.clone();
-        let task = tokio::spawn(async move {
+        let task = tauri::async_runtime::spawn(async move {
             let mut ticker = tokio::time::interval(Duration::from_millis(interval_ms as u64));
             loop {
                 ticker.tick().await;
@@ -1170,7 +1170,7 @@ impl NativeCaptureManager {
                 }
                 let frame_id = stream_id.clone();
                 let frame_kind = stream_kind.clone();
-                let captured = tokio::task::spawn_blocking(move || {
+                let captured = tauri::async_runtime::spawn_blocking(move || {
                     capture_native_frame(&frame_id, &frame_kind, target_id)
                 })
                 .await;
@@ -1378,7 +1378,7 @@ HDMI-1 disconnected (normal left inverted right x axis y axis)\n";
             if index == 1 {
                 replaced_flag = Some(active.clone());
             }
-            let task = tokio::spawn(async {});
+            let task = tauri::async_runtime::spawn(async {});
             manager.state.sessions.lock().unwrap().insert(
                 format!("src-{index}"),
                 SessionHandle {

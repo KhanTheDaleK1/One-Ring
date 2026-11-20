@@ -800,8 +800,13 @@ const LiveDisplayOrWindowLayer: React.FC<{ source: SceneSourceItem }> = ({ sourc
   const kind: "window" | "display" = isWindow ? "window" : "display";
   const settings = source.settings ?? {};
   const rawTargetId = isWindow ? settings.nativeWindowId : settings.nativeDisplayId;
-  const targetId = typeof rawTargetId === "number" ? rawTargetId : Number(rawTargetId);
-  const hasNativeTarget = Number.isFinite(targetId) && targetId >= 0;
+  const targetId =
+    rawTargetId === undefined || rawTargetId === null || rawTargetId === ""
+      ? Number.NaN
+      : typeof rawTargetId === "number"
+        ? rawTargetId
+        : Number(rawTargetId);
+  const hasNativeTarget = Number.isFinite(targetId) && targetId > 0;
   const captureMethod = typeof settings.captureMethod === "string" ? settings.captureMethod : "native";
   const useNative = isTauriRuntime() && captureMethod !== "browser" && hasNativeTarget;
   const frameUrl = useNativeFrameUrl(useNative ? source.id : null);
