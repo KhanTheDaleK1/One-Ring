@@ -930,7 +930,7 @@ export const SlidesCanvasView: React.FC<SlidesCanvasViewProps> = ({
       <div
         style={{
           display: "grid",
-          gridTemplateColumns: "minmax(180px, 230px) minmax(0, 1fr) minmax(260px, 360px)",
+          gridTemplateColumns: "minmax(210px, 250px) minmax(0, 1fr) minmax(260px, 360px)",
           gap: 14,
           flex: 1,
           minWidth: 0,
@@ -941,6 +941,7 @@ export const SlidesCanvasView: React.FC<SlidesCanvasViewProps> = ({
         <div
           style={{
             minWidth: 0,
+            overflow: "hidden",
             background: "#0D1117",
             border: "1px solid #1E2533",
             borderRadius: 10,
@@ -950,10 +951,15 @@ export const SlidesCanvasView: React.FC<SlidesCanvasViewProps> = ({
             gap: 10,
           }}
         >
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-            <span style={{ fontSize: 11, fontWeight: 700, color: "#94A3B8", textTransform: "uppercase", display: "flex", alignItems: "center", gap: 6 }}>
-              <Music size={13} color="#60A5FA" /> Service Songs
-            </span>
+          <div style={{ display: "flex", flexDirection: "column", gap: 8, minWidth: 0 }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6, minWidth: 0 }}>
+              <span style={{ fontSize: 11, fontWeight: 700, color: "#94A3B8", textTransform: "uppercase", display: "flex", alignItems: "center", gap: 6, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                <Music size={13} color="#60A5FA" style={{ flexShrink: 0 }} /> Service Songs
+              </span>
+              <span className="mono" style={{ fontSize: 10.5, color: "#64748B", flexShrink: 0 }}>
+                {(state.slides.songs || []).length}
+              </span>
+            </div>
             <input
               ref={fileImportRef}
               type="file"
@@ -961,26 +967,31 @@ export const SlidesCanvasView: React.FC<SlidesCanvasViewProps> = ({
               onChange={handleFileImport}
               style={{ display: "none" }}
             />
-            <div style={{ display: "flex", gap: 4 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 5, width: "100%" }}>
               <button
                 type="button"
                 onClick={() => fileImportRef.current?.click()}
-                title="Import .txt, ChordPro, SlideHttp, or SlideTcp file"
+                title="Import .txt, ChordPro, OpenLyrics, or slide archive file"
                 style={{
+                  minWidth: 0,
                   background: "#1E293B",
                   border: "1px solid #334155",
                   color: "#CBD5E1",
-                  borderRadius: 5,
-                  padding: "3px 6px",
+                  borderRadius: 6,
+                  padding: "5px 6px",
                   fontSize: 10.5,
                   fontWeight: 700,
                   cursor: "pointer",
                   display: "flex",
                   alignItems: "center",
-                  gap: 3,
+                  justifyContent: "center",
+                  gap: 4,
+                  whiteSpace: "nowrap",
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
                 }}
               >
-                <Upload size={11} /> File
+                <Upload size={11} style={{ flexShrink: 0 }} /> File
               </button>
               <button
                 type="button"
@@ -989,39 +1000,52 @@ export const SlidesCanvasView: React.FC<SlidesCanvasViewProps> = ({
                 aria-expanded={showSongCatalogModal}
                 title="Search Public Domain / Song Library catalog"
                 style={{
+                  minWidth: 0,
                   background: "#1E293B",
                   border: "1px solid #334155",
                   color: "#38BDF8",
-                  borderRadius: 5,
-                  padding: "3px 6px",
+                  borderRadius: 6,
+                  padding: "5px 6px",
                   fontSize: 10.5,
                   fontWeight: 700,
                   cursor: "pointer",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  gap: 4,
+                  whiteSpace: "nowrap",
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
                 }}
               >
-                SONG LIBRARY
+                Library
               </button>
               <button
                 type="button"
                 onClick={() => setShowImportModal(true)}
                 aria-haspopup="dialog"
                 aria-expanded={showImportModal}
-              title="Add another song to this service"
-              style={{
-                background: "#1E293B",
-                border: "1px solid #334155",
-                color: "#93C5FD",
-                borderRadius: 5,
-                padding: "3px 8px",
-                fontSize: 11,
-                fontWeight: 700,
-                cursor: "pointer",
-                display: "flex",
-                alignItems: "center",
-                gap: 4,
-              }}
-            >
-              <Plus size={12} /> Add
+                title="Add another song to this service"
+                style={{
+                  minWidth: 0,
+                  background: "#1E293B",
+                  border: "1px solid #334155",
+                  color: "#93C5FD",
+                  borderRadius: 6,
+                  padding: "5px 6px",
+                  fontSize: 10.5,
+                  fontWeight: 700,
+                  cursor: "pointer",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  gap: 3,
+                  whiteSpace: "nowrap",
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                }}
+              >
+                <Plus size={12} style={{ flexShrink: 0 }} /> Add
               </button>
             </div>
           </div>
