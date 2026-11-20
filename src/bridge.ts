@@ -55,8 +55,24 @@ export async function unlockEngineerMode(pin: string): Promise<boolean> {
     }
     return simEngineerUnlocked;
   }
+  const trimmedPin = pin.trim();
   const configuredPin = simState.settings.general.engineerPin.trim();
-  simEngineerUnlocked = configuredPin.length > 0 && pin === configuredPin;
+  if (configuredPin.length === 0) {
+    if (/^\d{4,8}$/.test(trimmedPin)) {
+      simState = {
+        ...simState,
+        settings: {
+          ...simState.settings,
+          general: { ...simState.settings.general, engineerPin: trimmedPin },
+        },
+      };
+      simEngineerUnlocked = true;
+    } else {
+      simEngineerUnlocked = false;
+    }
+  } else {
+    simEngineerUnlocked = trimmedPin === configuredPin;
+  }
   return simEngineerUnlocked;
 }
 
