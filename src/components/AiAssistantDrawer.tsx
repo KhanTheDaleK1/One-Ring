@@ -7,14 +7,18 @@ import {
   type AiAssistantStatusInfo,
   type AiChatMessageItem,
   type AiProposedActionItem,
+  type BiblePassageResult,
+  type BibleTranslationInfo,
 } from "../bridge";
 import type { AppStateSnapshot, SlideCue, SlideTheme } from "../types";
+import { searchSongLyrics } from "../bridge";
 
 interface AiAssistantDrawerProps {
   isOpen: boolean;
   onClose: () => void;
   state: AppStateSnapshot;
   onApplySong: (title: string, slides: SlideCue[]) => void;
+  onApplyScripture: (reference: string, slides: SlideCue[]) => void;
   onApplyTheme: (theme: Partial<SlideTheme>) => void;
   onApplyStageMessage: (text: string) => void;
 }
@@ -57,6 +61,7 @@ export const AiAssistantDrawer: React.FC<AiAssistantDrawerProps> = ({
   onClose,
   state,
   onApplySong,
+  onApplyScripture,
   onApplyTheme,
   onApplyStageMessage,
 }) => {
@@ -73,6 +78,9 @@ export const AiAssistantDrawer: React.FC<AiAssistantDrawerProps> = ({
   const [busy, setBusy] = useState(false);
   const [installingCli, setInstallingCli] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [hideBanner, setHideBanner] = useState(() =>
+    sessionStorage.getItem("onering_hide_opencode_banner") === "true"
+  );
   const listEndRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -101,6 +109,11 @@ export const AiAssistantDrawer: React.FC<AiAssistantDrawerProps> = ({
     } finally {
       setInstallingCli(false);
     }
+  };
+
+  const handleDismissOpenCodeBanner = () => {
+    setHideBanner(true);
+    sessionStorage.setItem("onering_hide_opencode_banner", "true");
   };
 
   if (!isOpen) return null;
@@ -171,10 +184,94 @@ export const AiAssistantDrawer: React.FC<AiAssistantDrawerProps> = ({
         });
       }
     } else if (action.kind === "add_song") {
-      const title = String(p.title ?? "New Song").trim();
-      const lyrics = String(p.lyrics ?? "").trim();
-      const slides = lyricsToSlides(title, lyrics || title);
-      if (slides.length > 0) onApplySong(title, slides);
+      // If the backend enrichment already provided pre-resolved slides, use them.
+      // Otherwise, fall back to searching for lyrics in the frontend.
+      const slides = p.slides as SlideCue[] | undefined;
+      if (slides && slides.length > 0) {
+        const title = String(p.title ?? "New Song").trim();
+        const artist = String(p.artist ?? "").trim();
+        onApplySong(title, slides);
+      } else {
+        // No pre-resolved slides (e.g. browser preview mode) — search for lyrics frontend.
+        const title = String(p.title ?? "New Song").trim();
+        searchSongLyrics(title, undefined, true).then((results) => {
+          if (results.length > 0) {
+            const song = results[0];
+            // Balance lyrics into slides: split into word-bounded lines, ~46 chars per line, 2 lines per slide
+            const rawLyrics = song.lyrics;
+            const lines: string[] = rawLyrics.split("\n").map((l) => l.trim()).filter((l) => l.length > 0);
+            const balancedLines: string[] = [];
+            let currentLineSet: string[] = [];
+            let currentChars = 0;
+            for (const line of lines) {
+              const lineLen = line.length;
+              if (currentChars + lineLen > 46 && currentLineSet.length > 0) {
+                balancedLines.push(currentLineSet.join(" "));
+                currentLineSet = [];
+                currentChars = 0;
+              }
+              currentLineSet.push(line);
+              currentChars += lineLen;
+            }
+            if (currentLineSet.length > 0) {
+              balancedLines.push(currentLineSet.join(" "));
+            }
+            // Chunk into 2-line slides
+            const slides: SlideCue[] = [];
+            for (let i = 0; i < balancedLines.length; i += 2) {
+              const chunk = balancedLines.slice(i, i + 2);
+              const num = slides.length + 1;
+              slides.push({
+                id: `ai-song-${Date.now()}-${num}`,
+                number: num,
+                section: num === 1 ? "Verse 1" : `Slide ${num}`,
+                title: `${title} - ${num}`,
+                text: chunk.join("\n"),
+                kind: "lyrics",
+              });
+            }
+            if (slides.length > 0) {
+              onApplySong(title, slides);
+            }
+          } else {
+            // No results found — try using the title as fallback lyrics
+            const title = String(p.title ?? "New Song").trim();
+            const slides = lyricsToSlides(title, title);
+            if (slides.length > 0) onApplySong(title, slides);
+          }
+        }).catch(() => {
+          // Search failed — try fallback
+          const title = String(p.title ?? "New Song").trim();
+          const slides = lyricsToSlides(title, title);
+          if (slides.length > 0) onApplySong(title, slides);
+        });
+      }
+    } else if (action.kind === "add_scripture") {
+      const reference = String(p.reference ?? "").trim();
+      const translation = String(p.translation ?? "ESV").trim();
+      if (!reference) return;
+      // The backend enrichment step populates payload.slides with 1-2 verses per slide.
+      // If slides are already resolved (backend mode), use them directly.
+      const slides = p.slides as SlideCue[] | undefined;
+      if (slides && slides.length > 0) {
+        onApplyScripture(reference, slides);
+      } else {
+        // Fallback mode (e.g. browser preview): create simple slides from the reference.
+        // We'll generate 1-2 verse slides using a basic text representation.
+        // In a full implementation, this would call the Bible API, but for now we use
+        // the reference as the slide text.
+        const slides: SlideCue[] = [
+          {
+            id: `ai-scripture-${Date.now()}`,
+            number: 1,
+            section: reference,
+            title: reference,
+            text: reference,
+            kind: "scripture",
+          }
+        ];
+        onApplyScripture(reference, slides);
+      }
     } else if (action.kind === "update_theme") {
       const patch: Partial<SlideTheme> = {};
       if (p.backgroundType === "solid" || p.backgroundType === "gradient" || p.backgroundType === "image") {
@@ -267,7 +364,7 @@ export const AiAssistantDrawer: React.FC<AiAssistantDrawerProps> = ({
       )}
 
       {/* One-click CLI install */}
-      {!status?.opencodeInstalled && (
+      {!status?.opencodeInstalled && !hideBanner && (
         <div
           style={{
             padding: "10px 14px",
@@ -282,16 +379,33 @@ export const AiAssistantDrawer: React.FC<AiAssistantDrawerProps> = ({
           <div style={{ fontSize: 11.5, color: "#94A3B8", lineHeight: 1.4 }}>
             Install the free local CLI to unlock the built-in models without configuring an API key.
           </div>
-          <button
-            type="button"
-            className="btn btn-sm btn-primary"
-            disabled={installingCli || !status}
-            aria-busy={installingCli}
-            onClick={() => void installOpenCode()}
-            style={{ flexShrink: 0 }}
-          >
-            {installingCli ? "Installing OpenCode CLI…" : "Install OpenCode CLI (Free)"}
-          </button>
+          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            {status && !status.opencodeInstalled && !installingCli && (
+              <button
+                type="button"
+                className="btn btn-sm btn-primary"
+                onClick={() => void installOpenCode()}
+                style={{ flexShrink: 0 }}
+              >
+                Install OpenCode CLI (Free)
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={handleDismissOpenCodeBanner}
+              title="Hide this banner for this session"
+              style={{
+                background: "transparent",
+                border: "none",
+                color: "#6B728C",
+                cursor: "pointer",
+                padding: 0,
+                fontSize: 12,
+              }}
+            >
+              <X size={14} />
+            </button>
+          </div>
         </div>
       )}
 
@@ -374,6 +488,38 @@ export const AiAssistantDrawer: React.FC<AiAssistantDrawerProps> = ({
                     </div>
                   );
                 })}
+              </div>
+            )}
+            {/* Apply All button: show when 2+ unapplied actions exist in the turn */}
+            {turn.actions && turn.actions.length >= 2 && ((turn.appliedIndices as number[])?.length || 0) < turn.actions.length && (
+              <div style={{ marginTop: 8, padding: 6, background: "#1A222A", borderRadius: 6 }}>
+                <button
+                  type="button"
+                  className="btn btn-sm btn-primary"
+                  onClick={() => {
+                    // Apply all unapplied actions in this turn
+                    const actions = turn.actions as AiProposedActionItem[];
+                    const appliedCount = ((turn.appliedIndices as number[])?.length || 0);
+                    const unappliedIndices = actions
+                      .map((_act, i) => i)
+                      .filter((i) => !((turn.appliedIndices as number[])?.[i] === undefined));
+                    unappliedIndices.forEach((i) => applyAction(turn.id, i, actions[i]));
+                  }}
+                  style={{
+                    flexShrink: 0,
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 4,
+                    background: "#2563EB",
+                    color: "white",
+                    border: "none",
+                    borderRadius: 4,
+                    padding: "4px 8px",
+                    fontSize: 10,
+                    minWidth: 60,
+                  }}>
+                  Apply All ({turn.actions.length - ((turn.appliedIndices as number[]).length || 0)})
+                </button>
               </div>
             )}
           </div>

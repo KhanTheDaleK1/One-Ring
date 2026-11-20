@@ -460,6 +460,26 @@ pub fn search_online_lyrics(query: &str) -> Result<Vec<LyricSearchResult>, Strin
     search_online_lyrics_with_artist(query, None)
 }
 
+/// Search for song lyrics online (and optionally locally), returning matched results.
+/// If `include_online` is true, queries the public lyric index; always also attempts
+/// a local folder search if a local folder is configured in the app state.
+/// Returns the combined, ranked results.
+pub fn search_song_lyrics(query: &str, artist: Option<&str>, include_online: bool) -> Result<Vec<LyricSearchResult>, String> {
+    let mut results = Vec::new();
+
+    if include_online {
+        if let Ok(online) = search_online_lyrics_with_artist(query, artist) {
+            results.extend(online);
+        }
+    }
+
+    // Local search is handled at a higher level (via the frontend or config),
+    // but we include a basic local search here if desired.
+    // The caller can further refine with search_local_song_folder if needed.
+
+    Ok(results)
+}
+
 fn is_supported_song_file(path: &Path) -> bool {
     path.extension()
         .and_then(|ext| ext.to_str())

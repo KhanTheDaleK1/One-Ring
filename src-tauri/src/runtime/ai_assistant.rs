@@ -9,8 +9,9 @@
 //! (adding songs, branded announcement slides, theme updates, cues, or stage alerts).
 
 use crate::runtime::hide_console_window;
+use crate::runtime::bible_engine::{lookup_passage, BibleProviderConfig};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 use std::process::{Command, Stdio};
 
 const MAX_PROMPT_BYTES: usize = 32 * 1024;
@@ -29,6 +30,8 @@ pub struct AiProposedAction {
     pub kind: String,
     pub label: String,
     pub payload: Value,
+    /// Optional summary/post-processing info (e.g. slide count, artist, source)
+    pub summary: Option<Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -75,8 +78,19 @@ When the user asks you to create or modify anything in One Ring, include a singl
     "kind": "add_song",
     "label": "Add Amazing Grace to Set List",
     "payload": {
+      "type": "add_song",
       "title": "Amazing Grace",
-      "lyrics": "Amazing grace how sweet the sound\nThat saved a wretch like me\n\nI once was lost but now am found\nWas blind but now I see"
+      "artist": "Traditional",
+      "linesPerSlide": 2
+    }
+  },
+  {
+    "kind": "add_scripture",
+    "label": "Add Psalm 23 to Set List",
+    "payload": {
+      "type": "add_scripture",
+      "reference": "Psalm 23",
+      "translation": "ESV"
     }
   },
   {
@@ -99,8 +113,9 @@ When the user asks you to create or modify anything in One Ring, include a singl
   }
 ]
 ```
-Only emit valid JSON inside ```onering-actions. Supported kinds: add_announcement_slide, add_song, update_theme, set_stage_message.
-Never include copyrighted modern song lyrics unless the user provided them in the prompt; use public-domain lyrics or placeholder lyric lines if needed."##;
+Only emit valid JSON inside ```onering-actions. Supported kinds: add_announcement_slide, add_song, add_scripture, update_theme, set_stage_message.
+NEVER write placeholder lyrics or hardcoded scripture text. The AI must emit structured actions with `type: "add_song"` (title, artist, linesPerSlide) or `type: "add_scripture"` (reference, translation). Real lyrics and verses will be fetched and balanced by the backend enrichment step.
+Do NOT include copyrighted modern song lyrics in the AI's reply or payload. Use only public-domain or provided lyrics. The enrich_assistant_actions step below will resolve real content."##;
 
 fn find_opencode_binary() -> Option<String> {
     if let Ok(explicit) = std::env::var("ONE_RING_OPENCODE_BIN") {
@@ -321,6 +336,155 @@ pub fn extract_actions(raw: &str) -> (String, Vec<AiProposedAction>) {
     (cleaned, actions)
 }
 
+/// Post-processing enrichment: resolve real lyrics/scripture and build SlideCue slides.
+/// Called after extract_actions and before returning AiChatResponse.
+fn enrich_assistant_actions(
+    actions: &mut Vec<AiProposedAction>,
+    bible_cfg: &BibleProviderConfig,
+) {
+    use crate::runtime::lyrics_search::search_song_lyrics;
+
+    for action in actions.iter_mut() {
+        // Ensure payload is a JSON object
+        if !action.payload.is_object() {
+            action.payload = serde_json::Value::Object(Map::new());
+        }
+        let payload: &mut serde_json::Map<String, Value> = action.payload.as_object_mut().unwrap();
+        let kind = action.kind.as_str();
+
+        if kind == "add_song" {
+            // Fetch real song lyrics using the online lyric index (and/or local search)
+            let title = payload
+                .get("title")
+                .and_then(|v| v.as_str())
+                .unwrap_or("Unknown")
+                .to_string();
+            let artist = payload
+                .get("artist")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let lines_per_slide = payload
+                .get("linesPerSlide")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(2);
+
+            match search_song_lyrics(&title, if artist.is_empty() { None } else { Some(&artist.as_str()) }, true) {
+                Ok(lyric_results) => {
+                    if let Some(song) = lyric_results.first() {
+                        // Get the lyrics and split into clean, word-boundary-balanced lines
+                        let lyrics = &song.lyrics;
+                        let lines: Vec<&str> = lyrics.lines().map(|l| l.trim()).filter(|l| !l.is_empty()).collect();
+
+                        // Balance lines into groups of `linesPerSlide` lines, respecting word boundaries
+                        let mut balanced_lines: Vec<String> = Vec::new();
+                        let mut current_line_set: Vec<String> = Vec::new();
+                        let mut current_chars = 0usize;
+
+                        for line in lines {
+                            let line_len = line.chars().count();
+                            // If adding this line would exceed ~46 chars or we have a full set, finalize current set
+                            if current_chars + line_len > 46 && !current_line_set.is_empty() {
+                                // Join the current set into a single line text
+                                let text = current_line_set.join(" ");
+                                balanced_lines.push(text);
+                                current_line_set = Vec::new();
+                                current_chars = 0;
+                            }
+                            current_line_set.push(line.to_string());
+                            current_chars += line_len;
+                        }
+                        // Flush remaining lines
+                        if !current_line_set.is_empty() {
+                            let text = current_line_set.join(" ");
+                            balanced_lines.push(text);
+                        }
+
+                        // Chunk into slides of 2 lines per slide (or 4 if linesPerSlide suggests)
+                        let slides: Vec<serde_json::Value> = balanced_lines
+                            .chunks(lines_per_slide as usize)
+                            .enumerate()
+                            .map(|(i, chunk)| {
+                                let section = if chunk.len() == 1 {
+                                    "Verse".to_string()
+                                } else {
+                                    format!("Chorus/Verse {}", i + 1)
+                                };
+                                serde_json::json!({
+                                    "section": section,
+                                    "text": chunk.join("\n")
+                                })
+                            })
+                            .collect();
+
+                        // Compute slide count before inserting (slides will be moved into payload)
+                        let slide_count = slides.len();
+                        payload.insert("slides".to_string(), serde_json::Value::Array(slides));
+                        let _artist_source = format!("Add {} ({} slides · Online Lyrics)", title, slide_count);
+                        action.summary = Some(serde_json::json!({ "slideCount": slide_count, "artist": song.artist, "source": "online" }));
+                    } else {
+                        // No results found - keep placeholder
+                        payload.insert("slides".to_string(), serde_json::Value::Array([].to_vec()));
+                        action.summary = Some(serde_json::json!({ "slideCount": 0, "artist": title, "source": "no-match" }));
+                    }
+                }
+                Err(_) => {
+                    // Search failed - keep placeholder
+                    payload.insert("slides".to_string(), serde_json::Value::Array([].to_vec()));
+                    action.summary = Some(serde_json::json!({ "slideCount": 0, "artist": title, "source": "search-failed" }));
+                }
+            }
+        } else if kind == "add_scripture" {
+            let reference = payload
+                .get("reference")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let translation = payload
+                .get("translation")
+                .and_then(|v| v.as_str())
+                .unwrap_or("ESV")
+                .to_string();
+
+            match lookup_passage(&reference, &translation, bible_cfg) {
+                Ok(passage) => {
+                    // Build 1-2 verses per slide
+                    let verses: Vec<&str> = passage
+                        .verses
+                        .iter()
+                        .map(|v| v.text.as_str())
+                        .collect();
+
+                    let slides: Vec<serde_json::Value> = verses
+                        .chunks(2)
+                        .enumerate()
+                        .map(|(i, chunk)| {
+                            let ref_str = passage.reference.clone();
+                            serde_json::json!({
+                                "section": format!("{} {:?}", ref_str, i + 1),
+                                "text": chunk.join(" ")
+                            })
+                        })
+                        .collect();
+
+                    let slide_count = slides.len();
+                    payload.insert("slides".to_string(), serde_json::Value::Array(slides));
+                    action.summary = Some(serde_json::json!({
+                        "slideCount": slide_count,
+                        "reference": reference,
+                        "translation": translation,
+                        "source": passage.source
+                    }));
+                }
+                Err(_) => {
+                    payload.insert("slides".to_string(), serde_json::Value::Array([].to_vec()));
+                    action.summary = Some(serde_json::json!({ "slideCount": 0, "reference": reference, "translation": translation, "source": "lookup-failed" }));
+                }
+            }
+        }
+    }
+}
+
 fn build_combined_prompt(
     message: &str,
     history: &[AiChatMessage],
@@ -487,6 +651,7 @@ pub fn chat(
     message: &str,
     history: &[AiChatMessage],
     context: &Value,
+    bible_cfg: &BibleProviderConfig,
 ) -> Result<AiChatResponse, String> {
     let provider = if provider.trim().is_empty() {
         "opencode_cli"
@@ -522,7 +687,11 @@ pub fn chat(
         other => return Err(format!("Unsupported AI provider: {other}")),
     };
 
-    let (reply, actions) = extract_actions(&raw_reply);
+    let (reply, mut actions) = extract_actions(&raw_reply);
+
+    // Post-process: resolve real lyrics/scripture and populate slides
+    enrich_assistant_actions(&mut actions, bible_cfg);
+
     Ok(AiChatResponse {
         reply,
         actions,

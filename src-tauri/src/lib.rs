@@ -3581,10 +3581,18 @@ async fn ai_assistant_chat(
             inner.settings.general.ai_api_key.clone(),
         )
     };
+    let bible_cfg = {
+        let inner = state.inner.lock().map_err(|_| "State lock poisoned".to_string())?;
+        runtime::bible_engine::BibleProviderConfig {
+            esv_api_key: inner.settings.slides.esv_api_key.clone(),
+            api_bible_key: inner.settings.slides.api_bible_key.clone(),
+            local_bibles_dir: inner.settings.slides.local_bibles_dir.clone(),
+        }
+    };
     let hist = history.unwrap_or_default();
     let ctx = context.unwrap_or_else(|| serde_json::json!({}));
     tauri::async_runtime::spawn_blocking(move || {
-        runtime::ai_assistant::chat(&provider, &model, &endpoint, &api_key, &message, &hist, &ctx)
+        runtime::ai_assistant::chat(&provider, &model, &endpoint, &api_key, &message, &hist, &ctx, &bible_cfg)
     })
     .await
     .map_err(|e| format!("AI assistant task failed: {e}"))?

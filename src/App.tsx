@@ -20,7 +20,7 @@ import {
   UPDATE_REPO_URL,
 } from "./bridge";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { AppStateSnapshot, CrashReportSummary, ViewMode } from "./types";
+import type { AppStateSnapshot, CrashReportSummary, SlideCue, ViewMode } from "./types";
 import { PreflightView } from "./components/PreflightView";
 import { ShowBuilderView, type BuilderIntent } from "./components/ShowBuilderView";
 import { ShowModeView } from "./components/ShowModeView";
@@ -896,6 +896,14 @@ export const App: React.FC = () => {
 
   const requestMode = (target: AppViewMode) => {
     if (!requestGuardedNavigation(target)) return;
+
+    // Confirmation check: prevent leaving Show Mode to engineer-heavy tabs without consent
+    if (mode === "show" && ["mixing", "video", "broadcast"].includes(target)) {
+      if (!window.confirm("Switching to engineer mode will expose DCA, video switching, and RTMP broadcast controls. Continue?")) {
+        return;
+      }
+    }
+
     if (isShowMode(target)) {
       commitShowMode();
       return;
@@ -1042,7 +1050,7 @@ export const App: React.FC = () => {
           </button>
           <span
             style={{
-              fontSize: 11,
+              fontSize: 12,
               color: "#64748B",
               fontWeight: 600,
               letterSpacing: "0.04em",
@@ -1064,7 +1072,7 @@ export const App: React.FC = () => {
               title={`${h.protocol} — ${h.detail} (${h.latencyMs}ms)`}
               className="mono"
               style={{
-                fontSize: 11,
+                fontSize: 12,
                 padding: "4px 9px",
                 borderRadius: 999,
                 background: "#1C222D",
@@ -1094,7 +1102,7 @@ export const App: React.FC = () => {
               className="mono"
               title="Connected to paired station sync"
               style={{
-                fontSize: 11,
+                fontSize: 12,
                 padding: "4px 9px",
                 borderRadius: 999,
                 background: "#052E2B",
@@ -1128,16 +1136,9 @@ export const App: React.FC = () => {
               <button
                 key={tab.id}
                 type="button"
-                className="btn"
+                className={`mode-tab ${mode === tab.id ? "mode-tab-active" : ""}`}
                 onClick={() => requestMode(tab.id as ViewMode)}
                 style={{
-                  height: 36,
-                  padding: "0 14px",
-                  fontSize: 13,
-                  fontWeight: mode === tab.id ? 700 : 500,
-                  background: mode === tab.id ? "#2563EB" : "#1C222D",
-                  borderColor: mode === tab.id ? "#60A5FA" : "#2E3746",
-                  color: mode === tab.id ? "#FFFFFF" : "#CBD5E1",
                   display: "flex",
                   alignItems: "center",
                   gap: 6,
@@ -1206,6 +1207,14 @@ export const App: React.FC = () => {
             <Lock size={14} />
             {isShowMode(mode) ? "Show Mode" : "Lock"}
           </button>
+        {mode === "show" && (
+            <span
+              className="show-mode-badge"
+              style={{ position: "static" }}
+            >
+              Show Mode
+            </span>
+          )}
         </div>
       </header>
 
@@ -1727,6 +1736,31 @@ export const App: React.FC = () => {
             };
             void bridge.syncWorkspaceState({ slides: nextSlidesState }).catch(() => {});
             return { ...prev, slides: nextSlidesState };
+          });
+        }}
+        onApplyScripture={(reference, slides) => {
+          setState((prev) => {
+            if (!prev) return prev;
+            // Add scripture slides at the beginning, similar to onApplySong pattern.
+            const newScriptureSlide: SlideCue = {
+              id: `ai-scripture-${Date.now()}`,
+              number: 1,
+              section: reference,
+              title: reference,
+              text: slides[0]?.text || reference,
+              kind: "scripture",
+            };
+            // Insert at the beginning of the slides array
+            const nextSlidesState = {
+              ...prev.slides,
+              slides: [newScriptureSlide, ...(prev.slides.slides || [])],
+              currentSlide: 1,
+              totalSlides: 1 + ((prev.slides.slides || [])?.length || 0),
+              currentText: newScriptureSlide.text,
+              nextText: slides[1]?.text || "",
+            };
+            void bridge.syncWorkspaceState({ slides: nextSlidesState }).catch(() => {});
+            return { ...prev, slides: nextSlidesState as AppStateSnapshot["slides"] };
           });
         }}
         onApplyTheme={(patch) => {

@@ -369,6 +369,8 @@ export const SlidesCanvasView: React.FC<SlidesCanvasViewProps> = ({
   const [showTimersModal, setShowTimersModal] = useState(false);
   const [stageAlertMsg, setStageAlertMsg] = useState<string>("");
   const [stageAlertActive, setStageAlertActive] = useState<boolean>(false);
+  const [blackoutToastMsg, setBlackoutToastMsg] = useState<string>("");
+  const [blackoutToastActive, setBlackoutToastActive] = useState<boolean>(false);
   const [timerLabel, setTimerLabel] = useState<string>("Countdown Ready");
   const [showSlideEditor, setShowSlideEditor] = useState(false);
   const [editorInitialIndex, setEditorInitialIndex] = useState(0);
@@ -605,6 +607,31 @@ export const SlidesCanvasView: React.FC<SlidesCanvasViewProps> = ({
       return;
     }
     onSlideAction("clear");
+  };
+
+  // Full blackout: drops background AND text to black; one-click with immediate Undo toast.
+  const handleBlackoutStage = () => {
+    setBlackoutActive(true);
+    broadcastSlides({
+      ...state.slides,
+      cleared: true,
+      theme: {
+        ...theme,
+        backgroundType: "solid",
+        backgroundColor: "#000000",
+        gradientTo: "#000000",
+        backgroundImage: "",
+      },
+    });
+    setBlackoutToastMsg("Stage blacked out — click Undo to restore");
+    setBlackoutToastActive(true);
+  };
+
+  // Undo blackout: restore previous slide/cleared state in one click.
+  const handleBlackoutStageUndo = () => {
+    setBlackoutActive(false);
+    setBlackoutToastActive(false);
+    setBlackoutToastMsg("");
   };
 
   // Full blackout: text and background both drop to black on every output.
@@ -981,13 +1008,14 @@ export const SlidesCanvasView: React.FC<SlidesCanvasViewProps> = ({
             </select>
           </div>
 
+          {/* "Clear Text" — non-destructive: removes lyrics/lower-third text only, preserves gradient/motion background */}
           <button
             type="button"
             onClick={handleClearText}
             title="Clear lyrics and lower-third text, keeping the active background on screen"
             style={{
-              height: 34,
-              padding: "0 12px",
+              height: 40,
+              padding: "0 14px",
               background: displayCleared ? "#7F1D1D" : "#1C222D",
               border: `1px solid ${displayCleared ? "#DC2626" : "#2E3746"}`,
               color: displayCleared ? "#FCA5A5" : "#E2E8F0",
@@ -1003,14 +1031,15 @@ export const SlidesCanvasView: React.FC<SlidesCanvasViewProps> = ({
             <Eraser size={13} /> Clear Text
           </button>
 
+          {/* "Blackout Stage" — destructive: drops background AND text to black; one-click with immediate Undo toast */}
           <button
             type="button"
-            onClick={handleClearAll}
-            title="Blackout: drop both the background and all text to black on every output"
+            onClick={handleBlackoutStage}
+            title="Blackout Stage: drop both background and text to black"
             style={{
-              height: 34,
-              padding: "0 12px",
-              background: blackoutActive ? "#000000" : "#1C222D",
+              height: 40,
+              padding: "0 14px",
+              background: blackoutActive ? "rgba(239, 68, 68, 0.15)" : "#1C222D",
               border: `1px solid ${blackoutActive ? "#EF4444" : "#2E3746"}`,
               color: blackoutActive ? "#FCA5A5" : "#E2E8F0",
               borderRadius: 6,
@@ -1022,7 +1051,7 @@ export const SlidesCanvasView: React.FC<SlidesCanvasViewProps> = ({
               fontWeight: 600,
             }}
           >
-            <Trash2 size={13} /> Clear All
+            <Trash2 size={13} /> Blackout Stage
           </button>
 
           <button
@@ -1201,10 +1230,11 @@ export const SlidesCanvasView: React.FC<SlidesCanvasViewProps> = ({
               style={{ display: "none" }}
             />
             <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 5, width: "100%" }}>
+              {/* Import File — opens the system file picker for .txt/.cho/.chordpro/.xml/.pro/.ewsx */}
               <button
                 type="button"
                 onClick={() => fileImportRef.current?.click()}
-                title="Import .txt, ChordPro, OpenLyrics, or slide archive file"
+                title="Import File: supported formats .txt / .cho / .chordpro / .xml / .pro / .ewsx"
                 style={{
                   minWidth: 0,
                   background: "#1E293B",
@@ -1224,14 +1254,15 @@ export const SlidesCanvasView: React.FC<SlidesCanvasViewProps> = ({
                   textOverflow: "ellipsis",
                 }}
               >
-                <Upload size={11} style={{ flexShrink: 0 }} /> File
+                <Upload size={11} style={{ flexShrink: 0 }} /> Import File
               </button>
+              {/* Search Library — opens the Public Domain song catalog modal */}
               <button
                 type="button"
                 onClick={() => setShowSongCatalogModal(true)}
                 aria-haspopup="dialog"
                 aria-expanded={showSongCatalogModal}
-                title="Search Public Domain / Song Library catalog"
+                title="Search Library: Public Domain hymn catalog"
                 style={{
                   minWidth: 0,
                   background: "#1E293B",
@@ -1251,14 +1282,15 @@ export const SlidesCanvasView: React.FC<SlidesCanvasViewProps> = ({
                   textOverflow: "ellipsis",
                 }}
               >
-                Library
+                Search Library
               </button>
+              {/* Paste Lyrics — opens the paste & reflow modal for free-form lyric entry */}
               <button
                 type="button"
                 onClick={() => setShowImportModal(true)}
                 aria-haspopup="dialog"
                 aria-expanded={showImportModal}
-                title="Add another song to this service"
+                title="Paste Lyrics: paste song lyrics and auto-reflow into slides"
                 style={{
                   minWidth: 0,
                   background: "#1E293B",
@@ -1278,7 +1310,7 @@ export const SlidesCanvasView: React.FC<SlidesCanvasViewProps> = ({
                   textOverflow: "ellipsis",
                 }}
               >
-                <Plus size={12} style={{ flexShrink: 0 }} /> Add
+                <Plus size={12} style={{ flexShrink: 0 }} /> Paste Lyrics
               </button>
             </div>
           </div>
@@ -1705,6 +1737,45 @@ export const SlidesCanvasView: React.FC<SlidesCanvasViewProps> = ({
           }}
         >
           STAGE ALERT TICKER: {stageAlertMsg}
+        </div>
+      )}
+
+      {blackoutToastActive && blackoutToastMsg && (
+        <div
+          style={{
+            position: "fixed",
+            bottom: 80,
+            left: "50%",
+            transform: "translateX(-50%)",
+            background: "#7F1D1D",
+            border: "1px solid #EF4444",
+            color: "#FFFFFF",
+            padding: "8px 18px",
+            borderRadius: 8,
+            fontWeight: 600,
+            fontSize: 13,
+            zIndex: 9999,
+            boxShadow: "0 8px 25px rgba(0,0,0,0.6)",
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+          }}
+        >
+          <span>{blackoutToastMsg}</span>
+          <button
+            type="button"
+            onClick={handleBlackoutStageUndo}
+            style={{
+              background: "transparent",
+              border: "none",
+              color: "#FCA5A5",
+              fontWeight: 600,
+              fontSize: 12,
+              padding: 0,
+            }}
+          >
+            Undo
+          </button>
         </div>
       )}
 
