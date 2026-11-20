@@ -1312,16 +1312,32 @@ fn require_engineer(managed: &ManagedState) -> Result<(), String> {
     }
 }
 
+fn is_valid_engineer_pin(pin: &str) -> bool {
+    (4..=8).contains(&pin.len()) && pin.bytes().all(|b| b.is_ascii_digit())
+}
+
 fn unlock_engineer_with_state(pin: &str, managed: &ManagedState) -> Result<bool, String> {
-    let configured = managed
-        .inner
-        .lock()
-        .map_err(|_| "State lock poisoned".to_string())?
-        .settings
-        .general
-        .engineer_pin
-        .clone();
-    if ct_eq(pin, &configured) {
+    let pin = pin.trim();
+    let mut bootstrapped = false;
+    let configured = {
+        let mut inner = managed
+            .inner
+            .lock()
+            .map_err(|_| "State lock poisoned".to_string())?;
+        let current = inner.settings.general.engineer_pin.trim().to_string();
+        if current.is_empty() {
+            if !is_valid_engineer_pin(pin) {
+                return Err("Engineer PIN must be 4 to 8 digits".into());
+            }
+            inner.settings.general.engineer_pin = pin.to_string();
+            inner.push_event_log("[security] Initial Engineer PIN configured".into());
+            bootstrapped = true;
+            pin.to_string()
+        } else {
+            current
+        }
+    };
+    if bootstrapped || ct_eq(pin, &configured) {
         let mut lock = managed
             .engineer_unlocked_until
             .lock()
@@ -1358,8 +1374,23 @@ fn engineer_is_unlocked(managed: &ManagedState) -> Result<bool, String> {
 }
 
 #[tauri::command]
-fn unlock_engineer_mode(pin: String, state: State<ManagedState>) -> Result<bool, String> {
-    unlock_engineer_with_state(&pin, &state)
+fn unlock_engineer_mode(
+    pin: String,
+    app: tauri::AppHandle,
+    state: State<ManagedState>,
+) -> Result<bool, String> {
+    let was_empty = state
+        .inner
+        .lock()
+        .map(|s| s.settings.general.engineer_pin.trim().is_empty())
+        .unwrap_or(false);
+    let ok = unlock_engineer_with_state(&pin, &state)?;
+    if ok && was_empty {
+        if let Ok(settings) = state.inner.lock().map(|s| s.settings.clone()) {
+            write_settings_to_disk(&app, &settings);
+        }
+    }
+    Ok(ok)
 }
 
 #[tauri::command]

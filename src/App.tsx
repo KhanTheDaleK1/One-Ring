@@ -835,19 +835,32 @@ export const App: React.FC = () => {
           setPinError("PIN and confirmation do not match.");
           return;
         }
-        const updated = await bridge.saveSettings({
-          ...state.settings,
-          general: { ...state.settings.general, engineerPin: pin },
-        });
-        setState(updated);
-        notifyMidiBindingsUpdated();
+        // Bootstrap-set and unlock in Rust first (update_settings requires Engineer Mode unlocked).
         const accepted = await unlockEngineerMode(pin);
         if (!accepted) {
-          setPinMode("unlock");
-          setPinConfirmValue("");
-          setPinError("PIN saved, but unlock was rejected. Enter it again to continue.");
+          setPinError("Could not set the Engineer PIN. Enter 4 to 8 digits and try again.");
           return;
         }
+        try {
+          const updated = await bridge.saveSettings({
+            ...state.settings,
+            general: { ...state.settings.general, engineerPin: pin },
+          });
+          setState(updated);
+        } catch {
+          setState((prev) =>
+            prev
+              ? {
+                  ...prev,
+                  settings: {
+                    ...prev.settings,
+                    general: { ...prev.settings.general, engineerPin: pin },
+                  },
+                }
+              : prev
+          );
+        }
+        notifyMidiBindingsUpdated();
       } else {
         const accepted = await unlockEngineerMode(pin);
         if (!accepted) {
