@@ -728,6 +728,7 @@ export const bridge = {
   unlockEngineerMode,
   lockEngineerMode,
   getEngineerLockStatus,
+  searchSongLyrics,
 
   async getAppState(): Promise<AppStateSnapshot> {
     if (isTauri()) return invokeTauri("get_app_state");
@@ -1981,4 +1982,104 @@ export async function openConfigDirectory(): Promise<string> {
     }
   }
   return "Browser preview — no local configuration directory is available.";
+}
+
+// ---------------------------------------------------------------------------------------------
+// Song & lyric search — native command first, open lyric index for browser preview
+// ---------------------------------------------------------------------------------------------
+
+/** Mirrors the camelCase payload emitted by the native `search_song_lyrics` command. */
+export interface LyricSearchResultItem {
+  id: string;
+  title: string;
+  artist: string;
+  source: string;
+  copyright: string;
+  key: string;
+  lyrics: string;
+  themes: string[];
+  filePath?: string;
+}
+
+interface OpenIndexLyricEntry {
+  id?: number | string;
+  trackName?: string;
+  artistName?: string;
+  plainLyrics?: string;
+  syncedLyrics?: string;
+}
+
+/** Keep imported slides plain text: drop timestamp and field lines from timed lyric payloads. */
+function normalizeIndexedLyrics(raw: string): string {
+  return raw
+    .replace(/\r\n?/g, "\n")
+    .split("\n")
+    .filter((line) => !/^\s*\[(?:\d{1,2}:|[a-z]{2,3}\s*:)/i.test(line))
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+/**
+ * Search online lyrics and, in the installed app, an operator-configured local song folder.
+ * Browser preview only queries the open index; filesystem access stays native-only.
+ */
+export async function searchSongLyrics(
+  query: string,
+  localFolder?: string,
+  includeOnline?: boolean
+): Promise<LyricSearchResultItem[]> {
+  const wantsOnline = includeOnline ?? true;
+
+  if (isTauri()) {
+    try {
+      const results = await invokeTauri<LyricSearchResultItem[]>("search_song_lyrics", {
+        query,
+        localFolder: localFolder || null,
+        includeOnline: wantsOnline,
+      });
+      return Array.isArray(results) ? results : [];
+    } catch {
+      return [];
+    }
+  }
+
+  if (!wantsOnline || !query.trim()) return [];
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 6000);
+  try {
+    const response = await fetch(
+      `https://lrclib.net/api/search?q=${encodeURIComponent(query.trim())}`,
+      { signal: controller.signal }
+    );
+    if (!response.ok) return [];
+    const payload: unknown = await response.json();
+    if (!Array.isArray(payload)) return [];
+
+    return (payload as OpenIndexLyricEntry[])
+      .map((entry, index): LyricSearchResultItem => {
+        const rawLyrics =
+          typeof entry.plainLyrics === "string" && entry.plainLyrics.trim()
+            ? entry.plainLyrics
+            : typeof entry.syncedLyrics === "string"
+              ? entry.syncedLyrics
+              : "";
+        return {
+          id: String(entry.id ?? `online-${index}`),
+          title: typeof entry.trackName === "string" ? entry.trackName.trim() : "",
+          artist: typeof entry.artistName === "string" ? entry.artistName.trim() : "",
+          source: "online",
+          copyright: "",
+          key: "",
+          lyrics: normalizeIndexedLyrics(rawLyrics),
+          themes: [],
+        };
+      })
+      .filter((item) => item.title.length > 0 || item.lyrics.length > 0);
+  } catch {
+    return [];
+  } finally {
+    clearTimeout(timeout);
+  }
 }

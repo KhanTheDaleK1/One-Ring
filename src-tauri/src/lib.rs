@@ -1242,6 +1242,60 @@ fn update_settings(
     Ok(state.inner.lock().unwrap().clone())
 }
 
+/// Search songs and lyrics across an optional local song folder and the public lyric index.
+/// A network failure never discards usable local results; an online-only failure is surfaced.
+#[tauri::command]
+async fn search_song_lyrics(
+    query: String,
+    local_folder: Option<String>,
+    include_online: Option<bool>,
+) -> Result<Vec<runtime::lyrics_search::LyricSearchResult>, String> {
+    use runtime::lyrics_search::{search_local_song_folder, search_online_lyrics};
+
+    let query = query.trim().to_string();
+    let folder = local_folder
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let online_requested = include_online.unwrap_or(true) && !query.is_empty();
+
+    let folder_for_task = folder.clone();
+    let query_for_local = query.clone();
+    let query_for_online = query.clone();
+    let (local, online) = tokio::join!(
+        tokio::task::spawn_blocking(move || match folder_for_task {
+            Some(path) => search_local_song_folder(&path, &query_for_local),
+            None => Ok(Vec::new()),
+        }),
+        tokio::task::spawn_blocking(move || {
+            if online_requested {
+                search_online_lyrics(&query_for_online)
+            } else {
+                Ok(Vec::new())
+            }
+        })
+    );
+
+    let local = local.map_err(|e| format!("Local lyric search task failed: {e}"))?;
+    let online = online.map_err(|e| format!("Online lyric search task failed: {e}"))?;
+
+    match (local, online) {
+        (Ok(local), Ok(online)) => {
+            let mut combined = local;
+            combined.extend(online);
+            Ok(combined)
+        }
+        (Ok(local), Err(_)) if !local.is_empty() => Ok(local),
+        (Ok(_), Err(error)) => Err(error),
+        (Err(_), Ok(online)) if !online.is_empty() => Ok(online),
+        (Err(error), Ok(_)) => Err(error),
+        (Err(local_error), Err(online_error)) => Err(format!(
+            "Local search: {local_error}; Online search: {online_error}"
+        )),
+    }
+}
+
 /// Persist frontend-authored workspace edits (show name, broadcast sources, imported songs/theme)
 /// into Rust `ManagedState` so subsequent backend commands never clobber React state.
 #[tauri::command]
@@ -3467,6 +3521,7 @@ pub fn run() {
             flash_aoip_identify,
             run_preflight_probes,
             update_settings,
+            search_song_lyrics,
             sync_workspace_state,
             export_show_file,
             import_show_file,
