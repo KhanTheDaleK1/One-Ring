@@ -638,6 +638,290 @@ export const BroadcastAudioMixerPanel: React.FC<BroadcastAudioMixerPanelProps> =
         color: "#E2E8F0",
       }}
     >
+      {/* Broadcast Stream Mix Strip */}
+      <div
+        style={{
+          display: "flex",
+          alignItems: "stretch",
+          gap: 10,
+          marginBottom: 10,
+          padding: 8,
+          background: "rgba(10, 11, 19, 0.8)",
+          border: "1px solid #1e293b",
+          borderRadius: 10,
+          minHeight: 56,
+        }}
+      >
+        {/* Master Bus: fader + mute */}
+        <div
+          style={{
+            flex: "0 0 140px",
+            display: "flex",
+            flexDirection: "column",
+            justifyContent: "space-between",
+            height: 44,
+          }}
+        >
+          <div style={{ fontSize: 9, fontWeight: 700, color: "#94a3b8", textTransform: "uppercase", marginBottom: 4 }}>
+            MASTER BUS
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 4, height: 28 }}>
+            <input
+              type="range"
+              min={-60}
+              max={0}
+              step={0.5}
+              value={-12}
+              aria-label="Broadcast master bus fader dB"
+              style={{
+                flex: 1,
+                accentColor: "#10b981",
+                height: 6,
+              }}
+            />
+            <button
+              type="button"
+              style={{
+                width: 30,
+                height: 28,
+                borderRadius: 6,
+                background: "#161b24",
+                border: "1px solid #2f3542",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                cursor: "pointer",
+                color: "#e2e8f0",
+              }}
+            >
+              <VolumeX size={12} />
+            </button>
+          </div>
+          <div style={{ fontSize: 10, color: "#64748b", textAlign: "center" }}>
+            -12 dB
+          </div>
+        </div>
+
+        {/* Room / Congregation Ambience Mic Blend */}
+        <div
+          style={{
+            flex: "0 0 180px",
+            display: "flex",
+            flexDirection: "column",
+            justifyContent: "center",
+            padding: "0 8px",
+          }}
+        >
+          <div
+            style={{
+              fontSize: 9,
+              fontWeight: 700,
+              color: "#94a3b8",
+              textTransform: "uppercase",
+              marginBottom: 4,
+              textAlign: "center",
+            }}
+          >
+            Room Ambience
+          </div>
+          <div
+            style={{
+              position: "relative",
+              height: 24,
+            }}
+          >
+            <input
+              type="range"
+              min={0}
+              max={100}
+              step={1}
+              value={30}
+              aria-label="Room ambience blend percentage"
+              style={{
+                flex: 1,
+                accentColor: "#f59e0b",
+                height: 6,
+              }}
+            />
+            <span
+              style={{
+                position: "absolute",
+                bottom: -28,
+                left: 0,
+                right: 0,
+                background: "#0d1117",
+                padding: "4px 8px",
+                borderRadius: 6,
+                fontSize: 9,
+                color: "#f59e0b",
+                whiteSpace: "pre-wrap",
+                border: "1px solid #2f3542",
+                maxWidth: 180,
+                wordBreak: "break-word",
+              }}
+            >
+              Blend 30% — Room mics add natural spaciousness; too much creates muddy, far‑away sound. Keep under 50% for focused livestream.
+            </span>
+          </div>
+        </div>
+
+        {/* Livestream Loudness Meter */}
+        <div style={{ flex: "1", display: "flex", flexDirection: "column", gap: 4, padding: "0 8px" }}>
+          <div style={{ fontSize: 9, fontWeight: 700, color: "#94a3b8", textTransform: "uppercase", textAlign: "center" }}>
+            Loudness
+          </div>
+          <div
+            style={{
+              height: 36,
+              position: "relative",
+              background: "linear-gradient(90deg, #0a0d13 0%, #1e293b 100%)",
+              border: "1px solid #374151",
+              borderRadius: 4,
+              overflow: "hidden",
+            }}
+          >
+            {/* Marker bands */}
+            <div
+              style={{
+                position: "absolute",
+                top: 0,
+                bottom: 0,
+                left: 0,
+                width: "100%",
+                background:
+                  "linear-gradient(90deg, rgba(16,185,129,0.4) 0%, rgba(16,185,129,0.4) 45%, rgba(245,158,11,0.4) 45%, rgba(245,158,11,0.4) 55%, rgba(239,68,68,0.4) 55%, rgba(239,68,68,0.4) 100%)",
+              }}
+            />
+            <div
+              style={{
+                position: "absolute",
+                top: 0,
+                bottom: 0,
+                left: dbToMeterPercent(-12),
+                width: 1,
+                height: "100%",
+                background: "rgba(251,191,36,0.6)",
+              }}
+            />
+            <div
+              style={{
+                position: "absolute",
+                top: 0,
+                bottom: 0,
+                left: dbToMeterPercent(-16),
+                width: 1,
+                height: "100%",
+                background: "rgba(16,185,129,0.6)",
+              }}
+            />
+            <div
+              style={{
+                position: "absolute",
+                top: 0,
+                bottom: 0,
+                left: dbToMeterPercent(0),
+                width: 1,
+                height: "100%",
+                background: "rgba(239,68,68,0.8)",
+              }}
+            />
+            <div
+              style={{
+                position: "relative",
+                height: "100%",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                padding: "0 4px",
+            }}>
+              <span
+                style={{
+                  position: "absolute",
+                  left: dbToMeterPercent(-60),
+                  color: "#64748b",
+                  fontSize: 9,
+                  width: dbToMeterPercent(-58),
+                  textAlign: "right",
+                  paddingRight: 2,
+                }}
+              >
+                -60
+              </span>
+              <span
+                style={{
+                  position: "absolute",
+                  right: dbToMeterPercent(-60),
+                  color: "#64748b",
+                  fontSize: 9,
+                  width: dbToMeterPercent(-60),
+                  textAlign: "left",
+                  paddingLeft: 2,
+                }}
+              >
+                0
+              </span>
+              <span
+                style={{
+                  marginLeft: dbToMeterPercent(-12),
+                  color: "#22c55e",
+                  fontSize: 9,
+                  fontWeight: 700,
+                  transform: `translateX(${dbToMeterPercent(-12) - 4}%)`,
+                }}
+              >
+                -12 LUFS
+              </span>
+              <span
+                style={{
+                  marginLeft: dbToMeterPercent(-16),
+                  color: "#10b981",
+                  fontSize: 9,
+                  fontWeight: 700,
+                  transform: `translateX(${dbToMeterPercent(-16) - 4}%)`,
+                }}
+              >
+                -16 LUFS
+              </span>
+              <span
+                style={{
+                  marginLeft: dbToMeterPercent(0),
+                  color: "#ef4444",
+                  fontSize: 9,
+                  fontWeight: 700,
+                  transform: `translateX(${dbToMeterPercent(0) - 4}%)`,
+                }}
+              >
+                0 (clip)
+              </span>
+            </div>
+            <div
+              style={{
+                position: "absolute",
+                top: 4,
+                bottom: 4,
+                left: dbToMeterPercent(liveSystemDb),
+                width: dbToMeterPercent(Math.max(1, -liveSystemDb - liveSystemDb * 0.1)) || 1,
+                background: "#fbbf24",
+                borderRadius: 2,
+                boxShadow: "0 0 8px rgba(251,191,36,0.5)",
+              }}
+            />
+          </div>
+          <div
+            style={{
+              display: "flex",
+              justifyContent: "space-between",
+              fontSize: 10,
+              color: "#9aa5b4",
+            }}
+          >
+            <span>-60 LUFS</span>
+            <span>{Math.max(-60, liveSystemDb).toFixed(1)} LUFS</span>
+            <span>0 LUFS</span>
+          </div>
+        </div>
+      </div>
+
       {/* Panel Header */}
       <div
         style={{

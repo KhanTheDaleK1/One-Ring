@@ -2389,6 +2389,14 @@ export async function getAiAssistantStatus(): Promise<AiAssistantStatusInfo> {
   return invokeTauri<AiAssistantStatusInfo>("ai_assistant_status");
 }
 
+/** Download and run the official CLI installer in the native host, then re-check status. */
+export async function installOpenCodeCli(): Promise<AiAssistantStatusInfo> {
+  if (!isTauriRuntime()) {
+    throw new Error("One-click installation is available in the One Ring desktop app.");
+  }
+  return invokeTauri<AiAssistantStatusInfo>("install_opencode_cli");
+}
+
 export async function aiAssistantChat(
   message: string,
   history: AiChatMessageItem[],

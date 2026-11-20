@@ -42,11 +42,14 @@ import {
   discoverLanDevices,
   exportDiagnosticBundle,
   exportSettingsBundle,
+  getAiAssistantStatus,
   importSettingsBundle,
+  installOpenCodeCli,
   listHostDisplays,
   openConfigDirectory,
   resetSettingsSection,
   testSubsystemConnection,
+  type AiAssistantStatusInfo,
   type HostDisplayInfo,
 } from "../bridge";
 import { MidiTriggerModal } from "./MidiTriggerModal";
@@ -551,7 +554,42 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   );
   const [relayNote, setRelayNote] = useState<string | null>(null);
   const [relayBusy, setRelayBusy] = useState(false);
+  const [aiStatus, setAiStatus] = useState<AiAssistantStatusInfo | null>(null);
+  const [installingOpenCode, setInstallingOpenCode] = useState(false);
+  const [openCodeNote, setOpenCodeNote] = useState<string | null>(null);
   const importInputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    if (tab !== "general") return;
+    let cancelled = false;
+    getAiAssistantStatus()
+      .then((next) => {
+        if (!cancelled) setAiStatus(next);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [tab]);
+
+  const installOpenCode = async () => {
+    if (installingOpenCode) return;
+    setInstallingOpenCode(true);
+    setOpenCodeNote(null);
+    try {
+      const updated = await installOpenCodeCli();
+      setAiStatus(updated);
+      setOpenCodeNote(
+        updated.opencodeInstalled
+          ? "OpenCode CLI installed and detected."
+          : "Installer finished, but the CLI was not detected yet. Restart One Ring and check again."
+      );
+    } catch (err) {
+      setOpenCodeNote(`Installation failed: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setInstallingOpenCode(false);
+    }
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -2476,6 +2514,60 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             title="AI Production Assistant"
             description="Power the built-in AI slide & service assistant using free OpenCode CLI models, local Ollama, or any HTTPS OpenAI-compatible endpoint."
           >
+            {!aiStatus?.opencodeInstalled && (
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 10,
+                  flexWrap: "wrap",
+                  marginBottom: 12,
+                  padding: "10px 12px",
+                  borderRadius: 8,
+                  border: "1px solid #1E3A5F",
+                  background: "#131A26",
+                }}
+              >
+                <div style={{ flex: 1, minWidth: 220, fontSize: 12, color: "#9CA3AF" }}>
+                  OpenCode CLI is not installed yet. Install it in one click to use the free local models.
+                </div>
+                <button
+                  type="button"
+                  className="btn btn-sm btn-primary"
+                  disabled={installingOpenCode || !aiStatus}
+                  aria-busy={installingOpenCode}
+                  onClick={() => void installOpenCode()}
+                >
+                  {installingOpenCode ? "Installing OpenCode CLI…" : "Install OpenCode CLI (Free)"}
+                </button>
+              </div>
+            )}
+            {aiStatus?.opencodeInstalled && (
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 6,
+                  marginBottom: 12,
+                  fontSize: 12,
+                  color: aiStatus.available ? "#34D399" : "#FBBF24",
+                }}
+              >
+                <Check size={13} /> OpenCode CLI detected{aiStatus.available ? " · ready" : ""}
+              </div>
+            )}
+            {openCodeNote && (
+              <div
+                role="status"
+                style={{
+                  marginBottom: 12,
+                  fontSize: 12,
+                  color: aiStatus?.available ? "#34D399" : "#FBBF24",
+                }}
+              >
+                {openCodeNote}
+              </div>
+            )}
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 12 }}>
               <Field label="AI provider" hint="OpenCode CLI uses free models locally with zero API keys.">
                 <select

@@ -117,6 +117,9 @@ fn find_opencode_binary() -> Option<String> {
     if let Ok(profile) = std::env::var("USERPROFILE") {
         candidates.push(format!("{profile}\\.opencode\\bin\\opencode.exe"));
     }
+    if let Ok(local) = std::env::var("LOCALAPPDATA") {
+        candidates.push(format!("{local}\\opencode\\opencode.exe"));
+    }
     for bin in candidates {
         let mut cmd = Command::new(&bin);
         cmd.arg("--version")
@@ -131,6 +134,97 @@ fn find_opencode_binary() -> Option<String> {
         }
     }
     None
+}
+
+/// One-click installer for the free CLI provider. The installer output is deliberately discarded;
+/// success is decided only by the post-install status re-check.
+#[cfg(not(target_os = "windows"))]
+pub fn install_opencode_cli() -> Result<AiAssistantStatus, String> {
+    let script = std::env::temp_dir().join(format!(
+        "onering-opencode-install-{}-{}.sh",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
+
+    let mut download = Command::new("curl");
+    download
+        .args(["-fsSL", "--max-time", "20", "-o"])
+        .arg(&script)
+        .arg("https://opencode.ai/install")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped());
+    hide_console_window(&mut download);
+    let fetched = download
+        .output()
+        .map_err(|e| format!("Failed to download the OpenCode CLI installer: {e}"))?;
+    if !fetched.status.success() {
+        let _ = std::fs::remove_file(&script);
+        let stderr =
+            String::from_utf8_lossy(&fetched.stderr[..fetched.stderr.len().min(4096)]).trim().to_string();
+        return Err(if stderr.is_empty() {
+            "Failed to download the OpenCode CLI installer (is curl installed and online?)".into()
+        } else {
+            format!("Failed to download the OpenCode CLI installer: {stderr}")
+        });
+    }
+
+    let mut installer = Command::new("bash");
+    installer
+        .arg(&script)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    hide_console_window(&mut installer);
+    let installed = installer.output();
+    let _ = std::fs::remove_file(&script);
+    let installed = installed.map_err(|e| format!("Failed to run the OpenCode CLI installer: {e}"))?;
+    if !installed.status.success() {
+        let stderr =
+            String::from_utf8_lossy(&installed.stderr[..installed.stderr.len().min(4096)]).trim().to_string();
+        return Err(if stderr.is_empty() {
+            format!("OpenCode CLI installer exited with status {}", installed.status)
+        } else {
+            format!("OpenCode CLI installer error: {stderr}")
+        });
+    }
+    Ok(status("opencode_cli", "opencode/big-pickle", ""))
+}
+
+/// Windows counterpart of the one-click installer; the official PowerShell installer places the
+/// binary under `.opencode\bin` or the local app data folder, both covered by `find_opencode_binary`.
+#[cfg(target_os = "windows")]
+pub fn install_opencode_cli() -> Result<AiAssistantStatus, String> {
+    let mut installer = Command::new("powershell");
+    installer
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            "irm https://opencode.ai/install.ps1 | iex",
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    hide_console_window(&mut installer);
+    let output = installer
+        .output()
+        .map_err(|e| format!("Failed to run the OpenCode CLI installer: {e}"))?;
+    if !output.status.success() {
+        let stderr =
+            String::from_utf8_lossy(&output.stderr[..output.stderr.len().min(4096)]).trim().to_string();
+        return Err(if stderr.is_empty() {
+            format!("OpenCode CLI installer exited with status {}", output.status)
+        } else {
+            format!("OpenCode CLI installer error: {stderr}")
+        });
+    }
+    Ok(status("opencode_cli", "opencode/big-pickle", ""))
 }
 
 pub fn validate_ai_endpoint(url: &str) -> Result<String, String> {

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import {
   Plus,
   Tv,
@@ -62,6 +62,54 @@ function sectionLabel(raw: string): string {
   };
   const word = labels[match[1].toLowerCase()] || match[1];
   return match[2] ? `${word} ${match[2]}` : word;
+}
+
+type SectionKind = "verse" | "chorus" | "bridge" | "tag" | "prechorus" | "intro" | "outro";
+
+const SECTION_COLORS: Record<SectionKind, string> = {
+  verse: "#3B82F6",
+  chorus: "#EF4444",
+  bridge: "#A855F7",
+  tag: "#F59E0B",
+  prechorus: "#06B6D4",
+  intro: "#10B981",
+  outro: "#10B981",
+};
+
+const SECTION_ABBREVIATIONS: Record<SectionKind, string> = {
+  verse: "V",
+  chorus: "C",
+  bridge: "B",
+  tag: "T",
+  prechorus: "PC",
+  intro: "I",
+  outro: "O",
+};
+
+/** Normalise the many section labels produced by imports into a semantic family. */
+function sectionKind(raw: string): SectionKind | null {
+  const value = (raw || "").trim().toLowerCase();
+  if (!value) return null;
+  if (value === "pc" || (value.startsWith("pre") && value.includes("chorus"))) return "prechorus";
+  if (value === "v" || value.startsWith("verse") || /^v\s*\d/.test(value)) return "verse";
+  if (value === "c" || value.startsWith("chorus")) return "chorus";
+  if (value === "b" || value.startsWith("bridge")) return "bridge";
+  if (value === "t" || value.startsWith("tag")) return "tag";
+  if (value === "i" || value.startsWith("intro")) return "intro";
+  if (value === "o" || value.startsWith("outro")) return "outro";
+  return null;
+}
+
+function sectionColor(raw: string): string {
+  const kind = sectionKind(raw);
+  return kind ? SECTION_COLORS[kind] : "#64748B";
+}
+
+function sectionAbbreviation(raw: string): string {
+  const kind = sectionKind(raw);
+  if (kind) return SECTION_ABBREVIATIONS[kind];
+  const first = (raw || "").trim().charAt(0).toUpperCase();
+  return first || "•";
 }
 
 function blocksToSlides(blocks: string[], title: string): EditableSlide[] {
@@ -278,6 +326,7 @@ export const SlidesCanvasView: React.FC<SlidesCanvasViewProps> = ({
   const [editorInitialIndex, setEditorInitialIndex] = useState(0);
   const [stageLayout, setStageLayout] = useState<StageLayoutMode>("classic");
   const [hostDisplays, setHostDisplays] = useState<HostDisplayInfo[]>([]);
+  const [blackoutActive, setBlackoutActive] = useState(false);
   const fileImportRef = React.useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
@@ -433,6 +482,99 @@ export const SlidesCanvasView: React.FC<SlidesCanvasViewProps> = ({
   const editorSourceSlides: SlideCue[] =
     activeSong && activeSong.slides.length > 0 ? activeSong.slides : slides;
 
+  // Output windows listen on this channel, so a blackout can be applied without
+  // destructively rewriting the operator's saved motion/gradient theme.
+  const broadcastSlides = (slidesState: AppStateSnapshot["slides"]) => {
+    try {
+      const channel = new BroadcastChannel("onering_display_sync");
+      channel.postMessage({ type: "SLIDES_UPDATE", slides: slidesState });
+      channel.close();
+    } catch {}
+  };
+
+  // Unique sections in the active song, in deck order, each pointing at its first slide.
+  const sectionJumps: Array<{
+    key: string;
+    label: string;
+    slideNumber: number;
+    color: string;
+    abbreviation: string;
+  }> = [];
+  const seenSections = new Set<string>();
+  const jumpSource = slides.length > 0 ? slides : editorSourceSlides;
+  for (const s of jumpSource) {
+    const label = (s.section || "Song").trim() || "Song";
+    const key = label.toLowerCase();
+    if (seenSections.has(key)) continue;
+    seenSections.add(key);
+    sectionJumps.push({
+      key,
+      label,
+      slideNumber: s.number,
+      color: sectionColor(label),
+      abbreviation: sectionAbbreviation(label),
+    });
+  }
+
+  const displayCleared = state.slides.cleared || blackoutActive;
+
+  const handleSelectSlide = useCallback(
+    (slideNumber: number) => {
+      if (blackoutActive) setBlackoutActive(false);
+      onSelectSlide(slideNumber);
+    },
+    [blackoutActive, onSelectSlide]
+  );
+
+  const handleNavAction = useCallback(
+    (action: "prev" | "next") => {
+      if (blackoutActive) setBlackoutActive(false);
+      onSlideAction(action);
+    },
+    [blackoutActive, onSlideAction]
+  );
+
+  /** Spontaneous worship jump: next slide in the requested section, wrapping to its first. */
+  const jumpToSection = useCallback(
+    (kind: SectionKind) => {
+      const current = state.slides.currentSlide || 1;
+      const candidates = [...slides]
+        .sort((a, b) => a.number - b.number)
+        .filter((s) => sectionKind(s.section) === kind);
+      if (candidates.length === 0) return;
+      const target = candidates.find((s) => s.number > current) || candidates[0];
+      handleSelectSlide(target.number);
+    },
+    [slides, state.slides.currentSlide, handleSelectSlide]
+  );
+
+  // Text-only clear: the active motion/gradient background stays on screen.
+  const handleClearText = () => {
+    if (blackoutActive) {
+      setBlackoutActive(false);
+      if (!state.slides.cleared) onSlideAction("clear");
+      broadcastSlides({ ...state.slides, cleared: true, theme });
+      return;
+    }
+    onSlideAction("clear");
+  };
+
+  // Full blackout: text and background both drop to black on every output.
+  const handleClearAll = () => {
+    setBlackoutActive(true);
+    broadcastSlides({
+      ...state.slides,
+      cleared: true,
+      theme: {
+        ...theme,
+        backgroundType: "solid",
+        backgroundColor: "#000000",
+        gradientTo: "#000000",
+        backgroundImage: "",
+      },
+    });
+  };
+
   // Stage layout is shared with the confidence output window through storage + broadcast.
   useEffect(() => {
     const read = (): StageLayoutMode | null => {
@@ -515,26 +657,40 @@ export const SlidesCanvasView: React.FC<SlidesCanvasViewProps> = ({
       if (isTextInput) {
         return;
       }
+      if (e.ctrlKey || e.metaKey || e.altKey) {
+        return;
+      }
       const isInteractiveButton =
         target instanceof HTMLButtonElement ||
         target instanceof HTMLAnchorElement ||
         (target instanceof HTMLElement && target.getAttribute("role") === "button");
 
-      if (e.key === "ArrowRight" || e.key === "ArrowDown" || e.key === "PageDown") {
+      const shortcutKinds: Record<string, SectionKind> = {
+        v: "verse",
+        c: "chorus",
+        b: "bridge",
+        t: "tag",
+      };
+      const shortcut = shortcutKinds[e.key.toLowerCase()];
+      if (shortcut) {
         e.preventDefault();
-        onSlideAction("next");
+        jumpToSection(shortcut);
+      } else if (e.key === "ArrowRight" || e.key === "ArrowDown" || e.key === "PageDown") {
+        e.preventDefault();
+        handleNavAction("next");
       } else if (e.key === "ArrowLeft" || e.key === "ArrowUp" || e.key === "PageUp") {
         e.preventDefault();
-        onSlideAction("prev");
+        handleNavAction("prev");
       } else if (e.key === " " && !isInteractiveButton) {
         e.preventDefault();
-        onSlideAction("next");
+        handleNavAction("next");
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [
-    onSlideAction,
+    handleNavAction,
+    jumpToSection,
     showImportModal,
     showSongCatalogModal,
     showThemeEditor,
@@ -549,6 +705,7 @@ export const SlidesCanvasView: React.FC<SlidesCanvasViewProps> = ({
       : theme.backgroundType === "gradient"
       ? `linear-gradient(135deg, ${theme.backgroundColor} 0%, ${theme.gradientTo || "#000000"} 100%)`
       : theme.backgroundColor;
+  const previewBackground = blackoutActive ? "#000000" : fohBackgroundStyle;
 
   return (
     <div
@@ -778,13 +935,14 @@ export const SlidesCanvasView: React.FC<SlidesCanvasViewProps> = ({
 
           <button
             type="button"
-            onClick={() => onSlideAction("clear")}
+            onClick={handleClearText}
+            title="Clear lyrics and lower-third text, keeping the active background on screen"
             style={{
               height: 34,
               padding: "0 12px",
-              background: state.slides.cleared ? "#7F1D1D" : "#1C222D",
-              border: `1px solid ${state.slides.cleared ? "#DC2626" : "#2E3746"}`,
-              color: state.slides.cleared ? "#FCA5A5" : "#E2E8F0",
+              background: displayCleared ? "#7F1D1D" : "#1C222D",
+              border: `1px solid ${displayCleared ? "#DC2626" : "#2E3746"}`,
+              color: displayCleared ? "#FCA5A5" : "#E2E8F0",
               borderRadius: 6,
               cursor: "pointer",
               display: "flex",
@@ -795,6 +953,28 @@ export const SlidesCanvasView: React.FC<SlidesCanvasViewProps> = ({
             }}
           >
             <Eraser size={13} /> Clear Text
+          </button>
+
+          <button
+            type="button"
+            onClick={handleClearAll}
+            title="Blackout: drop both the background and all text to black on every output"
+            style={{
+              height: 34,
+              padding: "0 12px",
+              background: blackoutActive ? "#000000" : "#1C222D",
+              border: `1px solid ${blackoutActive ? "#EF4444" : "#2E3746"}`,
+              color: blackoutActive ? "#FCA5A5" : "#E2E8F0",
+              borderRadius: 6,
+              cursor: "pointer",
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
+              fontSize: 12,
+              fontWeight: 600,
+            }}
+          >
+            <Trash2 size={13} /> Clear All
           </button>
 
           <button
@@ -1154,20 +1334,72 @@ export const SlidesCanvasView: React.FC<SlidesCanvasViewProps> = ({
               </button>
               <button
                 type="button"
-                onClick={() => onSlideAction("prev")}
+                onClick={() => handleNavAction("prev")}
                 style={navBtnStyle}
               >
                 <ChevronLeft size={14} /> Prev
               </button>
               <button
                 type="button"
-                onClick={() => onSlideAction("next")}
+                onClick={() => handleNavAction("next")}
                 style={navBtnStyle}
               >
                 Next <ChevronRight size={14} />
               </button>
             </div>
           </div>
+
+          {sectionJumps.length > 0 && (
+            <div
+              aria-label="Section Jump Bar"
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                flexWrap: "wrap",
+                padding: "8px 10px",
+                background: "#12161F",
+                border: "1px solid #1E2533",
+                borderRadius: 8,
+              }}
+            >
+              <span style={{ fontSize: 10, fontWeight: 800, color: "#64748B", textTransform: "uppercase", whiteSpace: "nowrap" }}>
+                Section Jump Bar
+              </span>
+              <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", flex: 1 }}>
+                {sectionJumps.map((jump) => {
+                  const isActive =
+                    (currentSlide?.section || "").trim().toLowerCase() === jump.key;
+                  return (
+                    <button
+                      key={jump.key}
+                      type="button"
+                      onClick={() => handleSelectSlide(jump.slideNumber)}
+                      title={`Jump to the first slide of ${jump.label}`}
+                      style={{
+                        display: "inline-flex",
+                        alignItems: "center",
+                        gap: 5,
+                        padding: "3px 8px",
+                        borderRadius: 999,
+                        border: `1px solid ${jump.color}`,
+                        background: isActive ? jump.color : "rgba(15, 23, 42, 0.75)",
+                        color: isActive ? "#FFFFFF" : jump.color,
+                        fontSize: 11,
+                        fontWeight: 700,
+                        cursor: "pointer",
+                        whiteSpace: "nowrap",
+                      }}
+                    >
+                      <span style={{ fontFamily: "monospace", opacity: 0.9 }}>[{jump.abbreviation}]</span>
+                      {jump.label}
+                    </button>
+                  );
+                })}
+              </div>
+              <span style={{ fontSize: 10, color: "#64748B", whiteSpace: "nowrap" }}>V / C / B / T jump</span>
+            </div>
+          )}
 
           {slides.length === 0 ? (
             <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", color: "#64748B", padding: 40, textAlign: "center" }}>
@@ -1188,22 +1420,24 @@ export const SlidesCanvasView: React.FC<SlidesCanvasViewProps> = ({
             >
               {slides.map((s) => {
                 const isSelected = s.number === state.slides.currentSlide;
+                const accent = sectionColor(s.section);
                 return (
                   <div
                     key={s.id}
                     role="button"
                     tabIndex={0}
                     aria-label={`Select slide ${s.number}: ${s.section}`}
-                    onClick={() => onSelectSlide(s.number)}
+                    onClick={() => handleSelectSlide(s.number)}
                     onKeyDown={(e) => {
                       if (e.key === "Enter" || e.key === " ") {
                         e.preventDefault();
-                        onSelectSlide(s.number);
+                        handleSelectSlide(s.number);
                       }
                     }}
                     style={{
                       background: isSelected ? "#1E3A8A" : fohBackgroundStyle,
                       border: isSelected ? "2px solid #60A5FA" : "1px solid #283344",
+                      borderTop: `3px solid ${accent}`,
                       borderRadius: 8,
                       padding: 12,
                       cursor: "pointer",
@@ -1221,7 +1455,7 @@ export const SlidesCanvasView: React.FC<SlidesCanvasViewProps> = ({
                           fontWeight: 800,
                           padding: "2px 6px",
                           borderRadius: 4,
-                          background: isSelected ? "#3B82F6" : "rgba(15, 23, 42, 0.75)",
+                          background: accent,
                           color: "#FFFFFF",
                           textTransform: "uppercase",
                         }}
@@ -1264,7 +1498,7 @@ export const SlidesCanvasView: React.FC<SlidesCanvasViewProps> = ({
               style={{
                 position: "relative",
                 aspectRatio: "16 / 9",
-                background: fohBackgroundStyle,
+                background: previewBackground,
                 border: "1px solid #283344",
                 borderRadius: 6,
                 display: "flex",
@@ -1275,7 +1509,7 @@ export const SlidesCanvasView: React.FC<SlidesCanvasViewProps> = ({
                 overflow: "hidden",
               }}
             >
-              {isVideoBackground(theme.backgroundImage) && (
+              {!blackoutActive && isVideoBackground(theme.backgroundImage) && (
                 <video
                   autoPlay
                   loop
@@ -1286,9 +1520,9 @@ export const SlidesCanvasView: React.FC<SlidesCanvasViewProps> = ({
                 />
               )}
               <div style={{ position: "relative", zIndex: 1 }}>
-                {state.slides.cleared ? (
+                {displayCleared ? (
                   <span style={{ color: "#94A3B8", fontStyle: "italic", fontSize: 12 }}>
-                    [Text Cleared — Background Active]
+                    {blackoutActive ? "[Blackout — Output Dark]" : "[Text Cleared — Background Active]"}
                   </span>
                 ) : currentSlide ? (
                   <div
@@ -1332,7 +1566,7 @@ export const SlidesCanvasView: React.FC<SlidesCanvasViewProps> = ({
                 justifyContent: "flex-end",
               }}
             >
-              {!state.slides.cleared && currentSlide ? (
+              {!displayCleared && currentSlide ? (
                 <div
                   style={{
                     background: theme.lowerThirdBg,
@@ -1387,7 +1621,7 @@ export const SlidesCanvasView: React.FC<SlidesCanvasViewProps> = ({
                   Current Words:
                 </span>
                 <div style={{ fontSize: 13.5, fontWeight: 800, color: "#FFFFFF", marginTop: 2, whiteSpace: "pre-line" }}>
-                  {state.slides.cleared ? "[CLEARED]" : currentSlide?.text || "—"}
+                  {displayCleared ? "[CLEARED]" : currentSlide?.text || "—"}
                 </div>
               </div>
 

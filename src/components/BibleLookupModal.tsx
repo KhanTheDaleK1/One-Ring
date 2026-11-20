@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   BookOpen,
   Search,
@@ -10,6 +10,7 @@ import {
   FileText,
   Check,
   Trash2,
+  Globe,
 } from "lucide-react";
 import type { SlideCue } from "../types";
 
@@ -36,13 +37,20 @@ export interface BibleLookupModalProps {
   onAddSlides: (title: string, slides: SlideCue[]) => void;
 }
 
+interface LivePassage {
+  reference: string;
+  chapter: number;
+  verses: VerseEntry[];
+}
+
 interface VerseEntry {
   verse: number;
   text: Partial<Record<BibleTranslation, string>> & { KJV: string; WEB: string; ASV: string };
 }
 
 function getVerseText(v: VerseEntry, translation: BibleTranslation): string {
-  return getVerseText(v, translation) || v.text.WEB || v.text.KJV || v.text.ASV || "";
+  const byTranslation = v.text as Partial<Record<BibleTranslation, string>>;
+  return byTranslation[translation] || byTranslation.WEB || byTranslation.KJV || byTranslation.ASV || "";
 }
 
 interface ScripturePassage {
@@ -1309,6 +1317,12 @@ export const BibleLookupModal: React.FC<BibleLookupModalProps> = ({
   const [includeVerseNumbers, setIncludeVerseNumbers] = useState(true);
   const [includeWatermark, setIncludeWatermark] = useState(true);
   const [selectedPreviewIndex, setSelectedPreviewIndex] = useState(0);
+  const [livePassage, setLivePassage] = useState<LivePassage | null>(null);
+  const [isOnlineLoading, setIsOnlineLoading] = useState(false);
+  const [onlineError, setOnlineError] = useState<string | null>(null);
+  const onlineAbortRef = useRef<AbortController | null>(null);
+
+  const selectedTr = TRANSLATIONS.find((t) => t.id === translation) ?? TRANSLATIONS[0];
 
   const lookupResult = useMemo(
     () => resolveLookupQuery(searchQuery, translation),
@@ -1317,12 +1331,23 @@ export const BibleLookupModal: React.FC<BibleLookupModalProps> = ({
 
   const generatedSlides = useMemo(() => {
     if (mode === "lookup") {
-      if (!lookupResult.passage || lookupResult.matchedVerses.length === 0) return [];
-      const parsed: ParsedVerse[] = lookupResult.matchedVerses.map((v) => ({
-        verseNum: v.verse,
-        text: getVerseText(v, translation),
-      }));
-      return buildScriptureSlides(parsed, lookupResult.resolvedRef, translation, {
+      let sourceVerses: ParsedVerse[] | null = null;
+      let sourceRef = "";
+      if (livePassage && livePassage.verses.length > 0) {
+        sourceRef = livePassage.reference;
+        sourceVerses = livePassage.verses.map((v) => ({
+          verseNum: v.verse,
+          text: getVerseText(v, translation),
+        }));
+      } else if (lookupResult.passage && lookupResult.matchedVerses.length > 0) {
+        sourceRef = lookupResult.resolvedRef;
+        sourceVerses = lookupResult.matchedVerses.map((v) => ({
+          verseNum: v.verse,
+          text: getVerseText(v, translation),
+        }));
+      }
+      if (!sourceVerses || sourceVerses.length === 0) return [];
+      return buildScriptureSlides(sourceVerses, sourceRef, translation, {
         versesPerSlide,
         maxLinesPerSlide,
         includeVerseNumbers,
@@ -1339,6 +1364,7 @@ export const BibleLookupModal: React.FC<BibleLookupModalProps> = ({
     });
   }, [
     mode,
+    livePassage,
     lookupResult,
     translation,
     pastedText,
@@ -1361,6 +1387,12 @@ export const BibleLookupModal: React.FC<BibleLookupModalProps> = ({
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [isOpen, onClose]);
 
+  const livePreviewActive = livePassage !== null && livePassage.verses.length > 0;
+  const previewChapter =
+    livePassage && livePassage.verses.length > 0 ? livePassage.chapter : (lookupResult.passage?.chapter ?? 0);
+  const previewRef = livePassage && livePassage.verses.length > 0 ? livePassage.reference : lookupResult.resolvedRef;
+  const previewVerses = livePassage && livePassage.verses.length > 0 ? livePassage.verses : lookupResult.matchedVerses;
+
   if (!isOpen) return null;
 
   const safePreviewIndex =
@@ -1371,11 +1403,72 @@ export const BibleLookupModal: React.FC<BibleLookupModalProps> = ({
 
   const resolvedTitle =
     mode === "lookup"
-      ? `${lookupResult.resolvedRef} (${translation})`
+      ? `${livePassage && livePassage.verses.length > 0 ? livePassage.reference : lookupResult.resolvedRef} (${translation})`
       : `${customRef.trim() || "Scripture"} (${translation})`;
+
+  const handleLookupOnline = async () => {
+    const ref = searchQuery.trim();
+    if (!ref || isOnlineLoading) return;
+    setLivePassage(null);
+    setIsOnlineLoading(true);
+    setOnlineError(null);
+    const controller = new AbortController();
+    if (onlineAbortRef.current) {
+      onlineAbortRef.current.abort();
+    }
+    onlineAbortRef.current = controller;
+    const timeoutId = setTimeout(() => controller.abort(), 6000);
+    try {
+      const response = await fetch(
+        `https://bible-api.com/${encodeURIComponent(ref)}?translation=${selectedTr.apiId}`,
+        { signal: controller.signal }
+      );
+      if (!response.ok) {
+        throw new Error(`Online lookup failed with status ${response.status}`);
+      }
+      const payload = (await response.json()) as {
+        reference?: string;
+        verses?: { verse?: number; text?: string }[];
+      } | null;
+      const verses: VerseEntry[] = Array.isArray(payload?.verses)
+        ? payload.verses
+            .filter((v) => v && typeof v.text === "string" && v.text.trim().length > 0)
+            .map((v) => {
+              const text = v.text as string;
+              const verseNum = typeof v.verse === "number" ? v.verse : 0;
+              return { verse: verseNum, text: { KJV: text, WEB: text, ASV: text } };
+            })
+        : [];
+      if (verses.length === 0) {
+        throw new Error("Online lookup returned no verses");
+      }
+      const chapterNum = Number(ref.split(":").shift()?.split(" ").pop()) || 0;
+      const reference =
+        typeof payload?.reference === "string" && payload.reference.trim().length > 0
+          ? payload.reference.trim()
+          : ref;
+      setLivePassage({ reference, chapter: chapterNum, verses });
+      setSelectedPreviewIndex(0);
+    } catch (err) {
+      const aborted = err instanceof Error && err.name === "AbortError";
+      setOnlineError(
+        aborted
+          ? "Online lookup timed out after 6 seconds. Check your connection and try again."
+          : "Online lookup failed. Check your connection, or use the built-in offline passages."
+      );
+    } finally {
+      clearTimeout(timeoutId);
+      if (onlineAbortRef.current === controller) {
+        onlineAbortRef.current = null;
+      }
+      setIsOnlineLoading(false);
+    }
+  };
 
   const handleSelectQuickRef = (ref: string) => {
     setMode("lookup");
+    setLivePassage(null);
+    setOnlineError(null);
     setSearchQuery(ref);
     setSelectedPreviewIndex(0);
   };
@@ -1586,7 +1679,7 @@ export const BibleLookupModal: React.FC<BibleLookupModalProps> = ({
 
           <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", fontSize: 12 }}>
             <label style={{ display: "flex", alignItems: "center", gap: 6, color: "#CBD5E1" }}>
-              <span>Verses / Slide:</span>
+              <span>Verses per slide:</span>
               <select
                 value={versesPerSlide}
                 onChange={(e) => {
@@ -1594,10 +1687,11 @@ export const BibleLookupModal: React.FC<BibleLookupModalProps> = ({
                   setSelectedPreviewIndex(0);
                 }}
                 style={compactSelectStyle}
+                aria-label="Verses per slide"
               >
-                <option value={1}>1 Verse</option>
-                <option value={2}>2 Verses (Auto-Fit)</option>
-                <option value={3}>3 Verses (Auto-Fit)</option>
+                <option value={1}>1 verse (Best for Lower-Third)</option>
+                <option value={2}>2 verses</option>
+                <option value={3}>3 verses</option>
               </select>
             </label>
 
@@ -1678,7 +1772,14 @@ export const BibleLookupModal: React.FC<BibleLookupModalProps> = ({
                       value={searchQuery}
                       onChange={(e) => {
                         setSearchQuery(e.target.value);
+                        setLivePassage(null);
                         setSelectedPreviewIndex(0);
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") {
+                          e.preventDefault();
+                          handleLookupOnline();
+                        }
                       }}
                       placeholder='e.g. "John 3:16", "Psalm 23", "1 Corinthians 13", "Matthew 28:18-20"'
                       style={{ ...inputStyle, paddingLeft: 32, paddingRight: 30 }}
@@ -1702,6 +1803,34 @@ export const BibleLookupModal: React.FC<BibleLookupModalProps> = ({
                       </button>
                     )}
                   </div>
+                </div>
+
+                {/* Online Live Bible Lookup */}
+                <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", flexShrink: 0 }}>
+                  <button
+                    type="button"
+                    onClick={handleLookupOnline}
+                    disabled={isOnlineLoading || !searchQuery.trim()}
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 6,
+                      padding: "7px 14px",
+                      background: isOnlineLoading ? "#334155" : "#D97706",
+                      border: `1px solid ${isOnlineLoading ? "#475569" : "#F59E0B"}`,
+                      borderRadius: 7,
+                      color: "#FFFFFF",
+                      fontSize: 12.5,
+                      fontWeight: 700,
+                      cursor: isOnlineLoading || !searchQuery.trim() ? "not-allowed" : "pointer",
+                      opacity: isOnlineLoading || !searchQuery.trim() ? 0.6 : 1,
+                    }}
+                  >
+                    <Globe size={14} /> {isOnlineLoading ? "Looking Up Online" : "Lookup Online"}
+                  </button>
+                  {onlineError && (
+                    <span style={{ fontSize: 11.5, color: "#F87171" }}>{onlineError}</span>
+                  )}
                 </div>
 
                 {/* Popular Quick-Pick Chips */}
@@ -1748,7 +1877,7 @@ export const BibleLookupModal: React.FC<BibleLookupModalProps> = ({
                     paddingRight: 4,
                   }}
                 >
-                  {lookupResult.passage && lookupResult.matchedVerses.length > 0 ? (
+                  {livePreviewActive || (lookupResult.passage && lookupResult.matchedVerses.length > 0) ? (
                     <>
                       <div
                         style={{
@@ -1763,20 +1892,20 @@ export const BibleLookupModal: React.FC<BibleLookupModalProps> = ({
                       >
                         <div>
                           <span style={{ fontSize: 13, fontWeight: 700, color: "#FBBF24" }}>
-                            {lookupResult.resolvedRef}
+                            {previewRef}
                           </span>
                           <span style={{ fontSize: 11, color: "#94A3B8", marginLeft: 8 }}>
-                            ({translation}) • {lookupResult.matchedVerses.length} verse
-                            {lookupResult.matchedVerses.length > 1 ? "s" : ""}
+                            ({translation}) • {previewVerses.length} verse
+                            {previewVerses.length > 1 ? "s" : ""}
                           </span>
                         </div>
                         <button
                           type="button"
                           onClick={() => {
-                            const txt = lookupResult.matchedVerses
+                            const txt = previewVerses
                               .map((v) => `${v.verse} ${getVerseText(v, translation)}`)
                               .join("\n");
-                            setCustomRef(lookupResult.resolvedRef);
+                            setCustomRef(previewRef);
                             setPastedText(txt);
                             setMode("paste");
                           }}
@@ -1795,7 +1924,7 @@ export const BibleLookupModal: React.FC<BibleLookupModalProps> = ({
                         </button>
                       </div>
 
-                      {lookupResult.matchedVerses.map((v) => (
+                      {previewVerses.map((v) => (
                         <div
                           key={v.verse}
                           style={{
@@ -1817,13 +1946,13 @@ export const BibleLookupModal: React.FC<BibleLookupModalProps> = ({
                               marginRight: 7,
                             }}
                           >
-                            {lookupResult.passage?.chapter}:{v.verse}
+                            {previewChapter}:{v.verse}
                           </span>
                           {getVerseText(v, translation)}
                         </div>
                       ))}
 
-                      {lookupResult.suggestions.length > 1 && (
+                      {!livePreviewActive && lookupResult.suggestions.length > 1 && (
                         <div style={{ marginTop: 4 }}>
                           <div style={{ ...labelStyle, marginBottom: 6 }}>
                             Built-in Sample Index: All Indexed Passages ({lookupResult.suggestions.length})

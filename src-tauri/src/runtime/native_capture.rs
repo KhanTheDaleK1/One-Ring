@@ -202,6 +202,48 @@ const BASE64_ALPHABET: &[u8; 64] =
     b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
 /// Minimal standard base64 encoder so no extra dependency is needed.
+
+/// Encodes top-down BGRA pixels into an uncompressed 32-bit BMP (54-byte header + pixels).
+/// Renders natively in WebView2/WKWebView/WebKitGTK via `data:image/bmp;base64,...` with zero
+/// external encoder dependencies.
+#[allow(dead_code)]
+fn encode_bgra_as_bmp(width: u32, height: u32, bgra: &[u8]) -> Result<Vec<u8>, String> {
+    let pixel_bytes = (width as usize)
+        .checked_mul(height as usize)
+        .and_then(|px| px.checked_mul(4))
+        .ok_or_else(|| "BMP dimensions overflow".to_string())?;
+    if pixel_bytes == 0 || bgra.len() < pixel_bytes {
+        return Err("Invalid BGRA buffer for BMP encoding".into());
+    }
+    let file_size = 54usize
+        .checked_add(pixel_bytes)
+        .ok_or_else(|| "BMP size overflow".to_string())?;
+    if file_size > MAX_FRAME_BYTES {
+        return Err("Captured BMP frame exceeds 4 MiB safety limit".into());
+    }
+    let mut out = Vec::with_capacity(file_size);
+    // BITMAPFILEHEADER (14 bytes)
+    out.extend_from_slice(b"BM");
+    out.extend_from_slice(&(file_size as u32).to_le_bytes());
+    out.extend_from_slice(&0u16.to_le_bytes());
+    out.extend_from_slice(&0u16.to_le_bytes());
+    out.extend_from_slice(&54u32.to_le_bytes());
+    // BITMAPINFOHEADER (40 bytes), negative height = top-down DIB
+    out.extend_from_slice(&40u32.to_le_bytes());
+    out.extend_from_slice(&(width as i32).to_le_bytes());
+    out.extend_from_slice(&(-(height as i32)).to_le_bytes());
+    out.extend_from_slice(&1u16.to_le_bytes());
+    out.extend_from_slice(&32u16.to_le_bytes());
+    out.extend_from_slice(&0u32.to_le_bytes()); // BI_RGB
+    out.extend_from_slice(&(pixel_bytes as u32).to_le_bytes());
+    out.extend_from_slice(&2835i32.to_le_bytes());
+    out.extend_from_slice(&2835i32.to_le_bytes());
+    out.extend_from_slice(&0u32.to_le_bytes());
+    out.extend_from_slice(&0u32.to_le_bytes());
+    out.extend_from_slice(&bgra[..pixel_bytes]);
+    Ok(out)
+}
+
 fn base64_encode(input: &[u8]) -> String {
     let mut out = String::with_capacity(input.len().div_ceil(3) * 4);
     for chunk in input.chunks(3) {
@@ -889,13 +931,222 @@ mod platform_windows {
         out
     }
 
+    #[repr(C)]
+    struct BitmapInfoHeader {
+        bi_size: u32,
+        bi_width: i32,
+        bi_height: i32,
+        bi_planes: u16,
+        bi_bit_count: u16,
+        bi_compression: u32,
+        bi_size_image: u32,
+        bi_x_pels_per_meter: i32,
+        bi_y_pels_per_meter: i32,
+        bi_clr_used: u32,
+        bi_clr_important: u32,
+    }
+
+    #[link(name = "user32")]
+    extern "system" {
+        fn GetDC(hwnd: Handle) -> Handle;
+        fn ReleaseDC(hwnd: Handle, hdc: Handle) -> i32;
+        fn PrintWindow(hwnd: Handle, hdc_blt: Handle, flags: u32) -> i32;
+    }
+
+    #[link(name = "gdi32")]
+    extern "system" {
+        fn CreateCompatibleDC(hdc: Handle) -> Handle;
+        fn DeleteDC(hdc: Handle) -> i32;
+        fn CreateCompatibleBitmap(hdc: Handle, cx: i32, cy: i32) -> Handle;
+        fn SelectObject(hdc: Handle, obj: Handle) -> Handle;
+        fn DeleteObject(obj: Handle) -> i32;
+        fn BitBlt(
+            hdc: Handle,
+            x: i32,
+            y: i32,
+            cx: i32,
+            cy: i32,
+            hdc_src: Handle,
+            x1: i32,
+            y1: i32,
+            rop: u32,
+        ) -> i32;
+        fn StretchBlt(
+            hdc_dest: Handle,
+            x_dest: i32,
+            y_dest: i32,
+            w_dest: i32,
+            h_dest: i32,
+            hdc_src: Handle,
+            x_src: i32,
+            y_src: i32,
+            w_src: i32,
+            h_src: i32,
+            rop: u32,
+        ) -> i32;
+        fn SetStretchBltMode(hdc: Handle, mode: i32) -> i32;
+        fn GetDIBits(
+            hdc: Handle,
+            hbm: Handle,
+            start: u32,
+            c_lines: u32,
+            lpv_bits: *mut c_void,
+            lpbmi: *mut BitmapInfoHeader,
+            usage: u32,
+        ) -> i32;
+    }
+
+    /// Direct zero-dependency Win32 PrintWindow / BitBlt capture (no ffmpeg required, zero popups).
+    /// Downscales to <= 960x540 so BMP frames stay well under the 4 MiB frame cap and fast at 5–15 fps.
+    pub(crate) fn capture_direct_frame(
+        source_id: &str,
+        target_kind: &str,
+        target_id: u64,
+    ) -> Result<NativeCaptureFrame, String> {
+        const SRCCOPY: u32 = 0x00CC_0020;
+        const HALFTONE: i32 = 4;
+        const PW_RENDERFULLCONTENT: u32 = 0x0000_0002;
+        const DIB_RGB_COLORS: u32 = 0;
+
+        unsafe {
+            let (src_w, src_h, src_x, src_y, hwnd): (i32, i32, i32, i32, Handle) =
+                if target_kind == "window" {
+                    let h = target_id as usize as Handle;
+                    if h.is_null() {
+                        return Err("Select a window to capture".into());
+                    }
+                    let mut rect = Rect { left: 0, top: 0, right: 0, bottom: 0 };
+                    if GetWindowRect(h, &mut rect) == 0 {
+                        return Err("Selected window is no longer available".into());
+                    }
+                    let w = (rect.right - rect.left).max(0);
+                    let ht = (rect.bottom - rect.top).max(0);
+                    if w == 0 || ht == 0 {
+                        return Err("Selected window is minimized or has zero size".into());
+                    }
+                    (w, ht, 0, 0, h)
+                } else {
+                    let all = displays();
+                    let chosen = all
+                        .iter()
+                        .find(|d| d.id == target_id)
+                        .or_else(|| all.first());
+                    if let Some(d) = chosen {
+                        (d.width as i32, d.height as i32, d.x, d.y, std::ptr::null_mut())
+                    } else {
+                        (
+                            GetSystemMetrics(0).max(1),
+                            GetSystemMetrics(1).max(1),
+                            0,
+                            0,
+                            std::ptr::null_mut(),
+                        )
+                    }
+                };
+
+            // Fit within 960x540 to keep uncompressed 32-bit BMP <= ~2.0 MiB (fast & crisp for preview)
+            let max_w = 960.0f64;
+            let max_h = 540.0f64;
+            let scale = (max_w / (src_w as f64)).min(max_h / (src_h as f64)).min(1.0);
+            let out_w = ((src_w as f64) * scale).round().max(1.0) as i32;
+            let out_h = ((src_h as f64) * scale).round().max(1.0) as i32;
+
+            let screen_dc = GetDC(std::ptr::null_mut());
+            if screen_dc.is_null() {
+                return Err("Could not acquire screen DC".into());
+            }
+
+            let full_dc = CreateCompatibleDC(screen_dc);
+            let full_bmp = CreateCompatibleBitmap(screen_dc, src_w, src_h);
+            let old_full = SelectObject(full_dc, full_bmp);
+
+            let mut captured_ok = false;
+            if !hwnd.is_null() {
+                if PrintWindow(hwnd, full_dc, PW_RENDERFULLCONTENT) != 0 {
+                    captured_ok = true;
+                } else {
+                    let win_dc = GetDC(hwnd);
+                    if !win_dc.is_null() {
+                        captured_ok = BitBlt(full_dc, 0, 0, src_w, src_h, win_dc, 0, 0, SRCCOPY) != 0;
+                        ReleaseDC(hwnd, win_dc);
+                    }
+                }
+            } else {
+                captured_ok = BitBlt(full_dc, 0, 0, src_w, src_h, screen_dc, src_x, src_y, SRCCOPY) != 0;
+            }
+
+            if !captured_ok {
+                SelectObject(full_dc, old_full);
+                DeleteObject(full_bmp);
+                DeleteDC(full_dc);
+                ReleaseDC(std::ptr::null_mut(), screen_dc);
+                return Err("Win32 capture returned no frame".into());
+            }
+
+            let out_dc = CreateCompatibleDC(screen_dc);
+            let out_bmp = CreateCompatibleBitmap(screen_dc, out_w, out_h);
+            let old_out = SelectObject(out_dc, out_bmp);
+            SetStretchBltMode(out_dc, HALFTONE);
+            let _ = StretchBlt(out_dc, 0, 0, out_w, out_h, full_dc, 0, 0, src_w, src_h, SRCCOPY);
+
+            let mut bmi = BitmapInfoHeader {
+                bi_size: std::mem::size_of::<BitmapInfoHeader>() as u32,
+                bi_width: out_w,
+                bi_height: -out_h, // top-down
+                bi_planes: 1,
+                bi_bit_count: 32,
+                bi_compression: 0,
+                bi_size_image: 0,
+                bi_x_pels_per_meter: 0,
+                bi_y_pels_per_meter: 0,
+                bi_clr_used: 0,
+                bi_clr_important: 0,
+            };
+            let mut pixels = vec![0u8; (out_w as usize) * (out_h as usize) * 4];
+            let rows = GetDIBits(
+                out_dc,
+                out_bmp,
+                0,
+                out_h as u32,
+                pixels.as_mut_ptr() as *mut c_void,
+                &mut bmi,
+                DIB_RGB_COLORS,
+            );
+
+            SelectObject(out_dc, old_out);
+            DeleteObject(out_bmp);
+            DeleteDC(out_dc);
+            SelectObject(full_dc, old_full);
+            DeleteObject(full_bmp);
+            DeleteDC(full_dc);
+            ReleaseDC(std::ptr::null_mut(), screen_dc);
+
+            if rows == 0 {
+                return Err("Win32 GetDIBits failed".into());
+            }
+
+            let bmp = encode_bgra_as_bmp(out_w as u32, out_h as u32, &pixels)?;
+            Ok(NativeCaptureFrame {
+                source_id: source_id.to_string(),
+                target_kind: target_kind.to_string(),
+                target_id,
+                width: out_w as u32,
+                height: out_h as u32,
+                mime_type: "image/bmp".into(),
+                base64_data: base64_encode(&bmp),
+                timestamp_ms: unix_millis(),
+                backend: BACKEND.into(),
+            })
+        }
+    }
+
     pub(crate) fn capture_plan(
         target_kind: &str,
         target_id: u64,
         path: &Path,
     ) -> Result<CapturePlan, String> {
         let input = if target_kind == "window" {
-            format!("hwnd={target_id}")
+            format!("hwnd=0x{target_id:x}")
         } else {
             "desktop".to_string()
         };
@@ -1021,6 +1272,12 @@ pub fn capture_native_frame(
 ) -> Result<NativeCaptureFrame, String> {
     validate_source_id(source_id)?;
     let kind = validate_target_kind(target_kind)?;
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(frame) = platform_windows::capture_direct_frame(source_id, kind, target_id) {
+            return Ok(frame);
+        }
+    }
     let temporary = TempFrame::new()?;
     let plan = platform::capture_plan(kind, target_id, &temporary.0)?;
     let arguments = plan.arg_refs();

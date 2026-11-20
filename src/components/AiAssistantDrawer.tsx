@@ -3,6 +3,7 @@ import { Sparkles, Send, X, Check, Wand2, RefreshCw } from "lucide-react";
 import {
   aiAssistantChat,
   getAiAssistantStatus,
+  installOpenCodeCli,
   type AiAssistantStatusInfo,
   type AiChatMessageItem,
   type AiProposedActionItem,
@@ -70,6 +71,7 @@ export const AiAssistantDrawer: React.FC<AiAssistantDrawerProps> = ({
   ]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
+  const [installingCli, setInstallingCli] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const listEndRef = useRef<HTMLDivElement | null>(null);
 
@@ -86,6 +88,20 @@ export const AiAssistantDrawer: React.FC<AiAssistantDrawerProps> = ({
   useEffect(() => {
     listEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [turns, busy]);
+
+  const installOpenCode = async () => {
+    if (installingCli) return;
+    setInstallingCli(true);
+    setError(null);
+    try {
+      // The native command re-checks `status` after installing, so this turns the badge green.
+      setStatus(await installOpenCodeCli());
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setInstallingCli(false);
+    }
+  };
 
   if (!isOpen) return null;
 
@@ -247,6 +263,35 @@ export const AiAssistantDrawer: React.FC<AiAssistantDrawerProps> = ({
       {status && !status.available && (
         <div style={{ padding: "8px 14px", background: "#1F170A", borderBottom: "1px solid #78350F", fontSize: 11.5, color: "#FDE68A" }}>
           {status.detail}
+        </div>
+      )}
+
+      {/* One-click CLI install */}
+      {!status?.opencodeInstalled && (
+        <div
+          style={{
+            padding: "10px 14px",
+            background: "#0F172A",
+            borderBottom: "1px solid #1E3A5F",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: 10,
+          }}
+        >
+          <div style={{ fontSize: 11.5, color: "#94A3B8", lineHeight: 1.4 }}>
+            Install the free local CLI to unlock the built-in models without configuring an API key.
+          </div>
+          <button
+            type="button"
+            className="btn btn-sm btn-primary"
+            disabled={installingCli || !status}
+            aria-busy={installingCli}
+            onClick={() => void installOpenCode()}
+            style={{ flexShrink: 0 }}
+          >
+            {installingCli ? "Installing OpenCode CLI…" : "Install OpenCode CLI (Free)"}
+          </button>
         </div>
       )}
 

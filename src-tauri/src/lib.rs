@@ -1534,11 +1534,18 @@ fn open_in_browser(url: String, managed: State<ManagedState>) -> Result<(), Stri
         .spawn()
         .map_err(|e| e.to_string())?;
 
+    // `start "" <url>` is the reliable Windows path for long query URLs (for example
+    // GitHub's `/issues/new?title=...&body=...` links); the old shell handler silently
+    // dropped anything past a certain length.
     #[cfg(target_os = "windows")]
-    std::process::Command::new("rundll32")
-        .args(["url.dll,FileProtocolHandler", &trimmed])
-        .spawn()
-        .map_err(|e| e.to_string())?;
+    {
+        // cmd.exe treats a bare `&` as a command separator, so quote the validated URL for it.
+        let trimmed = format!("\"{trimmed}\"");
+        let mut cmd = std::process::Command::new("cmd");
+        cmd.args(["/C", "start", "", &trimmed]);
+        crate::runtime::hide_console_window(&mut cmd);
+        cmd.spawn().map_err(|e| e.to_string())?;
+    }
 
     #[cfg(target_os = "linux")]
     std::process::Command::new("xdg-open")
@@ -3552,6 +3559,13 @@ async fn ai_assistant_status(
 }
 
 #[tauri::command]
+async fn install_opencode_cli() -> Result<runtime::ai_assistant::AiAssistantStatus, String> {
+    tauri::async_runtime::spawn_blocking(runtime::ai_assistant::install_opencode_cli)
+        .await
+        .map_err(|e| format!("OpenCode CLI installer task failed: {e}"))?
+}
+
+#[tauri::command]
 async fn ai_assistant_chat(
     state: State<'_, ManagedState>,
     message: String,
@@ -3829,7 +3843,8 @@ pub fn run() {
             ip_video_stop_output,
             ip_video_send_test_frame,
             ai_assistant_status,
-            ai_assistant_chat
+            ai_assistant_chat,
+            install_opencode_cli
         ])
         .build(tauri::generate_context!())
         .expect("error while building One Ring")

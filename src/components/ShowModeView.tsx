@@ -110,6 +110,15 @@ const sectionLabelStyle: React.CSSProperties = {
   color: "#9CA3AF",
 };
 
+// ── Service Phase Macro Bar state ───────────────────────────────────────
+const SERVICE_PHASES = [
+  { key: "pre-service", label: "Pre-Service", color: "#a855f7" },
+  { key: "worship", label: "Worship", color: "#f97316" },
+  { key: "welcome", label: "Welcome", color: "#10b981" },
+  { key: "sermon", label: "Sermon", color: "#3b82f6" },
+  { key: "closing", label: "Closing", color: "#6b7280" },
+];
+
 export const ShowModeView: React.FC<ShowModeViewProps> = ({
   state,
   onTriggerCue,
@@ -138,6 +147,12 @@ export const ShowModeView: React.FC<ShowModeViewProps> = ({
   const anyLive = state.broadcasts.some((b) => b.live);
   const lastGoRef = useRef(0);
   const [showPtzDeck, setShowPtzDeck] = useState(false);
+  const [activePhase, setActivePhase] = useState<string | null>(null);
+  const [toast, setToast] = useState<{ visible: boolean; message: string; type: "info" | "success" | "warning" }>({
+    visible: false,
+    message: "",
+    type: "info",
+  });
   const [pendingMute, setPendingMute] = useState<DcaChannel | null>(null);
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [stageSeconds, setStageSeconds] = useState(0);
@@ -263,6 +278,74 @@ export const ShowModeView: React.FC<ShowModeViewProps> = ({
     onTimerControl,
   ]);
 
+  const handlePhaseClick = (phase: string) => {
+    setToast({ visible: true, message: `${phase.toUpperCase()} phase`, type: "info" });
+    setActivePhase(phase);
+
+    switch (phase) {
+      case "pre-service": {
+        // triggers countdown/logo state
+        setStageRunning(true);
+        setStageSeconds(0);
+        setToast({
+          visible: true,
+          message: "Pre-Service — countdown started, logo display",
+          type: "info",
+        });
+        break;
+      }
+      case "worship": {
+        // recalls Camera 1 / wide shot and clears stage alert
+        if (state.cameras.length > 0) onRecallCamera(state.cameras[0].id);
+        onStageMessage(null);
+        setToast({
+          visible: true,
+          message: "Worship — wide shot recalled, stage alert cleared",
+          type: "success",
+        });
+        break;
+      }
+      case "welcome": {
+        setToast({
+          visible: true,
+          message: "Welcome phase — greeting congregation",
+          type: "info",
+        });
+        break;
+      }
+      case "sermon": {
+        // recalls Pastor Tight camera if available and shows a brief confirmation toast
+        const pastorCam = state.cameras.find((c) => /pastor/i.test(c.name));
+        if (pastorCam) {
+          onRecallCamera(pastorCam.id);
+          setToast({
+            visible: true,
+            message: `Sermon — ${pastorCam.name} recalled`,
+            type: "success",
+          });
+        } else {
+          setToast({
+            visible: true,
+            message: "Sermon — no pastor camera available",
+            type: "warning",
+          });
+        }
+        break;
+      }
+      case "closing": {
+        // recalls wide shot
+        if (state.cameras.length > 0) onRecallCamera(state.cameras[0].id);
+        onStageMessage(null);
+        setToast({
+          visible: true,
+          message: "Closing — wide shot recalled",
+          type: "info",
+        });
+        break;
+      }
+    }
+  };
+
   const requestDcaToggle = (dca: DcaChannel) => {
     if (dca.guardMute && !dca.muted) return;
     if (isPastorDca(dca) && !dca.muted) {
@@ -283,6 +366,75 @@ export const ShowModeView: React.FC<ShowModeViewProps> = ({
         alignItems: "start",
       }}
     >
+      {/* SERVICE PHASE MACRO BAR */}
+      <div
+        style={{
+          display: "flex",
+          background: "#1e293b",
+          borderRadius: 12,
+          padding: "6px 10px",
+          marginBottom: 12,
+          gap: 3,
+          overflowX: "auto",
+          alignItems: "center",
+          flexWrap: "wrap",
+        }}
+      >
+        {SERVICE_PHASES.map((ph) => (
+          <button
+            key={ph.key}
+            type="button"
+            style={{
+              padding: "6px 12px",
+              fontSize: 11,
+              fontWeight: 600,
+              borderRadius: 8,
+              background:
+                activePhase === ph.key
+                  ? `rgba(${ph.color}, 0.3)`
+                  : "rgba(31, 41, 59, 0.4)",
+              border: `1px solid ${activePhase === ph.key ? ph.color : "#475569"}`,
+              color: activePhase === ph.key ? ph.color : "#cbd5e1",
+              cursor: "pointer",
+              whiteSpace: "nowrap",
+            }}
+            onClick={() => handlePhaseClick(ph.key)}
+          >
+            {ph.label}
+          </button>
+        ))}
+      </div>
+
+      {/* SERVICE PHASE TOAST */}
+      {toast.visible && (
+        <div
+          style={{
+            marginBottom: 10,
+            padding: "8px 12px",
+            borderRadius: 8,
+            background: toast.type === "success"
+              ? "rgba(34, 197, 94, 0.14)"
+              : toast.type === "warning"
+                ? "rgba(251, 191, 36, 0.14)"
+                : "rgba(59, 130, 246, 0.14)",
+            border: `1px solid ${toast.type === "success"
+              ? "#22c55e"
+              : toast.type === "warning"
+                ? "#fbbf24"
+                : "#3b82f6"}`,
+            color: toast.type === "success"
+              ? "#22c55e"
+              : toast.type === "warning"
+                ? "#fbbf24"
+                : "#60a5fa",
+            fontSize: 12,
+            fontWeight: 500,
+          }}
+        >
+          {toast.message}
+        </div>
+      )}
+
       {/* LEFT: SERVICE CUE STACK + TRANSACTIONAL VERIFICATION */}
       <div
         className="card"

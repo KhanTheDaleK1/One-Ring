@@ -69,6 +69,15 @@ interface PtzControlDeckModalProps {
   onWhiteBalance?: (mode: number, ip: string, port: number) => void;
   onExposureMode?: (mode: number, ip: string, port: number) => void;
   onHome?: (ip: string, port: number) => void;
+  // Preview-Only PTZ Safety Lock (enabled by default).
+  previewOnlyLock?: boolean;
+  liveCameraIds?: string[];
+  liveCameraId?: string;
+  isLive?: boolean;
+  cameraIsLive?: boolean;
+  live?: boolean;
+  state?: any;
+  cameras?: any[];
 }
 
 export const PTZ_CAMERAS_STORAGE_KEY = "onering_ptz_cameras_v1";
@@ -280,6 +289,14 @@ export const PtzControlDeckModal: React.FC<PtzControlDeckModalProps> = ({
   onWhiteBalance,
   onExposureMode,
   onHome,
+  previewOnlyLock: previewOnlyLockProp,
+  liveCameraIds: liveCameraIdsProp,
+  liveCameraId: liveCameraIdProp,
+  isLive: isLiveProp,
+  cameraIsLive: cameraIsLiveProp,
+  live: liveProp,
+  state: stateProp,
+  cameras: externalCamerasProp,
 }) => {
   const initialRosterRef = useRef<PtzRosterCamera[] | null>(null);
   if (initialRosterRef.current === null) {
@@ -297,7 +314,13 @@ export const PtzControlDeckModal: React.FC<PtzControlDeckModalProps> = ({
   const [focusMode, setFocusMode] = useState<"auto" | "manual">("auto");
   const [whiteBalanceMode, setWhiteBalanceMode] = useState<number>(0);
   const [exposureMode, setExposureMode] = useState<number>(0);
+  const [previewOnlyLock, setPreviewOnlyLock] = useState<boolean>(previewOnlyLockProp ?? true);
+  const [overrideLiveLock, setOverrideLiveLock] = useState<boolean>(false);
   const activeDirRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (previewOnlyLockProp !== undefined) setPreviewOnlyLock(Boolean(previewOnlyLockProp));
+  }, [previewOnlyLockProp]);
 
   const selectedCamera =
     cameras.find((c) => c.id === selectedCameraId) ||
@@ -310,6 +333,41 @@ export const PtzControlDeckModal: React.FC<PtzControlDeckModalProps> = ({
     };
   const presets = selectedCamera.presets;
   const target = `${selectedCamera.ip || "—"}:${selectedCamera.port}`;
+
+  const liveStateCameras = Array.isArray(stateProp?.cameras)
+    ? stateProp.cameras.filter((c: any) => {
+        if (!c) return false;
+        if (c.tally === "program") return true;
+        if (c.isLive === true) return true;
+        if (stateProp?.activeCameraPresetId && c.id === stateProp.activeCameraPresetId) return true;
+        return false;
+      })
+    : Array.isArray(externalCamerasProp)
+    ? externalCamerasProp.filter((c: any) => {
+        if (!c) return false;
+        if (c.tally === "program") return true;
+        if (c.isLive === true) return true;
+        if (stateProp?.activeCameraPresetId && c.id === stateProp.activeCameraPresetId) return true;
+        return false;
+      })
+    : [];
+
+  const selectedIsLive = Boolean(
+    (Array.isArray(liveCameraIdsProp) && liveCameraIdsProp.includes(selectedCamera.id)) ||
+      (liveCameraIdProp && liveCameraIdProp === selectedCamera.id) ||
+      liveStateCameras.some((sc: any) => {
+        if (!sc) return false;
+        if (sc.id === selectedCamera.id) return true;
+        if (sc.name && sc.name === selectedCamera.name) return true;
+        if (sc.cameraId && sc.cameraId === selectedCamera.id) return true;
+        return false;
+      }) ||
+      isLiveProp === true ||
+      cameraIsLiveProp === true ||
+      liveProp === true
+  );
+
+  const liveLockActive = previewOnlyLock && selectedIsLive && !overrideLiveLock;
 
   const persist = useCallback((next: PtzRosterCamera[]) => {
     setCameras(next);
@@ -399,6 +457,7 @@ export const PtzControlDeckModal: React.FC<PtzControlDeckModalProps> = ({
     type: "button" as const,
     onPointerDown: (e: React.PointerEvent<HTMLButtonElement>) => {
       e.preventDefault();
+      if (liveLockActive) return;
       activeDirRef.current = dir;
       setActiveDirection(dir);
       start();
@@ -410,6 +469,7 @@ export const PtzControlDeckModal: React.FC<PtzControlDeckModalProps> = ({
 
   const motionButtonProps = (dir: string, pan: number, tilt: number, zoom: number) =>
     holdProps(dir, () => {
+      if (liveLockActive) return;
       const ptSpeed = Math.max(1, Math.min(24, speed));
       const zoomSpeed = Math.max(1, Math.min(7, Math.round((speed / 24) * 7)));
       onDrive?.(
@@ -459,6 +519,7 @@ export const PtzControlDeckModal: React.FC<PtzControlDeckModalProps> = ({
   };
 
   const handleSaveClick = (presetNum: number) => {
+    if (liveLockActive) return;
     setEditingPreset(presetNum);
     const existing = presets.find((p) => p.presetNumber === presetNum);
     setPresetNameInput(existing ? existing.name : `Preset ${presetNum}`);
@@ -478,6 +539,7 @@ export const PtzControlDeckModal: React.FC<PtzControlDeckModalProps> = ({
   };
 
   const handleRecall = (presetNum: number, name: string) => {
+    if (liveLockActive) return;
     onRecallPreset?.(presetNum, selectedCamera.ip.trim(), selectedCamera.port);
     setStatusNote(`Recalled Preset #${presetNum} ("${name}") on ${selectedCamera.name} (${target})`);
   };
@@ -554,6 +616,25 @@ export const PtzControlDeckModal: React.FC<PtzControlDeckModalProps> = ({
             </div>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <button
+              type="button"
+              onClick={() => setOverrideLiveLock((v) => !v)}
+              aria-pressed={overrideLiveLock}
+              title="Allow slow on-air PTZ moves on a LIVE camera"
+              style={{
+                height: 28,
+                padding: "0 10px",
+                borderRadius: 6,
+                fontSize: 11,
+                fontWeight: 800,
+                cursor: "pointer",
+                background: overrideLiveLock ? "rgba(239, 68, 68, 0.22)" : "rgba(16, 185, 129, 0.14)",
+                border: `1px solid ${overrideLiveLock ? "#EF4444" : "#10B981"}`,
+                color: overrideLiveLock ? "#FCA5A5" : "#34D399",
+              }}
+            >
+              Override Live Lock
+            </button>
             <span
               className="mono"
               style={{
@@ -580,6 +661,23 @@ export const PtzControlDeckModal: React.FC<PtzControlDeckModalProps> = ({
 
         {/* Scrollable body */}
         <div style={{ flex: 1, overflowY: "auto", padding: 20, display: "flex", flexDirection: "column", gap: 18 }}>
+          {liveLockActive && (
+            <div
+              role="alert"
+              style={{
+                padding: "10px 14px",
+                borderRadius: 8,
+                background: "rgba(239, 68, 68, 0.16)",
+                border: "1px solid #EF4444",
+                color: "#FCA5A5",
+                fontSize: 12,
+                fontWeight: 800,
+                letterSpacing: "0.02em",
+              }}
+            >
+              LIVE CAMERA LOCKED — Switch camera off Program before moving, or toggle Override
+            </div>
+          )}
           {/* Multi-camera roster switcher */}
           <div
             style={{
@@ -740,11 +838,11 @@ export const PtzControlDeckModal: React.FC<PtzControlDeckModalProps> = ({
                 }}
               >
                 <div />
-                <button {...motionButtonProps("UP", 0, 1, 0)} className="btn" style={{ backgroundColor: activeDirection === "UP" ? "#0284C7" : "#1F2937" }}>
+                <button {...motionButtonProps("UP", 0, 1, 0)} disabled={liveLockActive} className="btn" style={{ backgroundColor: activeDirection === "UP" ? "#0284C7" : "#1F2937", opacity: liveLockActive ? 0.45 : 1, cursor: liveLockActive ? "not-allowed" : "pointer" }}>
                   <ArrowUp size={24} />
                 </button>
                 <div />
-                <button {...motionButtonProps("LEFT", -1, 0, 0)} className="btn" style={{ backgroundColor: activeDirection === "LEFT" ? "#0284C7" : "#1F2937" }}>
+                <button {...motionButtonProps("LEFT", -1, 0, 0)} disabled={liveLockActive} className="btn" style={{ backgroundColor: activeDirection === "LEFT" ? "#0284C7" : "#1F2937", opacity: liveLockActive ? 0.45 : 1, cursor: liveLockActive ? "not-allowed" : "pointer" }}>
                   <ArrowLeft size={24} />
                 </button>
                 <button
@@ -763,20 +861,20 @@ export const PtzControlDeckModal: React.FC<PtzControlDeckModalProps> = ({
                 >
                   <Sliders size={18} color="#38BDF8" />
                 </button>
-                <button {...motionButtonProps("RIGHT", 1, 0, 0)} className="btn" style={{ backgroundColor: activeDirection === "RIGHT" ? "#0284C7" : "#1F2937" }}>
+                <button {...motionButtonProps("RIGHT", 1, 0, 0)} disabled={liveLockActive} className="btn" style={{ backgroundColor: activeDirection === "RIGHT" ? "#0284C7" : "#1F2937", opacity: liveLockActive ? 0.45 : 1, cursor: liveLockActive ? "not-allowed" : "pointer" }}>
                   <ArrowRight size={24} />
                 </button>
                 <div />
-                <button {...motionButtonProps("DOWN", 0, -1, 0)} className="btn" style={{ backgroundColor: activeDirection === "DOWN" ? "#0284C7" : "#1F2937" }}>
+                <button {...motionButtonProps("DOWN", 0, -1, 0)} disabled={liveLockActive} className="btn" style={{ backgroundColor: activeDirection === "DOWN" ? "#0284C7" : "#1F2937", opacity: liveLockActive ? 0.45 : 1, cursor: liveLockActive ? "not-allowed" : "pointer" }}>
                   <ArrowDown size={24} />
                 </button>
                 <div />
               </div>
               <div style={{ display: "flex", gap: 10, justifyContent: "center", marginBottom: 12 }}>
-                <button {...motionButtonProps("ZOOM_IN", 0, 0, 1)} className="btn" style={{ height: 40, padding: "0 16px", display: "flex", alignItems: "center", gap: 7, backgroundColor: activeDirection === "ZOOM_IN" ? "#0284C7" : "#1F2937" }}>
+                <button {...motionButtonProps("ZOOM_IN", 0, 0, 1)} disabled={liveLockActive} className="btn" style={{ height: 40, padding: "0 16px", display: "flex", alignItems: "center", gap: 7, backgroundColor: activeDirection === "ZOOM_IN" ? "#0284C7" : "#1F2937", opacity: liveLockActive ? 0.45 : 1, cursor: liveLockActive ? "not-allowed" : "pointer" }}>
                   <ZoomIn size={17} /> Zoom In
                 </button>
-                <button {...motionButtonProps("ZOOM_OUT", 0, 0, -1)} className="btn" style={{ height: 40, padding: "0 16px", display: "flex", alignItems: "center", gap: 7, backgroundColor: activeDirection === "ZOOM_OUT" ? "#0284C7" : "#1F2937" }}>
+                <button {...motionButtonProps("ZOOM_OUT", 0, 0, -1)} disabled={liveLockActive} className="btn" style={{ height: 40, padding: "0 16px", display: "flex", alignItems: "center", gap: 7, backgroundColor: activeDirection === "ZOOM_OUT" ? "#0284C7" : "#1F2937", opacity: liveLockActive ? 0.45 : 1, cursor: liveLockActive ? "not-allowed" : "pointer" }}>
                   <ZoomOut size={17} /> Zoom Out
                 </button>
               </div>
@@ -847,16 +945,18 @@ export const PtzControlDeckModal: React.FC<PtzControlDeckModalProps> = ({
                       <button
                         type="button"
                         onClick={() => handleRecall(p.presetNumber, p.name)}
+                        disabled={liveLockActive}
                         className="btn"
-                        style={{ height: 30, padding: "0 9px", fontSize: 12, display: "flex", alignItems: "center", gap: 4 }}
+                        style={{ height: 30, padding: "0 9px", fontSize: 12, display: "flex", alignItems: "center", gap: 4, opacity: liveLockActive ? 0.45 : 1, cursor: liveLockActive ? "not-allowed" : "pointer" }}
                       >
                         <Play size={12} /> Recall
                       </button>
                       <button
                         type="button"
                         onClick={() => handleSaveClick(p.presetNumber)}
+                        disabled={liveLockActive}
                         className="btn"
-                        style={{ height: 30, padding: "0 8px", fontSize: 12, display: "flex", alignItems: "center", gap: 4 }}
+                        style={{ height: 30, padding: "0 8px", fontSize: 12, display: "flex", alignItems: "center", gap: 4, opacity: liveLockActive ? 0.45 : 1, cursor: liveLockActive ? "not-allowed" : "pointer" }}
                       >
                         <Save size={12} /> Store
                       </button>

@@ -45,7 +45,18 @@ export const VideoCanvasView: React.FC<VideoCanvasViewProps> = ({
   // The camera roster is owned by the PTZ Control Deck; read it so the canvas wall
   // can display the selected camera's configured live feed.
   const [rosterPreviewUrl, setRosterPreviewUrl] = useState<string>("");
+  const [liveRosterCameraId, setLiveRosterCameraId] = useState<string | null>(null);
   const [ptzDeckOpen, setPtzDeckOpen] = useState<boolean>(false);
+  const [previewOnlyLock, setPreviewOnlyLock] = useState<boolean>(true);
+  const [overrideLiveLock, setOverrideLiveLock] = useState<boolean>(false);
+
+  const selectedCameraIsLive =
+    !!activeCamera &&
+    (activeCamera.tally === "program" ||
+      activeCamera.id === state.activeCameraPresetId ||
+      (activeCamera as any).isLive === true);
+
+  const liveLockActive = previewOnlyLock && selectedCameraIsLive && !overrideLiveLock;
 
   useEffect(() => {
     const readRoster = () => {
@@ -76,6 +87,35 @@ export const VideoCanvasView: React.FC<VideoCanvasViewProps> = ({
     window.addEventListener("storage", readRoster);
     return () => window.removeEventListener("storage", readRoster);
   }, [activeCamera?.id, activeCamera?.name, ptzIp]);
+
+  useEffect(() => {
+    if (!selectedCameraIsLive) {
+      setLiveRosterCameraId(null);
+      return;
+    }
+    try {
+      const raw = localStorage.getItem(PTZ_CAMERAS_STORAGE_KEY);
+      if (!raw) {
+        setLiveRosterCameraId(null);
+        return;
+      }
+      const roster = JSON.parse(raw) as PtzRosterCamera[];
+      if (!Array.isArray(roster)) {
+        setLiveRosterCameraId(null);
+        return;
+      }
+      const match =
+        roster.find(
+          (cam) =>
+            cam.id === activeCamera?.id ||
+            cam.name === activeCamera?.name ||
+            (!!cam.ip && cam.ip === ptzIp)
+        ) || roster[0];
+      setLiveRosterCameraId(match?.id || null);
+    } catch {
+      setLiveRosterCameraId(null);
+    }
+  }, [activeCamera?.id, activeCamera?.name, ptzIp, selectedCameraIsLive]);
 
   const drivePtz = useCallback(
     (pan: number, tilt: number, zoom: number) => {
@@ -297,6 +337,41 @@ export const VideoCanvasView: React.FC<VideoCanvasViewProps> = ({
             </strong>
           </div>
 
+          {liveLockActive && (
+            <div
+              role="alert"
+              style={{
+                padding: "10px 12px",
+                borderRadius: 8,
+                background: "rgba(239, 68, 68, 0.16)",
+                border: "1px solid #EF4444",
+                color: "#FCA5A5",
+                fontSize: 12,
+                fontWeight: 800,
+              }}
+            >
+              LIVE CAMERA LOCKED — Switch camera off Program before moving, or toggle Override
+            </div>
+          )}
+
+          <button
+            type="button"
+            onClick={() => setOverrideLiveLock((v) => !v)}
+            aria-pressed={overrideLiveLock}
+            style={{
+              height: 32,
+              background: overrideLiveLock ? "rgba(239, 68, 68, 0.22)" : "#1E3A8A",
+              border: `1px solid ${overrideLiveLock ? "#EF4444" : "#3B82F6"}`,
+              borderRadius: 8,
+              color: "#FFFFFF",
+              fontSize: 12,
+              fontWeight: 700,
+              cursor: "pointer",
+            }}
+          >
+            Override Live Lock
+          </button>
+
           {/* Live preview of the selected camera's configured feed */}
           <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
             <span style={{ fontSize: 11, fontWeight: 700, color: "#94A3B8", letterSpacing: "0.05em" }}>
@@ -343,7 +418,10 @@ export const VideoCanvasView: React.FC<VideoCanvasViewProps> = ({
             };
             const stop = () => stopPtz();
             const hold = (pan: number, tilt: number) => ({
-              onPointerDown: () => drivePtz(pan, tilt, 0),
+              onPointerDown: () => {
+                if (liveLockActive) return;
+                drivePtz(pan, tilt, 0);
+              },
               onPointerUp: stop,
               onPointerLeave: stop,
               onPointerCancel: stop,
@@ -359,12 +437,12 @@ export const VideoCanvasView: React.FC<VideoCanvasViewProps> = ({
                 }}
               >
                 <div />
-                <button type="button" style={padStyle} aria-label="Tilt up" {...hold(0, 0.75)}>
+                <button type="button" style={{ ...padStyle, opacity: liveLockActive ? 0.45 : 1, cursor: liveLockActive ? "not-allowed" : "pointer" }} aria-label="Tilt up" disabled={liveLockActive} {...hold(0, 0.75)}>
                   <ChevronUp size={24} />
                 </button>
                 <div />
 
-                <button type="button" style={padStyle} aria-label="Pan left" {...hold(-0.75, 0)}>
+                <button type="button" style={{ ...padStyle, opacity: liveLockActive ? 0.45 : 1, cursor: liveLockActive ? "not-allowed" : "pointer" }} aria-label="Pan left" disabled={liveLockActive} {...hold(-0.75, 0)}>
                   <ChevronLeft size={24} />
                 </button>
                 <div
@@ -383,12 +461,12 @@ export const VideoCanvasView: React.FC<VideoCanvasViewProps> = ({
                 >
                   PTZ
                 </div>
-                <button type="button" style={padStyle} aria-label="Pan right" {...hold(0.75, 0)}>
+                <button type="button" style={{ ...padStyle, opacity: liveLockActive ? 0.45 : 1, cursor: liveLockActive ? "not-allowed" : "pointer" }} aria-label="Pan right" disabled={liveLockActive} {...hold(0.75, 0)}>
                   <ChevronRight size={24} />
                 </button>
 
                 <div />
-                <button type="button" style={padStyle} aria-label="Tilt down" {...hold(0, -0.75)}>
+                <button type="button" style={{ ...padStyle, opacity: liveLockActive ? 0.45 : 1, cursor: liveLockActive ? "not-allowed" : "pointer" }} aria-label="Tilt down" disabled={liveLockActive} {...hold(0, -0.75)}>
                   <ChevronDown size={24} />
                 </button>
                 <div />
@@ -401,7 +479,11 @@ export const VideoCanvasView: React.FC<VideoCanvasViewProps> = ({
             <button
               type="button"
               aria-label="Zoom in"
-              onPointerDown={() => drivePtz(0, 0, 0.75)}
+              disabled={liveLockActive}
+              onPointerDown={() => {
+                if (liveLockActive) return;
+                drivePtz(0, 0, 0.75);
+              }}
               onPointerUp={stopPtz}
               onPointerLeave={stopPtz}
               onPointerCancel={stopPtz}
@@ -412,8 +494,9 @@ export const VideoCanvasView: React.FC<VideoCanvasViewProps> = ({
                 borderRadius: 8,
                 color: "#E2E8F0",
                 fontWeight: 600,
-                cursor: "pointer",
+                cursor: liveLockActive ? "not-allowed" : "pointer",
                 touchAction: "none",
+                opacity: liveLockActive ? 0.45 : 1,
               }}
             >
               Zoom In (+)
@@ -421,7 +504,11 @@ export const VideoCanvasView: React.FC<VideoCanvasViewProps> = ({
             <button
               type="button"
               aria-label="Zoom out"
-              onPointerDown={() => drivePtz(0, 0, -0.75)}
+              disabled={liveLockActive}
+              onPointerDown={() => {
+                if (liveLockActive) return;
+                drivePtz(0, 0, -0.75);
+              }}
               onPointerUp={stopPtz}
               onPointerLeave={stopPtz}
               onPointerCancel={stopPtz}
@@ -432,8 +519,9 @@ export const VideoCanvasView: React.FC<VideoCanvasViewProps> = ({
                 borderRadius: 8,
                 color: "#E2E8F0",
                 fontWeight: 600,
-                cursor: "pointer",
+                cursor: liveLockActive ? "not-allowed" : "pointer",
                 touchAction: "none",
+                opacity: liveLockActive ? 0.45 : 1,
               }}
             >
               Zoom Out (-)
@@ -457,6 +545,10 @@ export const VideoCanvasView: React.FC<VideoCanvasViewProps> = ({
           cameraName={activeCamera?.name}
           defaultIp={ptzIp}
           defaultPort={ptzPort}
+          previewOnlyLock={previewOnlyLock}
+          liveCameraIds={liveRosterCameraId ? [liveRosterCameraId] : []}
+          isLive={selectedCameraIsLive}
+          state={state}
           onDrive={(pan, tilt, zoom, ip, port) => {
             ptzDriveCamera(ip, port, pan, tilt, zoom).catch(() => {});
           }}
