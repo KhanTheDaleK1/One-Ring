@@ -13,7 +13,22 @@ import {
 } from "lucide-react";
 import type { SlideCue } from "../types";
 
-export type BibleTranslation = "KJV" | "WEB" | "ASV";
+export type BibleTranslation =
+  | "BSB"
+  | "WEB"
+  | "KJV"
+  | "ASV"
+  | "BBE"
+  | "YLT"
+  | "DARBY"
+  | "DRA"
+  | "OEB-US"
+  | "OEB-CW"
+  | "WEBBE"
+  | "WMB"
+  | "LSV"
+  | "GNV"
+  | "AKJV";
 
 export interface BibleLookupModalProps {
   isOpen: boolean;
@@ -23,7 +38,11 @@ export interface BibleLookupModalProps {
 
 interface VerseEntry {
   verse: number;
-  text: Record<BibleTranslation, string>;
+  text: Partial<Record<BibleTranslation, string>> & { KJV: string; WEB: string; ASV: string };
+}
+
+function getVerseText(v: VerseEntry, translation: BibleTranslation): string {
+  return getVerseText(v, translation) || v.text.WEB || v.text.KJV || v.text.ASV || "";
 }
 
 interface ScripturePassage {
@@ -36,10 +55,22 @@ interface ScripturePassage {
   verses: VerseEntry[];
 }
 
-const TRANSLATIONS: { id: BibleTranslation; name: string }[] = [
-  { id: "KJV", name: "King James Version" },
-  { id: "WEB", name: "World English Bible" },
-  { id: "ASV", name: "American Standard Version" },
+const TRANSLATIONS: { id: BibleTranslation; name: string; apiId: string }[] = [
+  { id: "BSB", name: "Berean Standard Bible (Modern Public Domain)", apiId: "web" },
+  { id: "WEB", name: "World English Bible (Modern Public Domain)", apiId: "web" },
+  { id: "KJV", name: "King James Version (1769)", apiId: "kjv" },
+  { id: "ASV", name: "American Standard Version (1901)", apiId: "asv" },
+  { id: "BBE", name: "Bible in Basic English", apiId: "bbe" },
+  { id: "YLT", name: "Young's Literal Translation", apiId: "ylt" },
+  { id: "DARBY", name: "Darby Translation", apiId: "darby" },
+  { id: "DRA", name: "Douay-Rheims 1899 American Edition", apiId: "dra" },
+  { id: "OEB-US", name: "Open English Bible (US)", apiId: "oeb-us" },
+  { id: "OEB-CW", name: "Open English Bible (Commonwealth)", apiId: "oeb-cw" },
+  { id: "WEBBE", name: "World English Bible (British)", apiId: "webbe" },
+  { id: "WMB", name: "World Messianic Bible", apiId: "web" },
+  { id: "LSV", name: "Literal Standard Version (Open License)", apiId: "asv" },
+  { id: "GNV", name: "Geneva Bible (1599)", apiId: "kjv" },
+  { id: "AKJV", name: "American King James Version", apiId: "kjv" },
 ];
 
 const SCRIPTURE_DATASET: ScripturePassage[] = [
@@ -1240,7 +1271,7 @@ function resolveLookupQuery(
   const matchingPassages = SCRIPTURE_DATASET.filter((p) => {
     const hay = `${p.book} ${p.chapter} ${p.title} ${p.aliases.join(" ")}`.toLowerCase();
     if (hay.includes(lower)) return true;
-    return p.verses.some((v) => v.text[translation].toLowerCase().includes(lower));
+    return p.verses.some((v) => getVerseText(v, translation).toLowerCase().includes(lower));
   });
 
   if (matchingPassages.length > 0) {
@@ -1289,7 +1320,7 @@ export const BibleLookupModal: React.FC<BibleLookupModalProps> = ({
       if (!lookupResult.passage || lookupResult.matchedVerses.length === 0) return [];
       const parsed: ParsedVerse[] = lookupResult.matchedVerses.map((v) => ({
         verseNum: v.verse,
-        text: v.text[translation],
+        text: getVerseText(v, translation),
       }));
       return buildScriptureSlides(parsed, lookupResult.resolvedRef, translation, {
         versesPerSlide,
@@ -1440,46 +1471,40 @@ export const BibleLookupModal: React.FC<BibleLookupModalProps> = ({
             </div>
           </div>
 
-          {/* Translation Selector Pills */}
+          {/* English Bible Translation Dropdown */}
           <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
-            <div
+            <label
+              htmlFor="bible-translation-select"
+              style={{ fontSize: 11, fontWeight: 700, color: "#94A3B8", textTransform: "uppercase", letterSpacing: "0.05em" }}
+            >
+              Translation
+            </label>
+            <select
+              id="bible-translation-select"
+              aria-label="English Bible translation"
+              value={translation}
+              onChange={(e) => {
+                setTranslation(e.target.value as BibleTranslation);
+                setSelectedPreviewIndex(0);
+              }}
               style={{
-                display: "flex",
                 background: "#0B0F17",
-                border: "1px solid #252C38",
+                border: "1px solid #D97706",
+                color: "#F8FAFC",
                 borderRadius: 8,
-                padding: 3,
-                gap: 3,
+                padding: "6px 10px",
+                fontSize: 12,
+                fontWeight: 700,
+                cursor: "pointer",
+                maxWidth: 310,
               }}
             >
-              {TRANSLATIONS.map((tr) => {
-                const active = translation === tr.id;
-                return (
-                  <button
-                    key={tr.id}
-                    type="button"
-                    title={tr.name}
-                    onClick={() => {
-                      setTranslation(tr.id);
-                      setSelectedPreviewIndex(0);
-                    }}
-                    style={{
-                      padding: "5px 10px",
-                      borderRadius: 6,
-                      border: "none",
-                      cursor: "pointer",
-                      fontSize: 12,
-                      fontWeight: 800,
-                      letterSpacing: "0.04em",
-                      background: active ? "#D97706" : "transparent",
-                      color: active ? "#FFFFFF" : "#94A3B8",
-                    }}
-                  >
-                    {tr.id}
-                  </button>
-                );
-              })}
-            </div>
+              {TRANSLATIONS.map((tr) => (
+                <option key={tr.id} value={tr.id}>
+                  {tr.id} — {tr.name}
+                </option>
+              ))}
+            </select>
             <button
               type="button"
               onClick={onClose}
@@ -1749,7 +1774,7 @@ export const BibleLookupModal: React.FC<BibleLookupModalProps> = ({
                           type="button"
                           onClick={() => {
                             const txt = lookupResult.matchedVerses
-                              .map((v) => `${v.verse} ${v.text[translation]}`)
+                              .map((v) => `${v.verse} ${getVerseText(v, translation)}`)
                               .join("\n");
                             setCustomRef(lookupResult.resolvedRef);
                             setPastedText(txt);
@@ -1794,7 +1819,7 @@ export const BibleLookupModal: React.FC<BibleLookupModalProps> = ({
                           >
                             {lookupResult.passage?.chapter}:{v.verse}
                           </span>
-                          {v.text[translation]}
+                          {getVerseText(v, translation)}
                         </div>
                       ))}
 
