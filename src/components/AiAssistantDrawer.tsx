@@ -106,7 +106,7 @@ export const AiAssistantDrawer: React.FC<AiAssistantDrawerProps> = ({
       const context = {
         serviceName: state.serviceName,
         songs: (state.slides.songs || []).map((s) => ({ title: s.title, slideCount: s.slides.length })),
-        activeSlideTitle: state.slides.slides[state.slides.currentIndex]?.title ?? null,
+        activeSlideTitle: (state.slides.slides || [])[(state.slides.currentSlide || 1) - 1]?.title ?? null,
         theme: state.slides.theme,
         cueCount: state.cues.length,
       };
@@ -143,7 +143,7 @@ export const AiAssistantDrawer: React.FC<AiAssistantDrawerProps> = ({
         section: eyebrow || "Announcement",
         title,
         text: lines.join("\n"),
-        kind: "announcement",
+        kind: "title",
       };
       onApplySong(title, [slide]);
       if (typeof p.backgroundColor === "string" || typeof p.gradientTo === "string") {
@@ -151,7 +151,7 @@ export const AiAssistantDrawer: React.FC<AiAssistantDrawerProps> = ({
           backgroundType: p.gradientTo ? "gradient" : "solid",
           ...(typeof p.backgroundColor === "string" ? { backgroundColor: p.backgroundColor } : {}),
           ...(typeof p.gradientTo === "string" ? { gradientTo: p.gradientTo } : {}),
-          ...(typeof p.accentColor === "string" ? { accentColor: p.accentColor } : {}),
+          ...(typeof p.accentColor === "string" ? { lowerThirdAccent: p.accentColor } : {}),
         });
       }
     } else if (action.kind === "add_song") {
@@ -167,7 +167,7 @@ export const AiAssistantDrawer: React.FC<AiAssistantDrawerProps> = ({
       if (typeof p.backgroundColor === "string") patch.backgroundColor = p.backgroundColor;
       if (typeof p.gradientTo === "string") patch.gradientTo = p.gradientTo;
       if (typeof p.textColor === "string") patch.textColor = p.textColor;
-      if (typeof p.accentColor === "string") patch.accentColor = p.accentColor;
+      if (typeof p.accentColor === "string") patch.lowerThirdAccent = p.accentColor;
       if (typeof p.fontSize === "number") patch.fontSize = p.fontSize;
       onApplyTheme(patch);
     } else if (action.kind === "set_stage_message") {

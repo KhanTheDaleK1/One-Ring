@@ -127,6 +127,7 @@ function loadBroadcastHotkeys(): Record<string, string> {
 export const App: React.FC = () => {
   const [state, setState] = useState<AppStateSnapshot | null>(null);
   const [mode, setMode] = useState<AppViewMode>("show");
+  const [showAiDrawer, setShowAiDrawer] = useState(false);
   const [engineerUnlocked, setEngineerUnlocked] = useState(false);
   const [pinTarget, setPinTarget] = useState<AppViewMode | null>(null);
   const [pinMode, setPinMode] = useState<"unlock" | "setup">("unlock");
@@ -1702,16 +1703,61 @@ export const App: React.FC = () => {
         </form>
       </ModalDialog>
 
-      {availableUpdate && (
-        <AiAssistantDrawer
+      <AiAssistantDrawer
         isOpen={showAiDrawer}
         onClose={() => setShowAiDrawer(false)}
         state={state}
-        onApplySong={(title, slides) => void handleImportSong(title, slides)}
-        onApplyTheme={(patch) => void handleUpdateSlideTheme({ ...state.slides.theme, ...patch })}
-        onApplyStageMessage={(text) => void handleStageMessage(text)}
+        onApplySong={(title, slides) => {
+          setState((prev) => {
+            if (!prev) return prev;
+            const newSong = {
+              id: `ai-song-${Date.now()}`,
+              title,
+              slides,
+            };
+            const nextSongs = [...(prev.slides.songs || []), newSong];
+            const nextSlidesState = {
+              ...prev.slides,
+              songs: nextSongs,
+              activeSongId: newSong.id,
+              slides,
+              currentSlide: 1,
+              totalSlides: slides.length,
+              currentTitle: slides[0]?.title || title,
+            };
+            void bridge.syncWorkspaceState({ slides: nextSlidesState }).catch(() => {});
+            return { ...prev, slides: nextSlidesState };
+          });
+        }}
+        onApplyTheme={(patch) => {
+          setState((prev) => {
+            if (!prev) return prev;
+            const baseTheme = prev.slides.theme ?? {
+              backgroundType: "gradient" as const,
+              backgroundColor: "#0F172A",
+              gradientTo: "#1E293B",
+              fontFamily: "Inter, system-ui, sans-serif",
+              fontSize: 54,
+              textColor: "#FFFFFF",
+              lowerThirdBg: "rgba(15, 23, 42, 0.85)",
+              lowerThirdAccent: "#38BDF8",
+              lowerThirdPosition: "bottom" as const,
+            };
+            const nextSlidesState = {
+              ...prev.slides,
+              theme: { ...baseTheme, ...patch },
+            };
+            void bridge.syncWorkspaceState({ slides: nextSlidesState }).catch(() => {});
+            return { ...prev, slides: nextSlidesState };
+          });
+        }}
+        onApplyStageMessage={(text) => {
+          void bridge.setStageMessage(text).then(setState).catch(() => {});
+        }}
       />
-      <UpdateModal update={availableUpdate} onDismiss={() => setAvailableUpdate(null)} />
+
+      {availableUpdate && (
+        <UpdateModal update={availableUpdate} onDismiss={() => setAvailableUpdate(null)} />
       )}
 
       <BroadcastSettingsModal
