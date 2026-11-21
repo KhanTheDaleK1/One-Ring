@@ -422,9 +422,9 @@ fn post_json(url: &str, body: &[u8]) -> Result<u16, String> {
         return Err("Refusing non-HTTPS crash relay URL".into());
     }
     // Use ureq with rustls backend for Android HTTPS crash report upload.
-    let resp = ureq::post(url).set("Content-Type", "application/json").send_string(body).map_err(|e| format!("Failed to upload crash report: {e}"))?;
+    let resp = ureq::post(url).set("Content-Type", "application/json").send_bytes(body).map_err(|e| format!("Failed to upload crash report: {e}"))?;
     let status = resp.status();
-    status.parse::<u16>().map_err(|_| format!("Invalid HTTP status: {status}"))
+    Ok(status)
 }
 
 #[cfg(not(any(target_os = "android", target_os = "windows")))]

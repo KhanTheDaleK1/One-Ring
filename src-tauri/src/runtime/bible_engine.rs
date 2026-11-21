@@ -1093,7 +1093,7 @@ fn https_get_bytes(url: &str, auth_header: Option<(&str, &str)>) -> Result<Vec<u
     let resp = ureq::get(url).call().map_err(|e| format!("Failed to fetch scripture: {e}"))?;
     use std::io::Read;
     let mut body = Vec::new();
-    let body_reader = resp.into_reader();
+    let mut body_reader = resp.into_reader();
     body_reader
         .read_to_end(&mut body)
         .map_err(|e| format!("Failed to read scripture body: {e}"))?;
