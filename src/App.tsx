@@ -1022,7 +1022,7 @@ export const App: React.FC = () => {
           gap: 12,
         }}
       >
-        <div className="app-header__group" style={{ display: "flex", alignItems: "center", gap: 10 }}>
+        <div className="app-header__group" style={{ display: "flex", alignItems: "center", gap: 6 }}>
           <strong style={{ fontSize: 16, letterSpacing: "-0.01em" }}>ONE RING</strong>
           <button
             type="button"
@@ -1060,21 +1060,7 @@ export const App: React.FC = () => {
           >
             AI Assistant
           </button>
-          {mobile && (
-            <span
-              style={{
-                marginLeft: 8,
-                fontSize: 11,
-                color: "#93C5FD",
-                background: "#1E2533",
-                borderRadius: 4,
-                padding: "2px 6px",
-                border: "1px solid #2A3241",
-              }}
-            >
-              Default: Ollama / OpenAI-compatible
-            </span>
-          )}
+
           <span
             style={{
               fontSize: 12,
@@ -1090,21 +1076,7 @@ export const App: React.FC = () => {
           >
             {state.settings.general.canvasTitle || "Main Sanctuary"}
           </span>
-          {mobile && (
-            <span
-              style={{
-                marginLeft: 8,
-                fontSize: 11,
-                color: "#93C5FD",
-                background: "#1E2533",
-                borderRadius: 4,
-                padding: "2px 6px",
-                border: "1px solid #2A3241",
-              }}
-            >
-              Available in the desktop app
-            </span>
-          )}
+
         </div>
 
         <div className="app-header__group app-header__health" style={{ display: "flex", alignItems: "center", gap: 6 }}>
@@ -1265,7 +1237,7 @@ export const App: React.FC = () => {
             <Lock size={14} />
             {isShowMode(mode) ? "Show Mode" : "Lock"}
           </button>
-        {mode === "show" && (
+        {mode === "show" && !mobile && (
             <span
               className="show-mode-badge"
               style={{ position: "static" }}
@@ -1275,6 +1247,30 @@ export const App: React.FC = () => {
           )}
         </div>
       </header>
+
+      {/* Native-feeling bottom navigation bar on phones / narrow screens */}
+      <nav className="mobile-bottom-nav" aria-label="Mobile navigation">
+        {([
+          { id: "show", label: "Show" },
+          { id: "slides", label: "Slides" },
+          { id: "remote", label: "Remote" },
+          { id: "mixing", label: "Mixing" },
+          { id: "video", label: "Video" },
+        ] as const).map((item) => {
+          const active = mode === item.id;
+          return (
+            <button
+              key={item.id}
+              type="button"
+              className={active ? 'mobile-bottom-nav__item is-active' : 'mobile-bottom-nav__item'}
+              onClick={() => requestMode(item.id as AppViewMode)}
+              aria-current={active ? "page" : undefined}
+            >
+              <span>{item.label}</span>
+            </button>
+          );
+        })}
+      </nav>
 
       {/* Previous-session crash notice — advisory only, the booth surface stays usable */}
       {activeCrashReport && (
