@@ -3738,7 +3738,7 @@ pub fn run() {
                 use crate::runtime::remote_control::{self, RemoteControlState};
                 let state = RemoteControlState::new();
                 // Spawn the server on the app's Tokio runtime.
-                let _ = tokio::spawn(remote_control::start_server(Arc::new(state)));
+                let _ = tauri::async_runtime::spawn(remote_control::start_server(Arc::new(state)));
             }
             let managed = app.state::<ManagedState>();
 
