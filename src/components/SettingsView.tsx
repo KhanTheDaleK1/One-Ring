@@ -51,6 +51,8 @@ import {
   testSubsystemConnection,
   type AiAssistantStatusInfo,
   type HostDisplayInfo,
+  checkForUpdate,
+  installNativeUpdate,
 } from "../bridge";
 import { MidiTriggerModal } from "./MidiTriggerModal";
 
@@ -73,7 +75,7 @@ type SettingsTab =
 type RelayMode = "disabled" | AudienceRelayConfig["mode"];
 type HealthLevel = "ok" | "warn" | "error" | "none";
 
-const APP_VERSION = "0.3.10";
+const APP_VERSION = "0.3.11";
 const RELAY_STORAGE_KEY = "onering_audience_relay_config";
 const CAMERA_ROSTER_KEY = "onering_ptz_camera_roster";
 
@@ -557,6 +559,10 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const [aiStatus, setAiStatus] = useState<AiAssistantStatusInfo | null>(null);
   const [installingOpenCode, setInstallingOpenCode] = useState(false);
   const [openCodeNote, setOpenCodeNote] = useState<string | null>(null);
+  const [updateAvailable, setUpdateAvailable] = useState(false);
+  const [updateChecking, setUpdateChecking] = useState(false);
+  const [updateInstalling, setUpdateInstalling] = useState(false);
+  const [updateProgress, setUpdateProgress] = useState<number | null>(null);
   const importInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
@@ -571,6 +577,30 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       cancelled = true;
     };
   }, [tab]);
+
+  // Check for updates on startup
+  useEffect(() => {
+    let cancelled = false;
+    setUpdateChecking(true);
+    checkForUpdate()
+      .then((info) => {
+        if (!cancelled) {
+          setUpdateAvailable(!!info && info.update_available);
+          setUpdateChecking(false);
+          if (info && info.update_available) {
+            setUpdateProgress(null);
+          }
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setUpdateChecking(false);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const installOpenCode = async () => {
     if (installingOpenCode) return;
@@ -1386,6 +1416,29 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             }}
           >
             <Save size={14} /> Save Configuration
+          </button>
+          <button
+            type="button"
+            className="btn"
+            onClick={() => void installNativeUpdate((pct) => setUpdateProgress(pct))}
+            disabled={updateInstalling || (!updateAvailable && !updateChecking)}
+            style={{
+              height: 38,
+              padding: "0 16px",
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
+              background: updateInstalling ? "#6B46C1" : updateAvailable || updateChecking ? "#3B82F6" : "#1C222D",
+              borderColor: updateInstalling ? "#9F7AFF" : updateAvailable || updateChecking ? "#60A5FA" : "#2E3746",
+              color: updateInstalling ? "#FACDCD" : undefined,
+            }}
+          >
+            {updateInstalling
+              ? `Installing... ${updateProgress ? updateProgress + "%" : ""}`
+              : updateAvailable || updateChecking
+              ? `Update & Restart ${updateProgress ? `(${updateProgress}%)` : ""}`
+              : "Update & Restart"}
+            <RotateCcw size={13} />
           </button>
         </div>
       </div>

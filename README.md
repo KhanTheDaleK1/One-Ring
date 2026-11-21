@@ -1,4 +1,4 @@
-# One Ring — Unified Production Suite (`v0.3.10-alpha`)
+# One Ring — Unified Production Suite (`v0.3.11-alpha`)
 
 A clean-slate, cross-platform (**Windows, macOS & Linux**) desktop production suite built with **Tauri v2, Rust, React, and TypeScript**. One Ring unifies church and live-production workflows — slides, broadcast compositing, live stream telemetry & audience chat, zero-popup native window/display capture, multi-camera PTZ switching, audio mixing, AoIP routing, and IP video routing — inside one customizable interface.
 
@@ -63,13 +63,18 @@ Customize your active canvas title (e.g., `"Main Sanctuary"`) and re-order, show
 - [docs/UX_DESIGN.md](./docs/UX_DESIGN.md) — Canvas UX & operator guardrails
 - [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md) — Apache 2.0 upstream open-source attributions
 
-### What's New in v0.3.10-alpha
+### What's New in v0.3.11-alpha
 - **41+ Translation Multi-Provider Bible Engine:** Categorized dropdown across all 6 translation families (Word-for-Word, Thought-for-Thought, Paraphrases, Catholic & Orthodox Canons, Jewish Tanakh, Historical Predecessors), live open-license lookup (`helloao.org` + `bible-api.com`), inline official Crossway ESV API & API.Bible key setup, and local offline XML/OSIS/Zefania/OpenSong/JSON importer.
 - **One-Click Runtime Installers:** Fixed Windows OpenCode CLI installer (official GitHub release zip) + added one-click standalone FFmpeg installer (`~/.onering/bin` auto-discovery).
 - **Song & Lyric Search Polish:** Unified into 1 universal search bar + smart word-boundary line-balancing with a persistent `2 / 4 lines per slide` toggle.
 - **Legal & Security Compliance:** Added `PRIVACY.md` (US + GDPR), `TERMS.md`, `SECURITY.md`, `PRODUCT.md`, expanded `THIRD_PARTY_NOTICES.md`, and path-traversal hardening on local Bible imports.
 
-### What's New in v0.3.10-alpha
+### What's New in v0.3.11-alpha
 - **AI Assistant Real Tool Execution:** Asking the AI Production Assistant to add songs or Bible passages now invokes One Ring's built-in Song & Lyric Search and 41+ translation Bible Engine, smart-balances lines, splits into 2/4-line slides, and adds a one-click  button.
 - **Impeccable Booth UX/UI Polish:** Added green  badge + confirmation guard before switching to engineer tabs, upgraded  to  ( + instant Undo toast), pill mode tabs with crisp focus rings,  dim-booth header legibility, clarified song-import strip, and a session-dismissible AI CLI banner.
 - **Live Crash Relay:** Baked  secret support into automated Windows & macOS release builds.
+
+### What's New in v0.3.11-alpha
+- **Android Sideloadable APK + Touch-First UI:** Full Tauri v2 Android build pipeline (.github/workflows/android.yml), 44px touch targets, horizontally scrollable mode tabs, overflow menu, and pure-Rust Android HTTPS for lyrics, Bible, AI, and crash reporting.
+- **Desktop LAN Remote Control:** Desktop pairing server on port 39880 (6-digit pairing code + revocable bearer tokens) + Android Remote tab for controlling desktop-only features (FFmpeg streaming, Window Capture, blackout/clear, slides) over church Wi-Fi.
+- **Native Tauri v2 Auto-Updater (Windows & macOS):** Integrated tauri-plugin-updater + tauri-plugin-process with Ed25519 signed artifacts, CI-generated latest.json, and 1-click Update & Restart with live progress % in Settings.

@@ -31,18 +31,20 @@ import { BroadcastCanvasView } from "./components/BroadcastCanvasView";
 import type { SceneSourceItem } from "./types";
 import { EngineerView } from "./components/EngineerView";
 import { SettingsView } from "./components/SettingsView";
+import { RemoteControlView } from "./components/RemoteControlView";
 import { ShowNameModal } from "./components/ShowNameModal";
 import { PairingPrompt, type DiscoveredPeerInfo } from "./components/PairingPrompt";
 import { getDiscoveredPeers } from "./bridge";
 import { WelcomeTour } from "./components/WelcomeTour";
 import { UpdateModal } from "./components/UpdateModal";
 import { AiAssistantDrawer } from "./components/AiAssistantDrawer";
+import { isMobile, MobileDetectResult, DESKTOP_ONLY } from "./platform";
 import { BroadcastSettingsModal } from "./components/BroadcastSettingsModal";
 import { ModalDialog } from "./components/ModalDialog";
 import { Notice } from "./components/UiPrimitives";
 import { buildCrashIssueUrl } from "./components/CrashErrorBoundary";
 import { checkForUpdate, probeHardwareEncoders, type EncoderCapability } from "./bridge";
-import type { BroadcastProfileSettings, UpdateInfo } from "./types";
+import type { BroadcastProfileSettings, UpdateInfo, RemoteServerStatusResult } from "./types";
 
 const BROADCAST_PROFILE_KEY = "onering_broadcast_profile";
 const BROADCAST_STREAM_KEY = "onering_broadcast_stream_config";
@@ -127,6 +129,7 @@ function loadBroadcastHotkeys(): Record<string, string> {
 export const App: React.FC = () => {
   const [state, setState] = useState<AppStateSnapshot | null>(null);
   const [mode, setMode] = useState<AppViewMode>("show");
+  const [showRemote, setShowRemote] = useState(false);
   const [showAiDrawer, setShowAiDrawer] = useState(false);
   const [engineerUnlocked, setEngineerUnlocked] = useState(false);
   const [pinTarget, setPinTarget] = useState<AppViewMode | null>(null);
@@ -298,10 +301,10 @@ export const App: React.FC = () => {
         } else {
           // Provide fallback about info even if offline
           setAvailableUpdate({
-            current_version: "0.3.10",
-            latest_version: "v0.3.10-alpha",
+            current_version: "0.3.11",
+            latest_version: "v0.3.11-alpha",
             release_name: "One Ring — Church Production Suite",
-            release_notes: "You are running One Ring v0.3.10-alpha. All systems up to date.",
+            release_notes: "You are running One Ring v0.3.11-alpha. All systems up to date.",
             published_at: new Date().toISOString(),
             html_url: UPDATE_REPO_URL,
             download_url: null,
@@ -768,6 +771,15 @@ export const App: React.FC = () => {
 
   const isOutputWindow = typeof window !== "undefined" && new URLSearchParams(window.location.search).has("output");
 
+  const [mobile, setMobile] = useState<boolean>(false);
+  const [platform, setPlatform] = useState<"android" | "ios" | "desktop">("desktop");
+
+  useEffect(() => {
+    const result = isMobile();
+    setMobile(result.isMobile);
+    setPlatform(result.platform);
+  }, []);
+
   useEffect(() => {
     if (isOutputWindow || !state?.slides) return;
     try {
@@ -1048,6 +1060,21 @@ export const App: React.FC = () => {
           >
             AI Assistant
           </button>
+          {mobile && (
+            <span
+              style={{
+                marginLeft: 8,
+                fontSize: 11,
+                color: "#93C5FD",
+                background: "#1E2533",
+                borderRadius: 4,
+                padding: "2px 6px",
+                border: "1px solid #2A3241",
+              }}
+            >
+              Default: Ollama / OpenAI-compatible
+            </span>
+          )}
           <span
             style={{
               fontSize: 12,
@@ -1063,6 +1090,21 @@ export const App: React.FC = () => {
           >
             {state.settings.general.canvasTitle || "Main Sanctuary"}
           </span>
+          {mobile && (
+            <span
+              style={{
+                marginLeft: 8,
+                fontSize: 11,
+                color: "#93C5FD",
+                background: "#1E2533",
+                borderRadius: 4,
+                padding: "2px 6px",
+                border: "1px solid #2A3241",
+              }}
+            >
+              Available in the desktop app
+            </span>
+          )}
         </div>
 
         <div className="app-header__group app-header__health" style={{ display: "flex", alignItems: "center", gap: 6 }}>
@@ -1146,7 +1188,23 @@ export const App: React.FC = () => {
               >
                 {tab.label}
               </button>
-            ))}
+            ))
+            && (
+              <button
+                key="remote"
+                type="button"
+                className={`mode-tab ${showRemote ? "mode-tab-active" : ""}`}
+                onClick={() => setShowRemote(true)}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 6,
+                  color: showRemote ? "#FBBF24" : undefined,
+                }}
+              >
+                Remote
+              </button>
+            )}
 
           <button
             type="button"
@@ -1308,6 +1366,10 @@ export const App: React.FC = () => {
           onAutoHealIpVideo={() => bridge.autoHealIpVideoReceivers().then(setState)}
           onFlashAoipIdentify={(routeId) => bridge.flashAoipIdentify(routeId).then(setState)}
         />
+      )}
+
+      {showRemote && (
+        <RemoteControlView state={state} setState={setState} />
       )}
 
       {mode === "video" && (
@@ -1880,9 +1942,9 @@ export const App: React.FC = () => {
                 setAvailableUpdate(info);
               } else {
                 setAvailableUpdate({
-                  current_version: "0.3.10",
-                  latest_version: "v0.3.10-alpha",
-                  release_name: "One Ring v0.3.10-alpha",
+                  current_version: "0.3.11",
+                  latest_version: "v0.3.11-alpha",
+                  release_name: "One Ring v0.3.11-alpha",
                   release_notes: "You are running the latest version. All systems are up to date.",
                   published_at: new Date().toISOString(),
                   html_url: `${UPDATE_REPO_URL}/releases`,

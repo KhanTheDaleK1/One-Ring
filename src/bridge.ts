@@ -1196,6 +1196,84 @@ export const bridge = {
   },
 };
 
+export type RemoteServerStatus = "online" | "offline" | "error";
+
+export async function remoteServerStatus(): Promise<RemoteServerStatus> {
+  if (!isTauri()) return "offline";
+  try {
+    const status = await invokeTauri<RemoteServerStatus>("remote_server_status");
+    return status === "online" || status === "offline" ? status : "error";
+  } catch {
+    return "error";
+  }
+}
+
+export async function remoteRotateCode(): Promise<void> {
+  if (!isTauri()) return;
+  try {
+    await invokeTauri("remote_rotate_code");
+  } catch {
+    // native command unavailable in browser; silently no-op
+  }
+}
+
+export async function remoteRevokeTokens(): Promise<void> {
+  if (!isTauri()) return;
+  try {
+    await invokeTauri("remote_revoke_tokens");
+  } catch {
+    // native command unavailable in browser; silently no-op
+  }
+}
+
+/**
+ * Dynamically import Tauri updater + process, download & install the signed update,
+ * then relaunch the app. Falls back to browser download URL if the updater endpoint
+ * is unconfigured.
+ */
+export async function installNativeUpdate(
+  onProgress?: (pct: number) => void
+): Promise<string> {
+  // Fallback: if no updater endpoint is configured, open the download URL in browser
+  const updateRepoUrl =
+    (import.meta.env.VITE_UPDATE_REPO as string | undefined)?.trim() ||
+    "https://example.com/one-ring";
+  if (!updateRepoUrl || updateRepoUrl === "https://example.com/one-ring") {
+    window.open(updateRepoUrl, "_blank");
+    return Promise.resolve(window.location.href);
+  }
+
+  const { check } = await import("@tauri-apps/plugin-updater");
+  const { relaunch } = await import("@tauri-apps/plugin-process");
+
+  const update = await check();
+  if (!update) {
+    return "Already up to date";
+  }
+
+  try {
+    let downloaded = 0;
+    let total = 0;
+    await update.downloadAndInstall((event) => {
+      if (event.event === "Started") {
+        total = event.data.contentLength ?? 0;
+      } else if (event.event === "Progress") {
+        downloaded += event.data.chunkLength;
+        if (onProgress && total > 0) {
+          onProgress(Math.min(100, Math.round((downloaded / total) * 100)));
+        }
+      } else if (event.event === "Finished") {
+        if (onProgress) onProgress(100);
+      }
+    });
+    await relaunch();
+    return `Updated to ${update.version} and relaunching...`;
+  } catch (err) {
+    window.open(updateRepoUrl, "_blank");
+    throw err;
+  }
+}
+
 export async function checkForUpdate(): Promise<UpdateInfo | null> {
   if (!isTauri()) {
     try {
@@ -1206,7 +1284,7 @@ export async function checkForUpdate(): Promise<UpdateInfo | null> {
       const releases = await resp.json();
       if (!releases || releases.length === 0) return null;
       const latest = releases[0];
-      const currentVersion = "0.3.10";
+      const currentVersion = "0.3.11";
       const latestTag: string = latest.tag_name || "";
       const updateAvailable = latestTag.replace(/^v/, "") !== currentVersion.replace(/^v/, "");
       return {
@@ -1325,7 +1403,7 @@ export async function recordFrontendCrash(
   const report: CrashReportSummary = {
     id: `frontend-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
     timestampUtc: new Date().toISOString(),
-    appVersion: "0.3.10",
+    appVersion: "0.3.11",
     os: "preview",
     arch: "preview",
     kind: "frontend",

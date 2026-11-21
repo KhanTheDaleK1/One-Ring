@@ -60,15 +60,32 @@ jobs:
         env:
           ONE_RING_UPDATE_REPO: ${{ github.repository }}
 
+      - name: Set updater endpoints
+        run: python3 -c "
+import json, sys
+path = 'src-tauri/tauri.conf.json'
+with open(path) as f:
+    cfg = json.load(f)
+plugins = cfg.setdefault('plugins', {})
+updater = plugins.setdefault('updater', {})
+endpoints = updater.setdefault('endpoints', [])
+endpoint = 'https://github.com/${{ github.repository }}/releases/latest/download/latest.json'
+if endpoint not in endpoints:
+    endpoints.append(endpoint)
+with open(path, 'w') as f:
+    json.dump(cfg, f, indent=2)
+"
+
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VITE_UPDATE_REPO: ${{ github.repository }}
           ONE_RING_UPDATE_REPO: ${{ github.repository }}
           ONE_RING_CRASH_RELAY_URL: ${{ secrets.ONE_RING_CRASH_RELAY_URL }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
         with:
           tagName: ${{ github.ref_name }}
           releaseName: "One Ring ${{ github.ref_name }}"
           releaseBody: "Automated installer bundle for Windows (.msi / .exe) and macOS (.dmg / .app). Alpha builds are unsigned; signed updater artifacts are planned for beta/GA."
-          releaseDraft: true
+          releaseDraft: false
           prerelease: true

@@ -415,7 +415,19 @@ fn parse_http_status(stdout: &[u8], stderr: &[u8]) -> Result<u16, String> {
     })
 }
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(target_os = "android")]
+fn post_json(url: &str, body: &[u8]) -> Result<u16, String> {
+    use ureq;
+    if !url.starts_with("https://") {
+        return Err("Refusing non-HTTPS crash relay URL".into());
+    }
+    // Use ureq with rustls backend for Android HTTPS crash report upload.
+    let resp = ureq::put(url).set("Content-Type", "application/json").send_body(ureq::Body::from(body)).map_err(|e| format!("Failed to upload crash report: {e}"))?;
+    let status = resp.status();
+    status.parse::<u16>().map_err(|_| format!("Invalid HTTP status: {status}"))
+}
+
+#[cfg(not(any(target_os = "android", target_os = "windows")))]
 fn post_json(url: &str, body: &[u8]) -> Result<u16, String> {
     let mut cmd = Command::new("curl");
     crate::runtime::hide_console_window(&mut cmd);

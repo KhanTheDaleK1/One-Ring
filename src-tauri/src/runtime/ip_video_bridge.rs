@@ -260,45 +260,58 @@ impl IpVideoBridgeManager {
         if inner.runtime.is_some() {
             return true;
         }
-        let prefix = format!("{}lib_", runtime_tag_upper());
-        for path in candidate_library_paths() {
-            unsafe {
-                let h = open_lib(&path);
-                if h.is_null() {
-                    continue;
-                }
-                let p_init = load_sym(h, &format!("{prefix}initialize"));
-                let p_fc = load_sym(h, &format!("{prefix}find_create_v2"));
-                let p_fw = load_sym(h, &format!("{prefix}find_wait_for_sources"));
-                let p_fs = load_sym(h, &format!("{prefix}find_get_current_sources"));
-                if p_init.is_null() || p_fc.is_null() || p_fw.is_null() || p_fs.is_null() {
-                    close_lib(h);
-                    continue;
-                }
-                let f_init: FnInit = std::mem::transmute(p_init);
-                if !f_init() {
-                    close_lib(h);
-                    continue;
-                }
-                let p_fd = load_sym(h, &format!("{prefix}find_destroy"));
-                let p_sc = load_sym(h, &format!("{prefix}send_create"));
-                let p_sv = load_sym(h, &format!("{prefix}send_send_video_v2"));
-                let p_sd = load_sym(h, &format!("{prefix}send_destroy"));
-                inner.runtime = Some(LoadedRuntime {
-                    handle: h,
-                    path,
-                    f_find_create: std::mem::transmute(p_fc),
-                    f_find_wait: std::mem::transmute(p_fw),
-                    f_find_sources: std::mem::transmute(p_fs),
-                    f_find_destroy: if p_fd.is_null() { None } else { Some(std::mem::transmute(p_fd)) },
-                    f_send_create: if p_sc.is_null() { None } else { Some(std::mem::transmute(p_sc)) },
-                    f_send_video: if p_sv.is_null() { None } else { Some(std::mem::transmute(p_sv)) },
-                    f_send_destroy: if p_sd.is_null() { None } else { Some(std::mem::transmute(p_sd)) },
-                });
-                return true;
-            }
+        #[cfg(target_os = "android")]
+        {
+            // IP Video bridge not available on Android; return false so callers get a clear error.
+            return false;
         }
-        false
+        #[cfg(not(any(target_os = "android", target_os = "ios")))]
+        {
+            let prefix = format!("{}lib_", runtime_tag_upper());
+            for path in candidate_library_paths() {
+                unsafe {
+                    let h = open_lib(&path);
+                    if h.is_null() {
+                        continue;
+                    }
+                    let p_init = load_sym(h, &format!("{prefix}initialize"));
+                    let p_fc = load_sym(h, &format!("{prefix}find_create_v2"));
+                    let p_fw = load_sym(h, &format!("{prefix}find_wait_for_sources"));
+                    let p_fs = load_sym(h, &format!("{prefix}find_get_current_sources"));
+                    if p_init.is_null() || p_fc.is_null() || p_fw.is_null() || p_fs.is_null() {
+                        close_lib(h);
+                        continue;
+                    }
+                    let f_init: FnInit = std::mem::transmute(p_init);
+                    if !f_init() {
+                        close_lib(h);
+                        continue;
+                    }
+                    let p_fd = load_sym(h, &format!("{prefix}find_destroy"));
+                    let p_sc = load_sym(h, &format!("{prefix}send_create"));
+                    let p_sv = load_sym(h, &format!("{prefix}send_send_video_v2"));
+                    let p_sd = load_sym(h, &format!("{prefix}send_destroy"));
+                    inner.runtime = Some(LoadedRuntime {
+                        handle: h,
+                        path,
+                        f_find_create: std::mem::transmute(p_fc),
+                        f_find_wait: std::mem::transmute(p_fw),
+                        f_find_sources: std::mem::transmute(p_fs),
+                        f_find_destroy: if p_fd.is_null() { None } else { Some(std::mem::transmute(p_fd)) },
+                        f_send_create: if p_sc.is_null() { None } else { Some(std::mem::transmute(p_sc)) },
+                        f_send_video: if p_sv.is_null() { None } else { Some(std::mem::transmute(p_sv)) },
+                        f_send_destroy: if p_sd.is_null() { None } else { Some(std::mem::transmute(p_sd)) },
+                    });
+                    return true;
+                }
+            }
+            false
+        }
+        #[cfg(any(target_os = "ios"))]
+        {
+            // iOS similarly does not support dynamic library loading in this manner.
+            return false;
+        }
     }
 
     pub fn status(&self) -> IpVideoBridgeStatus {

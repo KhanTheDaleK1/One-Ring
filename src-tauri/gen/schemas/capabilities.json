@@ -1,1 +1,1 @@
-{}
+{"com.onering.suite":{"identifier":"com.onering.suite","description":"","local":true,"permissions":["core:default","updater:default","process:default"],"platforms":["linux","macOS","windows"]},"com.onering.suite.mobile":{"identifier":"com.onering.suite.mobile","description":"","local":true,"permissions":[],"platforms":["android","iOS"]}}

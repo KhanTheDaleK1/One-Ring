@@ -1,0 +1,5 @@
+{
+  "identifier": "com.onering.suite.mobile",
+  "platforms": ["android", "iOS"],
+  "permissions": []
+}

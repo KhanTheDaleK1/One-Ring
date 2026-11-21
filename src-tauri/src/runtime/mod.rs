@@ -29,6 +29,7 @@ pub mod console_adapter;
 pub mod native_capture;
 pub mod lyrics_search;
 pub mod crash_reporter;
+pub mod remote_control;
 
 /// Keep background helper processes from briefly flashing a console window on Windows.
 ///

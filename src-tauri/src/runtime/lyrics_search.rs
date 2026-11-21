@@ -185,7 +185,20 @@ pub fn parse_lrclib_json(raw: &[u8]) -> Result<Vec<LyricSearchResult>, String> {
     Ok(results)
 }
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(target_os = "android")]
+fn fetch_search_response(url: &str) -> Result<Vec<u8>, String> {
+    let resp = ureq::get(url)
+        .set("User-Agent", "OneRing/0.3.11")
+        .call()
+        .map_err(|e| format!("Online lyric search failed: {e}"))?;
+    let mut buf = Vec::new();
+    use std::io::Read;
+    resp.into_reader().take(MAX_ONLINE_BYTES as u64).read_to_end(&mut buf)
+        .map_err(|e| format!("Failed to read lyric search response: {e}"))?;
+    Ok(buf)
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "android")))]
 fn fetch_search_response(url: &str) -> Result<Vec<u8>, String> {
     let mut cmd = std::process::Command::new("curl");
     crate::runtime::hide_console_window(&mut cmd);

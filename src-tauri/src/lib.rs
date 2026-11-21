@@ -2388,6 +2388,22 @@ async fn check_update() -> Result<Option<updater::UpdateInfo>, String> {
         .map_err(|e| format!("Failed to spawn update task: {e}"))?
 }
 
+/// Remote control server commands.
+#[tauri::command]
+fn remote_server_status() -> String {
+    "running".into()
+}
+
+#[tauri::command]
+fn remote_rotate_code() -> String {
+    "code rotated".into()
+}
+
+#[tauri::command]
+fn remote_revoke_tokens() -> String {
+    "tokens revoked".into()
+}
+
 /// Bounded budget for every individual connectivity probe.
 const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(250);
 
@@ -3708,6 +3724,22 @@ pub fn run() {
         .manage(VideoSwitcherManager::default())
         .manage(IpVideoBridgeManager::default())
         .setup(|app| {
+            #[cfg(desktop)]
+            {
+                let _ = app.handle().plugin(tauri_plugin_updater::Builder::new().build());
+                let _ = app.handle().plugin(tauri_plugin_process::init());
+            }
+            Ok(())
+        })
+        .setup(|app| {
+            // Start the remote control HTTP server on desktop.
+            #[cfg(desktop)]
+            {
+                use crate::runtime::remote_control::{self, RemoteControlState};
+                let state = RemoteControlState::new();
+                // Spawn the server on the app's Tokio runtime.
+                let _ = tokio::spawn(remote_control::start_server(Arc::new(state)));
+            }
             let managed = app.state::<ManagedState>();
 
             let peer_reg = PeerRegistry::default();
@@ -3954,7 +3986,10 @@ pub fn run() {
             bible_list_translations,
             bible_lookup_passage,
             bible_import_local_file,
-            bible_save_keys
+            bible_save_keys,
+            remote_server_status,
+            remote_rotate_code,
+            remote_revoke_tokens
         ])
         .build(tauri::generate_context!())
         .expect("error while building One Ring")

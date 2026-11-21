@@ -643,6 +643,12 @@ export interface UpdateInfo {
   assets: ReleaseAsset[];
 }
 
+/** Remote server status result from Tauri invoke. */
+export interface RemoteServerStatusResult {
+  status: "online" | "offline" | "error";
+  pairedDevices: number;
+}
+
 // ---------------------------------------------------------------------------------------------
 // Live Stream Telemetry, Audience Relay & On-Air Overlay
 // ---------------------------------------------------------------------------------------------

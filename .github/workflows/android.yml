@@ -1,0 +1,84 @@
+name: Android Build
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          api-level: 33
+          ndk: '26.1.10909125'
+
+      - name: Install NDK r26 via sdkmanager
+        run: |
+          yes | sdkmanager --install "ndk;26.1.10909125"
+
+      - name: Add Rust targets for Android
+        run: |
+          rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android i686-linux-android
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Check clean room compliance
+        run: python3 scripts/check_clean_room.py
+
+      - name: Initialize Tauri Android (if needed)
+        run: |
+          if [ ! -d "gen/android" ]; then
+            npx tauri android init --ci
+          fi
+
+      - name: Build Android APK
+        run: npx tauri android build --apk
+
+      - name: Sign APK with release keystore (if available)
+        run: |
+          if [ -n "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" ] && [ -n "${{ secrets.ANDROID_KEY_ALIAS }}" ] && [ -n "${{ secrets.ANDROID_KEY_PASSWORD }}" ]; then
+            echo "ANDROID_KEYSTORE_BASE64=${{ secrets.ANDROID_KEYSTORE_BASE64 }}" > /tmp/android_keystore_env
+            echo "ANDROID_KEY_ALIAS=${{ secrets.ANDROID_KEY_ALIAS }}" >> /tmp/android_keystore_env
+            echo "ANDROID_KEY_PASSWORD=${{ secrets.ANDROID_KEY_PASSWORD }}" >> /tmp/android_keystore_env
+            
+            base64 -d /tmp/android_keystore_env > app-release-keystore.keystore
+            
+            npx tauri android sign --keystore app-release-keystore.keystore \
+              --alias ${{ secrets.ANDROID_KEY_ALIAS }} \
+              --password ${{ secrets.ANDROID_KEY_PASSWORD }} \
+              ---keystore-type JKS
+          else
+            echo "No release keystore found, building with debug signature for sideloading"
+            npx tauri android build --apk --release-unsigned
+            npx tauri android sign --keystore debug.keystore --alias androiddebugkey --password android --keystore-type PKCS12
+          fi
+
+      - name: Upload APK as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: one-ring-apk
+          path: src-tauri/android/outputs/*.apk
+
+      - name: Attach APK to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.tag_name }}
+          name: One Ring Android ${{ github.tag_name }}
+          files: src-tauri/android/outputs/*.apk
+          draft: false
+          prerelease: false

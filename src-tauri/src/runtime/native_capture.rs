@@ -1224,7 +1224,7 @@ mod platform_linux {
     }
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux", target_os = "android")))]
 mod platform_stub {
     use super::*;
 
@@ -1245,13 +1245,36 @@ mod platform_stub {
     }
 }
 
+#[cfg(target_os = "android")]
+mod platform_android {
+    use super::*;
+
+    pub(crate) fn windows() -> Vec<CapturableWindow> {
+        Vec::new()
+    }
+
+    pub(crate) fn displays() -> Vec<CapturableDisplay> {
+        Vec::new()
+    }
+
+    pub(crate) fn capture_plan(
+        _target_kind: &str,
+        _target_id: u64,
+        _path: &Path,
+    ) -> Result<CapturePlan, String> {
+        Err("Native capture is not available on Android".into())
+    }
+}
+
 #[cfg(target_os = "macos")]
 use platform_macos as platform;
 #[cfg(target_os = "windows")]
 use platform_windows as platform;
 #[cfg(target_os = "linux")]
 use platform_linux as platform;
-#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+#[cfg(target_os = "android")]
+use platform_android as platform;
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux", target_os = "android")))]
 use platform_stub as platform;
 
 /// Enumerate real on-screen windows without opening a chooser or prompt.

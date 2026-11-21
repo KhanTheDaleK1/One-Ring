@@ -1,9 +1,12 @@
-//! Built-in AI Production Assistant backend for One Ring.
+#!/ Built-in AI Production Assistant backend for One Ring.
 //!
 //! Supports:
 //! - `opencode_cli`: invokes local OpenCode CLI (`opencode run -m <model>`) using free models
 //! - `ollama`: local OpenAI-compatible HTTP endpoint (`http://127.0.0.1:11434/v1/chat/completions`)
 //! - `openai_compatible`: any user-configured HTTPS OpenAI-compatible chat completions endpoint
+//!
+//! Returns a conversational reply plus structured, operator-confirmed `AiProposedAction` items
+//! (adding songs, branded announcement slides, theme updates, cues, or stage alerts).
 //!
 //! Returns a conversational reply plus structured, operator-confirmed `AiProposedAction` items
 //! (adding songs, branded announcement slides, theme updates, cues, or stage alerts).
@@ -13,6 +16,7 @@ use crate::runtime::bible_engine::{lookup_passage, BibleProviderConfig};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use std::process::{Command, Stdio};
+use tokio::runtime::Runtime;
 
 const MAX_PROMPT_BYTES: usize = 32 * 1024;
 const MAX_RESPONSE_BYTES: usize = 256 * 1024;
@@ -87,11 +91,8 @@ When the user asks you to create or modify anything in One Ring, include a singl
   {
     "kind": "add_scripture",
     "label": "Add Psalm 23 to Set List",
-    "payload": {
-      "type": "add_scripture",
-      "reference": "Psalm 23",
-      "translation": "ESV"
-    }
+    "reference": "Psalm 23",
+    "translation": "ESV"
   },
   {
     "kind": "update_theme",
@@ -112,7 +113,6 @@ When the user asks you to create or modify anything in One Ring, include a singl
     }
   }
 ]
-```
 Only emit valid JSON inside ```onering-actions. Supported kinds: add_announcement_slide, add_song, add_scripture, update_theme, set_stage_message.
 NEVER write placeholder lyrics or hardcoded scripture text. The AI must emit structured actions with `type: "add_song"` (title, artist, linesPerSlide) or `type: "add_scripture"` (reference, translation). Real lyrics and verses will be fetched and balanced by the backend enrichment step.
 Do NOT include copyrighted modern song lyrics in the AI's reply or payload. Use only public-domain or provided lyrics. The enrich_assistant_actions step below will resolve real content."##;
@@ -153,7 +153,12 @@ fn find_opencode_binary() -> Option<String> {
 
 /// One-click installer for the free CLI provider. The installer output is deliberately discarded;
 /// success is decided only by the post-install status re-check.
-#[cfg(not(target_os = "windows"))]
+#[cfg(target_os = "android")]
+pub fn install_opencode_cli() -> Result<AiAssistantStatus, String> {
+    Err("Not available on Android: OpenCode CLI installation is not supported on Android".into())
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios", target_os = "windows")))]
 pub fn install_opencode_cli() -> Result<AiAssistantStatus, String> {
     let script = std::env::temp_dir().join(format!(
         "onering-opencode-install-{}-{}.sh",
@@ -342,7 +347,9 @@ fn enrich_assistant_actions(
     actions: &mut Vec<AiProposedAction>,
     bible_cfg: &BibleProviderConfig,
 ) {
-    use crate::runtime::lyrics_search::search_song_lyrics;
+    use crate::search_song_lyrics;
+
+    let rt = Runtime::new().expect("Failed to create Tokio runtime");
 
     for action in actions.iter_mut() {
         // Ensure payload is a JSON object
@@ -369,7 +376,12 @@ fn enrich_assistant_actions(
                 .and_then(|v| v.as_u64())
                 .unwrap_or(2);
 
-            match search_song_lyrics(&title, if artist.is_empty() { None } else { Some(&artist.as_str()) }, true) {
+            match rt.block_on(search_song_lyrics(
+                title.to_string(),
+                if artist.is_empty() { None } else { Some(artist.to_string()) },
+                None,
+                Some(true),
+            )) {
                 Ok(lyric_results) => {
                     if let Some(song) = lyric_results.first() {
                         // Split each raw lyric line cleanly at word boundaries (~46 chars) without merging separate lines
@@ -560,6 +572,10 @@ fn run_openai_compatible_http(
     history: &[AiChatMessage],
     context: &Value,
 ) -> Result<String, String> {
+    // Android: AI HTTP requests are not supported on Android
+    if cfg!(target_os = "android") {
+        return Err("Not available on Android: AI HTTP requests are not supported on Android".into());
+    }
     let url = validate_ai_endpoint(endpoint)?;
     let mut messages = vec![json!({
         "role": "system",

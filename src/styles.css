@@ -511,6 +511,128 @@ body {
   }
 }
 
+/* ── Coarse pointer / touch target rules ─────────────────────────────────── */
+
+@media (pointer: coarse) {
+  *,
+  *::before,
+  *::after {
+    touch-action: none;
+  }
+
+  /* Ensure minimum 44px touch targets for all button-like elements */
+  .btn,
+  .mode-tab,
+  .btn-sm,
+  .onering-dialog-panel .btn,
+  button[type="button"],
+  [role="button"] {
+    min-height: 44px;
+    min-width: 44px;
+    padding: var(--space-4);
+  }
+
+  /* Expand touch-friendly hit areas for small icons */
+  .mono[size],
+  .size14,
+  .size13,
+  .size12,
+  .size11 {
+    padding: 8px !important;
+  }
+
+  /* Ensure focus rings are visible on touch */
+  .mode-tab:focus-visible,
+  .mode-tab-active:focus-visible,
+  .btn:focus-visible,
+  .onering-dialog-panel .btn:focus-visible {
+    outline: 3px solid var(--focus, #60A5FA);
+    outline-offset: 3px;
+  }
+}
+
+/* ── Narrow screen layouts (max-width: 768px) ──────────────────────────── */
+
+@media (max-width: 768px) {
+  .app-header {
+    padding: var(--space-2) !important;
+    height: auto !important;
+  }
+
+  .app-header__group,
+  .app-header__health,
+  .app-header__nav {
+    flex-wrap: wrap;
+    justify-content: flex-start;
+  }
+
+  .app-header__health,
+  .app-header__nav {
+    flex: 1 1 100%;
+    justify-content: flex-start;
+  }
+
+  /* Header tabs: horizontally scrollable on narrow screens */
+  .app-header__nav {
+    overflow-x: auto;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+    /* force tablet/phone horizontal layout */
+    flex: 0 0 auto !important;
+    width: auto !important;
+    white-space: nowrap;
+  }
+
+  .app-header__nav .mode-tab {
+    flex: 0 0 auto;
+    min-width: 80px;
+    /* Ensure touch target even when squeezed */
+    margin-right: 4px;
+    margin-bottom: 4px;
+  }
+
+  .app-header__nav .mode-tab-active {
+    /* Visually distinct when scrollable */
+  }
+
+  /* Collapse secondary header items into overflow menu on narrow screens */
+  .app-header__health,
+  .app-header__nav > *:not(.mode-tab) {
+    order: 999;
+    /* These will be hidden behind an overflow button unless JS adds a menu */
+  }
+
+  .responsive-grid {
+    grid-template-columns: minmax(0, 1fr) !important;
+  }
+
+  /* Dialog panels shrink to full width */
+  .onering-dialog-panel {
+    width: min(100%, 90vw) !important;
+    padding: var(--space-4);
+  }
+
+  /* Touch-friendly form inputs on narrow screens */
+  input,
+  select,
+  textarea {
+    min-height: 44px;
+    padding: var(--space-3);
+    font-size: var(--text-sm);
+  }
+
+  /* Ensure table-like grids stack vertically */
+  [style*="gridTemplateColumns"] {
+    grid-template-columns: minmax(0, 1fr) !important;
+  }
+
+  /* Reduce horizontal density for touch */
+  .mode-tab {
+    padding: var(--space-3) !important;
+    min-height: 40px !important;
+  }
+}
+
 /* ── Responsive breakpoints ──────────────────────────────────────────────── */
 
 @media (max-width: 1280px) {
