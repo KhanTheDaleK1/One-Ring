@@ -665,7 +665,7 @@ impl FfmpegStreamProcess {
         })?;
 
         let mut args: Vec<String> = Vec::new();
-        let has_audio: bool;
+        let mut has_audio: bool = false;
         #[cfg(target_os = "macos")]
         {
             args.extend([
