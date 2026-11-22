@@ -1,0 +1,468 @@
+/* One Ring — Mobile Material-3-inspired dark booth design system */
+
+/* ── Surface hierarchy ────────────────────────────────────────────────────── */
+:root {
+  --mobile-bg-canvas: #090C12;
+  --mobile-bg-elevated: #111622;
+  --mobile-bg-interactive: #1A2233;
+  --mobile-text-primary: #F8FAFC;
+  --mobile-text-secondary: #94A3B8;
+  --mobile-border-subtle: #2A3241;
+  --mobile-accent: #60A5FA;
+  --mobile-accent-strong: #2563EB;
+  --mobile-danger: #EF4444;
+  --mobile-success: #10B981;
+  --mobile-warning: #F59E0B;
+}
+
+/* ── Safe-area typography ─────────────────────────────────────────────────── */
+@supports (padding: max(1px, env(safe-area-inset-top))) {
+  .safe-area-padding-top {
+    padding-top: max(env(safe-area-inset-top, 0px), 36px);
+  }
+  .safe-area-padding-bottom-nav {
+    padding-bottom: max(env(safe-area-inset-bottom, 0px), 12px);
+  }
+  .safe-area-padding-bottom-content {
+    padding-bottom: calc(92px + env(safe-area-inset-bottom, 0px));
+  }
+}
+
+/* Fallback for browsers without env() support */
+.padding-top-fallback {
+  padding-top: 36px;
+}
+.padding-bottom-nav-fallback {
+  padding-bottom: 12px;
+}
+.padding-bottom-content-fallback {
+  padding-bottom: 92px;
+}
+
+/* ── Global page base ─────────────────────────────────────────────────────── */
+.mobile-page {
+  background: var(--mobile-bg-canvas);
+  color: var(--mobile-text-primary);
+  font-family: Inter, system-ui, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* ── Focus-visible rings (crisp, expo ease-out) ───────────────────────────── */
+*:focus-visible {
+  outline: 2px solid var(--mobile-accent);
+  outline-offset: 2px;
+  transition: outline-color 0.15s ease-out, outline 0.15s ease-out;
+}
+
+*:focus-visible:not(:focus) {
+  outline: none;
+}
+
+button:focus-visible,
+a:focus-visible,
+[role="button"]:focus-visible {
+  outline: 2px solid var(--mobile-accent);
+  outline-offset: 2px;
+}
+
+/* ── Touch target baseline: >= 48px min dimension ────────────────────────── */
+.btn-mobile,
+button[type="button"],
+[role="button"] {
+  min-height: 48px;
+  min-width: 48px;
+  padding: 0 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  touch-action: manipulation;
+}
+
+/* Expand small lucide icons to hit areas */
+.mon-mobile[size],
+.mon-mobile[size="14"],
+.mon-mobile[size="13"],
+.mon-mobile[size="12"],
+.mon-mobile[size="11"] {
+  padding: 8px !important;
+}
+
+/* ── Buttons ──────────────────────────────────────────────────────────────── */
+.btn-primary-mobile {
+  background: var(--mobile-accent-strong);
+  border-color: var(--mobile-accent);
+  color: var(--mobile-text-primary);
+  font-weight: 600;
+  transition: background-color 0.2s ease-out, border-color 0.2s ease-out;
+}
+
+.btn-primary-mobile:hover:not(:disabled) {
+  background: #3b82f6;
+  border-color: #60a5fa;
+}
+
+.btn-primary-mobile:active:not(:disabled) {
+  transform: scale(0.98);
+}
+
+.btn-danger-mobile {
+  background: rgba(239, 68, 68, 0.16);
+  border-color: var(--mobile-danger);
+  color: var(--mobile-text-primary);
+}
+
+.btn-danger-mobile:hover:not(:disabled) {
+  background: rgba(245, 158, 115, 0.4);
+  border-color: #f87171;
+}
+
+.btn-secondary-mobile {
+  background: var(--mobile-bg-interactive);
+  border-color: var(--mobile-border-subtle);
+  color: var(--mobile-text-primary);
+}
+
+.btn-secondary-mobile:hover:not(:disabled) {
+  background: #1e2d40;
+  border-color: var(--mobile-accent);
+}
+
+/* ── Tab navigation ──────────────────────────────────────────────────────── */
+.tab-mobile {
+  padding: 8px 12px;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--mobile-text-secondary);
+  background: transparent;
+  border: 1px solid var(--mobile-border-subtle);
+  min-height: 40px;
+  transition: all 0.2s ease-out;
+}
+
+.tab-mobile.active {
+  color: var(--mobile-text-primary);
+  background: var(--mobile-bg-interactive);
+  border-color: var(--mobile-accent);
+}
+
+.tab-mobile:hover:not(.active) {
+  color: var(--mobile-text-primary);
+  background: var(--mobile-bg-elevated);
+  border-color: var(--mobile-accent);
+}
+
+/* ── Status pill ─────────────────────────────────────────────────────────── */
+.pill-mobile {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.pill-local {
+  color: var(--mobile-success);
+  background: rgba(16, 185, 129, 0.12);
+  border: 1px solid var(--mobile-success);
+}
+
+.pill-paired {
+  color: var(--mobile-accent);
+  background: rgba(96, 165, 250, 0.12);
+  border: 1px solid var(--mobile-accent);
+}
+
+/── Top bar wordmark ─────────────────────────────────────────────────────── */
+.wordmark-mobile {
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--mobile-text-primary);
+  text-transform: lowercase;
+}
+
+/── Bottom nav tabs ───────────────────────────────────────────────────────── */
+.bottom-nav-tab-mobile {
+  flex: 1;
+  padding: 12px 8px;
+  border-radius: 8px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--mobile-text-secondary);
+  background: transparent;
+  border: 1px solid var(--mobile-border-subtle);
+  min-height: 44px;
+  transition: all 0.2s ease-out;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+}
+
+.bottom-nav-tab-mobile.active {
+  color: var(--mobile-text-primary);
+  background: var(--mobile-bg-interactive);
+  border-color: var(--mobile-accent);
+}
+
+.bottom-nav-tab-mobile:hover:not(.active) {
+  color: var(--mobile-text-primary);
+  background: var(--mobile-bg-elevated);
+  border-color: var(--mobile-accent);
+}
+
+/── Service phase pills ───────────────────────────────────────────────────── */
+.phase-pill-mobile {
+  display: inline-flex;
+  align-items: center;
+  padding: 6px 12px;
+  border-radius: 20px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-right: 6px;
+  margin-bottom: 6px;
+}
+
+.phase-pill-mobile.pre-service {
+  color: var(--mobile-text-secondary);
+  background: rgba(96, 165, 250, 0.08);
+  border: 1px solid rgba(96, 165, 250, 0.2);
+}
+
+.phase-pill-mobile.worship {
+  color: var(--mobile-accent);
+  background: rgba(96, 165, 250, 0.14);
+  border: 1px solid var(--mobile-accent);
+}
+
+.phase-pill-mobile.welcome {
+  color: var(--mobile-warning);
+  background: rgba(245, 158, 11, 0.08);
+  border: 1px solid var(--mobile-warning);
+}
+
+.phase-pill-mobile.sermon {
+  color: var(--mobile-accent-strong);
+  background: rgba(37, 99, 235, 0.08);
+  border: 1px solid var(--mobile-accent-strong);
+}
+
+.phase-pill-mobile.closing {
+  color: var(--mobile-success);
+  background: rgba(16, 185, 129, 0.08);
+  border: 1px solid var(--mobile-success);
+}
+
+/── Stage alert bar ───────────────────────────────────────────────────────── */
+.stage-alert-mobile {
+  display: flex;
+  align-items: center;
+  padding: 6px 10px;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 500;
+  background: rgba(251, 191, 38, 0.12);
+  border: 1px solid rgba(251, 191, 38, 0.3);
+  color: var(--mobile-accent);
+  min-height: 24px;
+}
+
+/── Slide grid ─────────────────────────────────────────────────────────────── */
+.slide-grid-mobile {
+  display: grid;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.slide-tile-mobile {
+  background: var(--mobile-bg-elevated);
+  border: 1px solid var(--mobile-border-subtle);
+  border-radius: 8px;
+  padding: 12px;
+  transition: border-color 0.15s ease-out, background 0.15s ease-out;
+}
+
+.slide-tile-mobile:hover {
+  border-color: var(--mobile-accent);
+  background: var(--mobile-bg-interactive);
+}
+
+.slide-tile-mobile.selected {
+  border-color: var(--mobile-accent);
+  background: rgba(96, 165, 250, 0.18);
+}
+
+/── Clear text / blackout buttons ─────────────────────────────────────────── */
+.btn-clear-mobile {
+  background: var(--mobile-bg-interactive);
+  border: 1px solid var(--mobile-border-subtle);
+  color: var(--mobile-text-primary);
+}
+
+.btn-clear-mobile:hover {
+  border-color: var(--mobile-danger);
+  background: rgba(239, 68, 68, 0.08);
+}
+
+.btn-blackout-mobile {
+  background: rgba(239, 68, 68, 0.12);
+  border-color: var(--mobile-danger);
+  color: var(--mobile-text-primary);
+}
+
+.btn-blackout-mobile:hover {
+  background: rgba(245, 158, 115, 0.2);
+  border-color: #f87171;
+}
+
+/── PTZ camera preset pads ────────────────────────────────────────────────── */
+.ptz-preset-mobile {
+  padding: 10px;
+  border-radius: 8px;
+  border: 1px solid var(--mobile-border-subtle);
+  background: var(--mobile-bg-elevated);
+  transition: border-color 0.15s ease-out, background 0.15s ease-out;
+}
+
+.ptz-preset-mobile:hover {
+  border-color: var(--mobile-accent);
+  background: var(--mobile-bg-interactive);
+}
+
+.ptz-preset-mobile.active {
+  border-color: var(--mobile-accent);
+  background: rgba(96, 165, 250, 0.18);
+}
+
+/── Preview-Only badge ──────────────────────────────────────────────────── */
+.badge-preview-mobile {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  background: rgba(96, 165, 250, 0.14);
+  color: var(--mobile-accent);
+  border: 1px solid rgba(96, 165, 250, 0.25);
+}
+
+/── Switcher program/preview pads ─────────────────────────────────────────── */
+.switcher-pad-mobile {
+  padding: 8px;
+  border-radius: 6px;
+  border: 1px solid var(--mobile-border-subtle);
+  background: var(--mobile-bg-elevated);
+  transition: border-color 0.15s ease-out, background 0.15s ease-out;
+}
+
+.switcher-pad-mobile:hover {
+  border-color: var(--mobile-accent);
+  background: var(--mobile-bg-interactive);
+}
+
+.switcher-pad-mobile.active {
+  border-color: var(--mobile-accent);
+  background: rgba(96, 165, 250, 0.18);
+}
+
+/── Expo ease-out transitions ─────────────────────────────────────────────── */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+  }
+}
+/* ── Android 17 Material You (Material 3 Expressive) Dark Booth Layer ────── */
+:root {
+  --md-sys-color-surface: #0E1117;
+  --md-sys-color-surface-container-low: #141923;
+  --md-sys-color-surface-container: #1A202D;
+  --md-sys-color-surface-container-high: #222A3A;
+  --md-sys-color-surface-container-highest: #2B3548;
+  --md-sys-color-primary: #A8C7FA;
+  --md-sys-color-on-primary: #062E6F;
+  --md-sys-color-primary-container: #1E3A6E;
+  --md-sys-color-on-primary-container: #D3E3FD;
+  --md-sys-color-secondary-container: #2A3447;
+  --md-sys-color-on-secondary-container: #D8E2F3;
+  --md-sys-color-error-container: #601410;
+  --md-sys-color-on-error-container: #F9DEDC;
+  --md-sys-shape-corner-extra-large: 28px;
+  --md-sys-shape-corner-large: 20px;
+  --md-sys-shape-corner-full: 9999px;
+  --md-sys-motion-spring: cubic-bezier(0.2, 0.9, 0.25, 1.0);
+}
+
+@media (max-width: 768px) {
+  .mobile-shell {
+    background: var(--md-sys-color-surface);
+  }
+  .mobile-topbar {
+    background: color-mix(in srgb, var(--md-sys-color-surface-container-low) 92%, transparent);
+    backdrop-filter: blur(18px);
+    -webkit-backdrop-filter: blur(18px);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  }
+  .mobile-stage-monitor,
+  .mobile-panel,
+  .mobile-card {
+    background: var(--md-sys-color-surface-container);
+    border-radius: var(--md-sys-shape-corner-extra-large);
+    border: 1px solid rgba(255, 255, 255, 0.05);
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.28);
+  }
+  .mobile-transport-btn,
+  .mobile-action-btn,
+  .mobile-phase-pill,
+  .mobile-segmented-btn {
+    border-radius: var(--md-sys-shape-corner-full);
+    transition: transform 0.16s var(--md-sys-motion-spring), background-color 0.18s ease, border-radius 0.18s var(--md-sys-motion-spring);
+  }
+  .mobile-transport-btn:active,
+  .mobile-action-btn:active,
+  .mobile-phase-pill:active {
+    transform: scale(0.96);
+    border-radius: 16px;
+  }
+  .mobile-transport-btn--primary,
+  .mobile-phase-pill.is-active {
+    background: var(--md-sys-color-primary-container);
+    color: var(--md-sys-color-on-primary-container);
+    border-color: rgba(168, 199, 250, 0.35);
+  }
+  .mobile-transport-btn--danger {
+    background: var(--md-sys-color-error-container);
+    color: var(--md-sys-color-on-error-container);
+    border-color: rgba(249, 222, 220, 0.28);
+  }
+  .mobile-bottom-nav {
+    background: var(--md-sys-color-surface-container-low);
+    border-top: 1px solid rgba(255, 255, 255, 0.06);
+  }
+  .mobile-bottom-nav__item {
+    border-radius: var(--md-sys-shape-corner-full);
+    transition: background-color 0.2s var(--md-sys-motion-spring), color 0.18s ease, transform 0.14s var(--md-sys-motion-spring);
+  }
+  .mobile-bottom-nav__item.is-active {
+    background: var(--md-sys-color-secondary-container);
+    color: var(--md-sys-color-on-secondary-container);
+    font-weight: 700;
+  }
+}

@@ -31,6 +31,7 @@ import { BroadcastCanvasView } from "./components/BroadcastCanvasView";
 import type { SceneSourceItem } from "./types";
 import { EngineerView } from "./components/EngineerView";
 import { SettingsView } from "./components/SettingsView";
+import { MobileAppShell } from "./components/MobileAppShell";
 import { RemoteControlView } from "./components/RemoteControlView";
 import { ShowNameModal } from "./components/ShowNameModal";
 import { PairingPrompt, type DiscoveredPeerInfo } from "./components/PairingPrompt";
@@ -301,10 +302,10 @@ export const App: React.FC = () => {
         } else {
           // Provide fallback about info even if offline
           setAvailableUpdate({
-            current_version: "0.3.11",
-            latest_version: "v0.3.11-alpha",
+            current_version: "0.3.12",
+            latest_version: "v0.3.12-alpha",
             release_name: "One Ring — Church Production Suite",
-            release_notes: "You are running One Ring v0.3.11-alpha. All systems up to date.",
+            release_notes: "You are running One Ring v0.3.12-alpha. All systems up to date.",
             published_at: new Date().toISOString(),
             html_url: UPDATE_REPO_URL,
             download_url: null,
@@ -1004,7 +1005,85 @@ export const App: React.FC = () => {
     return <div style={{ padding: 32, color: "#9CA3AF" }}>Loading One Ring...</div>;
   }
 
+  const isMobileView = isMobile().isMobile || typeof window !== "undefined" && window.innerWidth <= 768;
+
   const anyLive = state.broadcasts.some((b) => b.live);
+
+  // On mobile, render the dedicated MobileAppShell for a one-handed experience.
+  // On desktop, render the full legacy layout.
+
+  if (isMobileView) {
+    return (
+      <div style={{ minHeight: "100vh" }}>
+        <MobileAppShell
+          state={state}
+          onSelectSlide={(slideNumber) => {
+            emitLanSync("slide_changed", { slideNumber });
+            bridge.goToSlide(slideNumber).then(setState);
+          }}
+          onSlideAction={(act) => {
+            emitLanSync("slide_changed", { action: act });
+            bridge.triggerSlideAction(act).then(setState);
+          }}
+          onSelectSong={(songId) => {
+            const song = (state.slides.songs || []).find((s) => s.id === songId);
+            if (!song) return;
+            const nextSlides = {
+              ...state.slides,
+              presentationName: song.title,
+              activeSongId: song.id,
+              currentSlide: 1,
+              totalSlides: song.slides.length,
+              currentText: song.slides[0]?.text || "",
+              nextText: song.slides[1]?.text || "",
+              cleared: false,
+              slides: song.slides,
+            };
+            setState((prev) => (prev ? { ...prev, slides: nextSlides } : prev));
+          }}
+          onImportSong={(title, importedSlides) => {
+            const songId = `song_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+            setState((prev) => {
+              if (!prev) return prev;
+              const existingSongs = prev.slides.songs || [];
+              const newSong = { id: songId, title, slides: importedSlides };
+              const nextSlides = {
+                ...prev.slides,
+                presentationName: title,
+                activeSongId: songId,
+                songs: [...existingSongs, newSong],
+                currentSlide: 1,
+                totalSlides: importedSlides.length,
+                currentText: importedSlides[0]?.text || "",
+                nextText: importedSlides[1]?.text || "",
+                cleared: false,
+                slides: importedSlides,
+              };
+              bridge.syncWorkspaceState({ slides: nextSlides }).catch(() => {});
+              emitLanSync("slide_changed", { slides: nextSlides });
+              return { ...prev, slides: nextSlides };
+            });
+          }}
+          onOpenSongSearch={() => {}}
+          onOpenBible={() => {}}
+          onOpenAi={() => setShowAiDrawer((v) => !v)}
+          onOpenSettings={() => requestMode("settings")}
+          onTriggerPtz={(cameraIndex) => {
+            if (state?.cameras?.[cameraIndex]) {
+              bridge.recallCameraPreset(state.cameras[cameraIndex].id).then(setState);
+            }
+          }}
+          onToggleMute={(dcaId) => {
+            const dca = state.dcas.find((entry) => entry.id === dcaId);
+            if (dca) bridge.toggleDcaMute(dca.id).then(setState);
+          }}
+          onSetPhase={(phase) => {}}
+          onSetStageMessage={(message: string) => {}}
+          onToggleStageMessageVisible={() => {}}
+        />
+      </div>
+    );
+  }
 
   return (
     <div className="app-shell">
@@ -1162,20 +1241,9 @@ export const App: React.FC = () => {
               </button>
             ))
             && (
-              <button
-                key="remote"
-                type="button"
-                className={`mode-tab ${showRemote ? "mode-tab-active" : ""}`}
-                onClick={() => setShowRemote(true)}
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 6,
-                  color: showRemote ? "#FBBF24" : undefined,
-                }}
-              >
-                Remote
-              </button>
+              // Note: "Remote" button removed from permanent top bar on desktop;
+              // it appears inside SettingsView as the Desktop Remote Pairing card.
+              null
             )}
 
           <button
@@ -1938,9 +2006,9 @@ export const App: React.FC = () => {
                 setAvailableUpdate(info);
               } else {
                 setAvailableUpdate({
-                  current_version: "0.3.11",
-                  latest_version: "v0.3.11-alpha",
-                  release_name: "One Ring v0.3.11-alpha",
+                  current_version: "0.3.12",
+                  latest_version: "v0.3.12-alpha",
+                  release_name: "One Ring v0.3.12-alpha",
                   release_notes: "You are running the latest version. All systems are up to date.",
                   published_at: new Date().toISOString(),
                   html_url: `${UPDATE_REPO_URL}/releases`,

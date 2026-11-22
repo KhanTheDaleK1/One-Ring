@@ -1,5 +1,7 @@
 /* One Ring — shared design tokens and UI foundations (UX audit Waves 1-3). */
 
+@import "./styles/mobile.css";
+
 * {
   box-sizing: border-box;
 }

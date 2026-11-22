@@ -54,6 +54,7 @@ import {
   checkForUpdate,
   installNativeUpdate,
 } from "../bridge";
+import { RemoteControlView } from "./RemoteControlView";
 import { MidiTriggerModal } from "./MidiTriggerModal";
 
 interface SettingsViewProps {
@@ -75,7 +76,7 @@ type SettingsTab =
 type RelayMode = "disabled" | AudienceRelayConfig["mode"];
 type HealthLevel = "ok" | "warn" | "error" | "none";
 
-const APP_VERSION = "0.3.11";
+const APP_VERSION = "0.3.12";
 const RELAY_STORAGE_KEY = "onering_audience_relay_config";
 const CAMERA_ROSTER_KEY = "onering_ptz_camera_roster";
 
@@ -524,6 +525,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   onCheckUpdates,
   onOpenBroadcastSettings,
 }) => {
+  const isDesktop = typeof window !== "undefined" && window.innerWidth > 768;
   const [tab, setTab] = useState<SettingsTab>("console");
   const [draft, setDraft] = useState<AppSettings>(() => cloneSettings(state.settings));
   const [cameraRoster, setCameraRoster] = useState<PtzCameraEntry[]>(() =>
@@ -1354,6 +1356,11 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 
   return (
     <div style={{ padding: 20, maxWidth: 1220, margin: "0 auto" }}>
+      {/* Desktop: Remote Pairing card inside SettingsView; mobile uses MobileAppShell */}
+      {isDesktop && (
+        <RemoteControlView state={state} setState={() => {}} />
+      )}
+
       <div
         style={{
           position: "sticky",
